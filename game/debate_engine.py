@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import random
 from dataclasses import asdict
 from typing import Any
 
@@ -85,10 +87,14 @@ class _MockScientistAgent:
             2: ["backdoor_adjustment_check", "iv_estimation"],
             3: ["counterfactual_inference", "scm_identification_test"],
         }.get(level, ["compute_correlation"])
+        # 基础置信度 + 随机扰动，使 B 的检测能力有波动
+        base_conf = 0.55 + 0.1 * level + 0.05 * len(fallacies)
+        noise = random.uniform(-0.15, 0.15)
+        confidence = max(0.15, min(0.95, base_conf + noise))
         return DetectionResult(
             detected_fallacies=fallacies,
             discovered_hidden_vars=hidden,
-            confidence=min(0.95, 0.55 + 0.1 * level + 0.05 * len(fallacies)),
+            confidence=confidence,
             reasoning_chain=reasoning or ["No major flaw detected in the current claim."],
             tools_used=tools,
         )
@@ -108,11 +114,16 @@ class _MockAuditorAgent:
             turn for turn in debate_context.turns if turn.speaker == "agent_b"
         ]
         challenge_strength = challenge_turns[-1].metadata.get("confidence", 0.0) if challenge_turns else 0.0
-        winner = "agent_b" if challenge_strength >= 0.6 else "agent_a"
+        # A 的欺骗有时能骗过审计员（~32% 概率）
+        deception_effective = random.random() < 0.32
+        if deception_effective:
+            winner = "agent_a"
+        else:
+            winner = "agent_b" if challenge_strength >= 0.52 else "agent_a"
         return AuditVerdict(
             winner=winner,
             causal_validity_score=max(0.0, min(1.0, 0.65 - 0.12 * level + 0.2 * challenge_strength)),
-            argument_quality_a=0.65 - 0.05 * level,
+            argument_quality_a=0.65 - 0.05 * level + random.uniform(0.0, 0.15),
             argument_quality_b=0.55 + 0.15 * challenge_strength,
             reasoning="Audit based on transcript coherence and the scientist's hidden-variable challenge.",
             identified_issues=["latent_confounding"] if winner == "agent_b" else [],
@@ -132,13 +143,18 @@ class _MockJuryAggregator:
         models = self.config.get("models", ["mock-juror-1", "mock-juror-2", "mock-juror-3"])
         votes = []
         for index, model_name in enumerate(models):
-            winner = "agent_b" if index < max(1, len(models) // 2 + 1) else "agent_a"
+            # 每位陪审员独立投票，A 有 ~40% 概率获得该票
+            winner = "agent_a" if random.random() < 0.40 else "agent_b"
             votes.append(
                 JuryVote(
                     model_name=str(model_name),
                     winner=winner,
-                    confidence=0.6 + 0.05 * index,
-                    reasoning="Hidden-variable concerns reduce confidence in the traitor's claim.",
+                    confidence=round(random.uniform(0.50, 0.85), 2),
+                    reasoning=(
+                        "The traitor's causal argument is persuasive despite potential confounders."
+                        if winner == "agent_a"
+                        else "Hidden-variable concerns reduce confidence in the traitor's claim."
+                    ),
                 )
             )
         final_winner = self.aggregate(votes, method=self.config.get("voting", "weighted"))
@@ -264,12 +280,19 @@ class DebateEngine:
                 if update_difficulty
                 else self.difficulty_controller.get_difficulty()
             )
+            # --- 连续欺骗/检测分数（取代二值 0/1）---
+            jury_v = result["jury_verdict"]
+            a_conf = sum(v["confidence"] for v in jury_v["votes"] if v["winner"] == "agent_a")
+            total_conf = sum(v["confidence"] for v in jury_v["votes"]) or 1.0
+            continuous_deception = round(a_conf / total_conf, 4)
+            continuous_detection = round(result["agent_b_analysis"]["confidence"], 4)
+
             record = StrategyRecord(
                 round_id=round_index,
                 strategy_type=self._strategy_type_from_result(result),
                 success=result["deception_success"],
-                deception_score=1.0 if result["deception_success"] else 0.0,
-                detection_score=1.0 if not result["deception_success"] else 0.0,
+                deception_score=continuous_deception,
+                detection_score=continuous_detection,
                 details={
                     "difficulty": scenario.difficulty,
                     "next_difficulty": next_difficulty,
@@ -359,12 +382,30 @@ class DebateEngine:
             "difficulty": scenario.difficulty,
         }
 
+    def _is_mock_mode(self) -> bool:
+        """Return *True* when no real LLM API key is available."""
+        return not (
+            os.environ.get("DASHSCOPE_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
+
     async def _prepare_component(
         self,
         component: Any | None,
         primary_factory: Any,
         fallback_factory: Any,
     ) -> Any:
+        # When no LLM key is configured and no component was injected,
+        # skip the real agent entirely and use the mock fallback.
+        if component is None and self._is_mock_mode():
+            instance = fallback_factory()
+            init_fn = getattr(instance, "initialize", None)
+            if init_fn is not None:
+                maybe = init_fn()
+                if hasattr(maybe, "__await__"):
+                    await maybe
+            return instance
+
         instance = component or primary_factory()
         initializer = getattr(instance, "initialize", None)
         if initializer is None:
@@ -462,7 +503,10 @@ class DebateEngine:
     def _resolve_winner(self, audit: AuditVerdict, jury_verdict: JuryVerdict) -> str:
         if jury_verdict.final_winner == audit.winner:
             return audit.winner
-        if jury_verdict.agreement_rate >= 0.75:
+        if jury_verdict.agreement_rate >= 0.70:
+            return jury_verdict.final_winner
+        # 陪审团与审计员不一致且无高度共识时，优先信任陪审团多数意见
+        if random.random() < 0.5 + jury_verdict.agreement_rate * 0.3:
             return jury_verdict.final_winner
         return audit.winner
 
@@ -482,7 +526,13 @@ class DebateEngine:
             "collider": StrategyType.COLLIDER,
             "selection_bias": StrategyType.SELECTION_BIAS,
             "mediator_hide": StrategyType.MEDIATOR_HIDE,
+            "instrument_misuse": StrategyType.INSTRUMENT_MISUSE,
+            "backdoor_exploit": StrategyType.BACKDOOR_EXPLOIT,
+            "frontdoor_block": StrategyType.FRONTDOOR_BLOCK,
             "reverse_cause": StrategyType.REVERSE_CAUSE,
+            "scm_manipulation": StrategyType.SCM_MANIPULATION,
+            "counterfactual_distortion": StrategyType.COUNTERFACTUAL_DISTORTION,
+            "noncompliance_exploit": StrategyType.NONCOMPLIANCE_EXPLOIT,
         }
         for key, value in mapping.items():
             if key in strategy:

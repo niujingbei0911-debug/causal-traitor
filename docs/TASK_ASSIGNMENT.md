@@ -104,10 +104,9 @@
 
 | 任务 | 文件 | 工作量 | 说明 |
 |------|------|--------|------|
-| 评估指标计算 | `evaluation/metrics.py` | ★★★ | 14个指标的计算函数（DSR/DCS/DCX/DAcc/DPre/DRec/CLS/TUR/FDR/ARI/NC/SD/JAcc/JCon） |
+| 评估指标计算 | `evaluation/metrics.py` | ★★★ | 14个指标的计算函数（DSR/CSI/HVP/SDS/DAcc/FPR/TtD/TEff/GBI/NE_dist/ECI/CRA/LTP/IAS） |
 | 综合评分器 | `evaluation/scorer.py` | ★★☆ | `compute_overall_score`，加权评分公式 |
-| 进化追踪器 | `evaluation/tracker.py` | ★★☆ | `EvolutionTracker`类，策略多样性/军备竞赛指数/Nash收敛度 |
-| 数据模型定义 | `evaluation/models.py` | ★☆☆ | Pydantic数据模型，统一各模块间的数据结构 |
+| 实验追踪器 | `evaluation/tracker.py` | ★★☆ | `ExperimentTracker`类，实验日志/指标记录/checkpoint管理 |
 
 **Phase 1 产出**：完整的评估计算引擎，可接收模拟数据进行评分
 

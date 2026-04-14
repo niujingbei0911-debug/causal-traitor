@@ -12,12 +12,21 @@ import numpy as np
 
 
 class StrategyType(Enum):
-    """策略类型枚举"""
-    CONFOUNDING = "confounding"          # 混杂因子注入
-    COLLIDER = "collider"                # 对撞因子伪装
-    SELECTION_BIAS = "selection_bias"    # 选择偏差
-    MEDIATOR_HIDE = "mediator_hide"     # 中介变量隐藏
-    REVERSE_CAUSE = "reverse_cause"     # 因果方向反转
+    """策略类型枚举 — 与 AgentA._choose_strategy 保持一致"""
+    # L1 关联层
+    CONFOUNDING = "confounding"                        # 混杂因子注入
+    COLLIDER = "collider"                              # 对撞因子伪装
+    SELECTION_BIAS = "selection_bias"                   # 选择偏差
+    # L2 干预层
+    MEDIATOR_HIDE = "mediator_hide"                    # 中介变量隐藏
+    INSTRUMENT_MISUSE = "instrument_misuse"            # 工具变量误用
+    BACKDOOR_EXPLOIT = "backdoor_exploit"              # 后门路径利用
+    FRONTDOOR_BLOCK = "frontdoor_block"                # 前门路径阻断
+    # L3 反事实层
+    REVERSE_CAUSE = "reverse_cause"                    # 因果方向反转
+    SCM_MANIPULATION = "scm_manipulation"              # SCM 结构篡改
+    COUNTERFACTUAL_DISTORTION = "counterfactual_distortion"  # 反事实扭曲
+    NONCOMPLIANCE_EXPLOIT = "noncompliance_exploit"    # 不依从性利用
 
 
 @dataclass
@@ -77,19 +86,19 @@ class EvolutionTracker:
         counts = Counter(record.strategy_type.value for record in self.records)
         total = len(self.records)
         distribution = {name: count / total for name, count in counts.items()}
-        avg_deception = float(np.mean([record.deception_score for record in self.records]))
-        avg_detection = float(np.mean([record.detection_score for record in self.records]))
-        difficulty_values = [
-            float(record.details.get("difficulty", 0.0))
-            for record in self.records
-            if "difficulty" in record.details
-        ]
+
+        # 使用当前轮次的值（而非累积均值），让图表反映逐轮变化
+        current = self.records[-1]
+        cur_deception = float(current.deception_score)
+        cur_detection = float(current.detection_score)
+        cur_difficulty = float(current.details.get("difficulty", 0.0))
+
         snapshot = EvolutionSnapshot(
             round_id=round_id,
             strategy_distribution=distribution,
-            avg_deception_rate=avg_deception,
-            avg_detection_rate=avg_detection,
-            difficulty_level=float(np.mean(difficulty_values)) if difficulty_values else 0.0,
+            avg_deception_rate=cur_deception,
+            avg_detection_rate=cur_detection,
+            difficulty_level=cur_difficulty,
         )
         self.snapshots.append(snapshot)
         return snapshot
@@ -146,6 +155,66 @@ class EvolutionTracker:
             return 0.0
         return float(np.clip((correlation + 1.0) / 2.0, 0.0, 1.0))
 
+    def get_deception_complexity_trend(self, window: int = 5) -> List[float]:
+        """欺骗复杂度趋势 — 设计文档要求的指标。
+
+        使用策略的因果层级作为复杂度代理：L1=1, L2=2, L3=3，
+        返回滑动窗口内的平均复杂度序列。
+        """
+        if not self.records:
+            return []
+
+        level_map = {
+            "confounding": 1, "collider": 1, "selection_bias": 1,
+            "mediator_hide": 2, "instrument_misuse": 2, "backdoor_exploit": 2, "frontdoor_block": 2,
+            "reverse_cause": 3, "scm_manipulation": 3, "counterfactual_distortion": 3, "noncompliance_exploit": 3,
+        }
+        complexities = [level_map.get(r.strategy_type.value, 1) for r in self.records]
+        trend = []
+        for end in range(1, len(complexities) + 1):
+            seg = complexities[max(0, end - window):end]
+            trend.append(sum(seg) / len(seg))
+        return trend
+
+    def get_detection_sensitivity_trend(self, window: int = 5) -> List[float]:
+        """检测灵敏度趋势 — 设计文档要求的指标。
+
+        返回滑动窗口内的平均检测得分序列。
+        """
+        if not self.records:
+            return []
+
+        scores = [r.detection_score for r in self.records]
+        trend = []
+        for end in range(1, len(scores) + 1):
+            seg = scores[max(0, end - window):end]
+            trend.append(sum(seg) / len(seg))
+        return trend
+
+    def get_nash_convergence(self) -> float:
+        """纳什均衡收敛度 — 设计文档要求的指标。
+
+        衡量攻防双方策略是否趋于稳定均衡。
+        使用后半段 vs 前半段的策略分布变化量，值越小越接近均衡。
+        返回 0~1，1 表示完全收敛。
+        """
+        if len(self.records) < 6:
+            return 0.0
+
+        half = len(self.records) // 2
+        first = Counter(r.strategy_type.value for r in self.records[:half])
+        second = Counter(r.strategy_type.value for r in self.records[half:])
+        first_total = max(1, sum(first.values()))
+        second_total = max(1, sum(second.values()))
+
+        all_strategies = {s.value for s in StrategyType}
+        distance = sum(
+            abs(first.get(s, 0) / first_total - second.get(s, 0) / second_total)
+            for s in all_strategies
+        )
+        # TV distance ∈ [0, 2], 归一化到 [0, 1] 后取反
+        return float(np.clip(1.0 - distance / 2.0, 0.0, 1.0))
+
     def export_history(self) -> Dict[str, Any]:
         """导出完整演化历史"""
         return {
@@ -171,5 +240,8 @@ class EvolutionTracker:
                 for snapshot in self.snapshots
             ],
             "arms_race_index": self.get_arms_race_index(),
+            "deception_complexity_trend": self.get_deception_complexity_trend(),
+            "detection_sensitivity_trend": self.get_detection_sensitivity_trend(),
+            "nash_convergence": self.get_nash_convergence(),
             "converged": self.detect_convergence(),
         }

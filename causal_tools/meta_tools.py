@@ -65,9 +65,25 @@ CAUSAL_FALLACIES: dict[str, dict[str, list[str] | str]] = {
         "name": "后此谬误",
         "keywords": ["after", "afterward", "因为先发生", "之后所以", "先于"],
     },
+    "simpsons_paradox": {
+        "name": "辛普森悖论",
+        "keywords": ["simpson", "辛普森", "subgroup", "子群", "分组后逆转", "aggregat"],
+    },
+    "berkson_bias": {
+        "name": "伯克森偏差",
+        "keywords": ["berkson", "伯克森", "selection bias", "选择偏差", "collider conditioning", "条件化对撞"],
+    },
     "reverse_causation": {
         "name": "逆因果",
         "keywords": ["reverse caus", "反向因果", "其实是结果导致原因"],
+    },
+    "ecological_fallacy": {
+        "name": "生态谬误",
+        "keywords": ["ecological", "生态谬误", "group level", "群体水平", "aggregate to individual", "群体推个体"],
+    },
+    "collider_bias": {
+        "name": "对撞因子偏差",
+        "keywords": ["collider", "对撞", "conditioning on collider", "对撞因子条件化", "endogenous selection"],
     },
     "ignoring_confounders": {
         "name": "忽略混杂因子",

@@ -18,34 +18,32 @@ class DifficultyController:
 
     def __init__(self, config: dict):
         self.target_rate = config.get("target_deception_rate", 0.4)
-        self.window_size = config.get("window_size", 10)
-        self.adjustment_rate = config.get("adjustment_rate", 0.1)
+        self.window_size = config.get("window_size", 5)
+        self.adjustment_rate = config.get("adjustment_rate", 0.18)
         self.min_difficulty = config.get("min_difficulty", 0.2)
         self.max_difficulty = config.get("max_difficulty", 0.95)
         self.current_difficulty = config.get("initial_difficulty", 0.5)
-        self.tolerance = config.get("tolerance", 0.1)
+        self.tolerance = config.get("tolerance", 0.08)
         self.history: list[bool] = []  # True=欺骗成功
         self.adjustment_log: list[dict[str, Any]] = []
 
     def update(self, deception_succeeded: bool) -> float:
-        """更新历史并返回新难度"""
+        """更新历史并返回新难度.
+
+        改进: 不再要求积满 window_size 才开始调整。
+        样本不足时使用衰减系数 (len/window_size) 降低调整幅度，
+        确保即使只有 2-3 轮也能看到难度变化。
+        """
         self.history.append(bool(deception_succeeded))
         if len(self.history) > self.window_size:
             self.history = self.history[-self.window_size :]
 
-        if len(self.history) < self.window_size:
-            self.adjustment_log.append(
-                {
-                    "reason": "warming_up",
-                    "deception_rate": None,
-                    "new_difficulty": self.current_difficulty,
-                }
-            )
-            return self.current_difficulty
-
-        deception_rate = sum(self.history) / len(self.history)
+        n = len(self.history)
+        deception_rate = sum(self.history) / n
+        # 样本越少，调整幅度越小 (线性衰减)
+        warmup_factor = min(1.0, n / self.window_size)
         delta = max(0.0, abs(deception_rate - self.target_rate))
-        scaled_step = self.adjustment_rate * max(0.25, delta)
+        scaled_step = self.adjustment_rate * max(0.25, delta) * warmup_factor
         reason = "within_tolerance"
 
         if deception_rate > self.target_rate + self.tolerance:
@@ -65,6 +63,7 @@ class DifficultyController:
             {
                 "reason": reason,
                 "deception_rate": deception_rate,
+                "warmup_factor": warmup_factor,
                 "new_difficulty": self.current_difficulty,
             }
         )

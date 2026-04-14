@@ -52,6 +52,10 @@ miniconda-env/
 # Local docs
 mytask.md
 
+# Temp test/verify scripts
+_*.py
+_*.txt
+
 # Node (frontend)
 node_modules/
 visualization/frontend/dist/
