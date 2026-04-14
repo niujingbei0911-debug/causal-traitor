@@ -13,8 +13,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Run experiment
-python -m experiments.exp1_basic_game.run
+# Run a single game via the unified entry point
+python main.py --rounds 3 --output outputs/run.json
+
+# Run experiments (each writes JSON + CSV + Markdown sidecars)
+python -m experiments.exp1_causal_levels.run --rounds-per-level 20
+python -m experiments.exp4_evolution.run --rounds 10 --level 2
 
 # Run visualization server (FastAPI + WebSocket)
 python -m visualization.api
@@ -39,7 +43,9 @@ Cross-cutting: Causal Tools — Pearl L1/L2/L3 toolchain (causal_tools/)
 ```
 
 ### Debate Protocol Flow
-`SETUP → CLAIM (A) → CHALLENGE (B) → REBUTTAL (A) → AUDIT (C) → JURY → COMPLETE`
+`SETUP → CLAIM (A) → CHALLENGE (B) → REBUTTAL (A) → JURY → AUDIT (C) → COMPLETE`
+
+The Jury votes before the Auditor so Agent C can factor jury consensus into its verdict.
 
 ### Agent Roles & Information Asymmetry
 - **Agent A** (Traitor, Qwen2.5-7B): Has full SCM + hidden variables. Generates deceptive causal claims.
@@ -57,6 +63,9 @@ Cross-cutting: Causal Tools — Pearl L1/L2/L3 toolchain (causal_tools/)
 - **Capability gradient**: Smaller model for creative deception (7B), larger for rigorous detection (14B) and auditing (72B)
 - **Dynamic difficulty**: `game/difficulty.py` targets ~0.4 deception success rate via Flow theory
 - **Strategy evolution**: `game/evolution.py` feeds round summaries back for adversarial co-evolution
+- **Mock-friendly engine**: `game/debate_engine.py` ships with built-in mock agents, so the full round loop runs without any real LLM. Real agents are tried first and fall back to mocks on failure or `NotImplementedError`.
+- **LLMService layering**: `game/llm_service.py` is the single backend adapter (vllm / ollama / mock). Agents call it after their deterministic tool-backed reasoning to attach a natural-language extension; on the `mock` backend they skip the narration so behavior stays deterministic.
+- **On-disk tracking**: `evaluation/tracker.py` writes `logs/<run_id>/` with `config.json`, `metrics.jsonl`, `rounds.jsonl`, and `artifacts/`. `main.py`, exp1, and exp4 all route results through it.
 
 ## Configuration
 
@@ -64,7 +73,7 @@ All game parameters in `configs/default.yaml`: model configs, debate rounds, cau
 
 ## Development Status
 
-Skeleton phase — all interfaces and dataclasses defined, core methods raise `NotImplementedError`. See `docs/TASK_ASSIGNMENT.md` for the phased implementation plan and team assignments.
+Runnable end-to-end on the mock path: `main.py`, exp1, and exp4 all execute full rounds (data generation → debate → evolution → tracking) under `pytest`. Real agents (A/B/C) and the Pearl toolchain are wired in; the LLMService vllm/ollama backends fall back to mock until hooked up to a live server. See `docs/TASK_ASSIGNMENT.md` for the phased implementation plan and team assignments.
 
 ## Key Dependencies
 
