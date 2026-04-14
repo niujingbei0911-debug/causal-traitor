@@ -1,0 +1,87 @@
+# ============================================
+# The Causal Traitor - Default Configuration
+# ============================================
+
+# --- Model Configuration ---
+models:
+  agent_a:  # Traitor
+    name: "Qwen/Qwen2.5-7B-Instruct"
+    backend: "vllm"  # vllm | ollama | api
+    temperature: 0.8
+    max_tokens: 2048
+  agent_b:  # Scientist
+    name: "Qwen/Qwen2.5-14B-Instruct"
+    backend: "vllm"
+    temperature: 0.3
+    max_tokens: 2048
+  agent_c:  # Auditor
+    name: "Qwen/Qwen2.5-72B-Instruct"
+    backend: "vllm"
+    temperature: 0.1
+    max_tokens: 4096
+  jury:
+    models:
+      - "Qwen/Qwen2.5-7B-Instruct"
+      - "Qwen/Qwen2.5-14B-Instruct"
+      - "Qwen/Qwen2.5-7B-Instruct"
+    voting: "weighted"  # majority | weighted | bayesian
+
+# --- Game Configuration ---
+game:
+  max_rounds: 5
+  debate_turns_per_round: 3
+  causal_levels: [1, 2, 3]  # Pearl's ladder levels
+  initial_difficulty: 0.5
+  time_limit_per_turn: 60  # seconds
+
+# --- Difficulty Controller ---
+difficulty:
+  target_deception_rate: 0.4
+  window_size: 10
+  adjustment_rate: 0.1
+  min_difficulty: 0.2
+  max_difficulty: 0.95
+
+# --- Evolution Tracker ---
+evolution:
+  strategy_embedding_dim: 64
+  similarity_threshold: 0.85
+  max_history: 100
+
+# --- Evaluation ---
+evaluation:
+  metrics:
+    - deception_success_rate
+    - detection_accuracy
+    - causal_validity_score
+    - argument_quality
+    - tool_usage_appropriateness
+    - hidden_variable_discovery_rate
+    - jury_agreement_rate
+    - difficulty_adaptation_speed
+    - strategy_diversity
+    - counterfactual_reasoning_depth
+    - debate_efficiency
+    - evolution_convergence
+    - robustness_score
+    - overall_game_quality
+
+# --- Visualization ---
+visualization:
+  api_host: "0.0.0.0"
+  api_port: 8000
+  websocket_path: "/ws/game"
+  enable_live_update: true
+
+# --- Logging ---
+logging:
+  level: "INFO"
+  save_dir: "logs/"
+  use_wandb: false
+  wandb_project: "causal-traitor"
+
+# --- Data ---
+data:
+  scenarios_dir: "data/scenarios/"
+  cache_dir: "data/cache/"
+  output_dir: "outputs/"

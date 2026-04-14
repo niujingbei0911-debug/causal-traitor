@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.Python
+env/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs & Data
+logs/
+*.log
+data/
+outputs/
+results/
+wandb/
+
+# Model weights
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Environment
+.env
+.env.local
+
+# Node (frontend)
+node_modules/
+visualization/frontend/dist/
+visualization/frontend/build/
