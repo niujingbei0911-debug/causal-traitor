@@ -4,6 +4,7 @@ import pandas as pd
 
 from agents.agent_a import AgentA
 from agents.agent_b import AgentB
+from agents.agent_c import AgentC
 from agents.jury import JuryAggregator
 from game.debate_engine import CausalScenario, DebateContext
 
@@ -71,6 +72,22 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         verdict = await jury.collect_votes(self.scenario, context)
         self.assertEqual(len(verdict.votes), 3)
         self.assertIn(verdict.final_winner, {"agent_a", "agent_b", "draw"})
+
+    async def test_agent_c_evaluates_round(self):
+        agent = AgentC(self.config)
+        await agent.initialize()
+        context = DebateContext(
+            scenario=self.scenario,
+            turns=[
+                {"speaker": "agent_a", "content": "X 必然导致 Y，无需控制其他因素，相关性已经证明因果。"},
+                {"speaker": "agent_b", "content": "这个结论忽略了混杂，需要做后门调整并检查工具变量 Z 的强度。"},
+            ],
+        )
+        verdict = await agent.evaluate_round(self.scenario, context, level=2)
+        self.assertIn(verdict.winner, {"agent_a", "agent_b", "draw"})
+        self.assertTrue(verdict.reasoning)
+        self.assertTrue(verdict.tools_used)
+        self.assertGreaterEqual(verdict.jury_consensus, 0.0)
 
 
 if __name__ == "__main__":

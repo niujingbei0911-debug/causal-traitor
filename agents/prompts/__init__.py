@@ -1,5 +1,6 @@
 from .agent_a_prompts import AGENT_A_EVOLUTION_PROMPT, AGENT_A_SYSTEM_PROMPT
 from .agent_b_prompts import AGENT_B_SYSTEM_PROMPT, AGENT_B_TOOL_PROMPT
+from .agent_c_prompts import AGENT_C_DEFENSE_UPGRADE_PROMPT, AGENT_C_WITH_JURY_PROMPT
 from .jury_prompts import JURY_SYSTEM_PROMPT
 
 __all__ = [
@@ -7,5 +8,7 @@ __all__ = [
     "AGENT_A_SYSTEM_PROMPT",
     "AGENT_B_SYSTEM_PROMPT",
     "AGENT_B_TOOL_PROMPT",
+    "AGENT_C_DEFENSE_UPGRADE_PROMPT",
+    "AGENT_C_WITH_JURY_PROMPT",
     "JURY_SYSTEM_PROMPT",
 ]
