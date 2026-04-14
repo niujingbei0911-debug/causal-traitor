@@ -64,6 +64,10 @@ export default function App() {
     return Array.from(map.values()).sort((a, b) => a.round_id - b.round_id);
   }, [events]);
 
+  const gameEnded = useMemo<boolean>(() => {
+    return events.some((ev) => ev.event_type === "game_end");
+  }, [events]);
+
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
       {/* 顶栏 */}
@@ -83,7 +87,7 @@ export default function App() {
           <DebatePanel events={events} />
         </div>
         <div className="bg-gray-900 overflow-hidden">
-          <DifficultyPanel points={evolutionPoints} />
+          <DifficultyPanel points={evolutionPoints} gameEnded={gameEnded} />
         </div>
         <div className="bg-gray-900 overflow-hidden">
           <JuryPanel jury={juryInfo} />

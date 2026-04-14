@@ -62,13 +62,38 @@ const LINE_CFG = [
   { key: "arms_race_index", color: "#a855f7", label: "军备竞赛指数" },
 ] as const;
 
+/* ── 计算平均值 ── */
+function computeAverages(points: EvolutionPoint[]) {
+  if (points.length === 0) return null;
+  const n = points.length;
+  const sum = points.reduce(
+    (acc, p) => ({
+      difficulty: acc.difficulty + p.difficulty,
+      dsr: acc.dsr + p.dsr,
+      strategy_diversity: acc.strategy_diversity + p.strategy_diversity,
+      arms_race_index: acc.arms_race_index + p.arms_race_index,
+    }),
+    { difficulty: 0, dsr: 0, strategy_diversity: 0, arms_race_index: 0 },
+  );
+  return {
+    difficulty: sum.difficulty / n,
+    dsr: sum.dsr / n,
+    strategy_diversity: sum.strategy_diversity / n,
+    arms_race_index: sum.arms_race_index / n,
+    rounds: n,
+  };
+}
+
 /* ── 主面板 ── */
 export default function DifficultyPanel({
   points,
+  gameEnded = false,
 }: {
   points: EvolutionPoint[];
+  gameEnded?: boolean;
 }) {
   const latest = points.length > 0 ? points[points.length - 1] : null;
+  const averages = gameEnded ? computeAverages(points) : null;
 
   return (
     <section className="flex flex-col h-full">
@@ -88,6 +113,19 @@ export default function DifficultyPanel({
           </div>
         )}
       </div>
+
+      {/* 游戏结束后显示最终平均汇总 */}
+      {averages && (
+        <div className="mx-4 mb-2 px-3 py-2 rounded bg-gray-800 border border-gray-600">
+          <div className="text-xs font-bold text-green-400 mb-1">🏁 最终平均 ({averages.rounds} 轮)</div>
+          <div className="grid grid-cols-4 gap-x-4 gap-y-0.5 text-xs">
+            <Stat label="难度" value={averages.difficulty} color="#f59e0b" />
+            <Stat label="DSR" value={averages.dsr} color="#ef4444" />
+            <Stat label="策略多样性" value={averages.strategy_diversity} color="#3b82f6" />
+            <Stat label="军备指数" value={averages.arms_race_index} color="#a855f7" />
+          </div>
+        </div>
+      )}
 
       {/* 折线图 */}
       <div className="flex-1 min-h-0 px-2 pb-2">

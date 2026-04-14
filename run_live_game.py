@@ -27,6 +27,7 @@ WS_DEFAULT = "ws://localhost:8001/ws/game"
 def _dag_to_graph(
     scenario: CausalScenario,
     discovered_hidden_vars: list[str] | None = None,
+    causal_level: int = 1,
 ) -> dict[str, Any]:
     """CausalScenario.true_dag → 前端 CausalGraphData 格式.
 
@@ -34,6 +35,9 @@ def _dag_to_graph(
       - claimed (红): Agent A 声称的可见因果关系
       - hidden  (紫): 未被发现的隐藏变量
       - verified(绿): Agent B 发现的隐藏变量
+
+    causal_level: 当前回合的 Pearl 因果层级 (1/2/3)，
+                  会写入每个节点/边及图整体，供前端着色。
     """
     hidden_set = set(scenario.hidden_variables or [])
     discovered_set = set(discovered_hidden_vars or [])
@@ -46,16 +50,16 @@ def _dag_to_graph(
         return "claimed"
 
     for v in scenario.variables or []:
-        nodes.append({"id": v, "label": v, "type": _node_type(v)})
+        nodes.append({"id": v, "label": v, "type": _node_type(v), "causal_level": causal_level})
         seen.add(v)
 
     for src, targets in (scenario.true_dag or {}).items():
         if src not in seen:
-            nodes.append({"id": src, "label": src, "type": _node_type(src)})
+            nodes.append({"id": src, "label": src, "type": _node_type(src), "causal_level": causal_level})
             seen.add(src)
         for t in targets:
             if t not in seen:
-                nodes.append({"id": t, "label": t, "type": _node_type(t)})
+                nodes.append({"id": t, "label": t, "type": _node_type(t), "causal_level": causal_level})
                 seen.add(t)
 
     # ── 安全网: 确保所有隐藏变量都作为节点出现 ──
@@ -63,7 +67,7 @@ def _dag_to_graph(
     # 但它们属于 hidden_variables，必须在图中显示为紫色(hidden)或绿色(verified)
     for hv in scenario.hidden_variables or []:
         if hv not in seen:
-            nodes.append({"id": hv, "label": hv, "type": _node_type(hv)})
+            nodes.append({"id": hv, "label": hv, "type": _node_type(hv), "causal_level": causal_level})
             seen.add(hv)
 
     links: list[dict] = []
@@ -80,9 +84,9 @@ def _dag_to_graph(
                 link_type = "verified" if all_discovered else "hidden"
             else:
                 link_type = "claimed"
-            links.append({"source": src, "target": t, "type": link_type})
+            links.append({"source": src, "target": t, "type": link_type, "causal_level": causal_level})
 
-    return {"nodes": nodes, "links": links}
+    return {"nodes": nodes, "links": links, "causal_level": causal_level}
 
 
 def _strategy_diversity(dist: dict[str, float]) -> float:
@@ -158,7 +162,7 @@ async def run(rounds: int, delay: float, ws_url: str):
             await _send(ws, "round_start", rn, {
                 "role": "system",
                 "narrative": f"📋 第 {rn} 轮 — 因果层级 L{scenario.causal_level}, 难度 {result.get('difficulty', 0.5):.2f}",
-                "causal_graph": _dag_to_graph(scenario, result.get("agent_b_analysis", {}).get("discovered_hidden_vars", [])),
+                "causal_graph": _dag_to_graph(scenario, result.get("agent_b_analysis", {}).get("discovered_hidden_vars", []), causal_level=scenario.causal_level),
                 "causal_level": scenario.causal_level,
                 "difficulty": result.get("difficulty", 0.5),
                 "game_id": "live",
