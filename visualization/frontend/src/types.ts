@@ -1,19 +1,26 @@
 /* ---- 因果图 ---- */
+/** Pearl 因果层级: 1=关联, 2=干预, 3=反事实 */
+export type CausalLevel = 1 | 2 | 3;
+
 export interface CausalNode {
   id: string;
   label: string;
   type: "claimed" | "verified" | "hidden";
+  causal_level?: CausalLevel;
 }
 
 export interface CausalLink {
   source: string;
   target: string;
   type: "claimed" | "verified" | "hidden";
+  causal_level?: CausalLevel;
 }
 
 export interface CausalGraphData {
   nodes: CausalNode[];
   links: CausalLink[];
+  /** 场景整体因果层级 */
+  causal_level?: CausalLevel;
 }
 
 /* ---- 辩论事件 ---- */

@@ -281,8 +281,9 @@ class VisualizationAPI:
 
         返回:
           {
-            "nodes": [{"id": "X", "type": "observed"}, {"id": "Z", "type": "hidden"}, ...],
-            "links": [{"source": "X", "target": "Y", "style": "claimed"}, ...],
+            "nodes": [{"id": "X", "type": "observed", "causal_level": 1}, ...],
+            "links": [{"source": "X", "target": "Y", "style": "claimed", "causal_level": 1}, ...],
+            "causal_level": 1,
           }
         """
         game = self._store.get_game(game_id)
@@ -293,6 +294,9 @@ class VisualizationAPI:
         variables = scenario.get("variables", [])
         hidden = set(scenario.get("hidden_variables", []))
         edges = scenario.get("edges", [])
+        # 场景整体因果层级 (Pearl hierarchy: 1=关联, 2=干预, 3=反事实)
+        causal_level = scenario.get("causal_level", 1)
+
         claimed_edges = set()
         for evt in self._store.get_events(game_id):
             if evt.get("event_type") == "claim":
@@ -306,6 +310,7 @@ class VisualizationAPI:
             nodes.append({
                 "id": name,
                 "type": "hidden" if name in hidden else "observed",
+                "causal_level": causal_level,
             })
 
         links = []
@@ -316,9 +321,9 @@ class VisualizationAPI:
                 style = "claimed"
             if src in hidden or tgt in hidden:
                 style = "hidden"
-            links.append({"source": src, "target": tgt, "style": style})
+            links.append({"source": src, "target": tgt, "style": style, "causal_level": causal_level})
 
-        return {"game_id": game_id, "nodes": nodes, "links": links}
+        return {"game_id": game_id, "nodes": nodes, "links": links, "causal_level": causal_level}
 
     def get_evolution_chart_data(self, game_id: str) -> Dict[str, Any]:
         """获取演化趋势图数据 (Recharts 格式).
