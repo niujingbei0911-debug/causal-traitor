@@ -1,1 +1,11 @@
-  
+from .agent_a_prompts import AGENT_A_EVOLUTION_PROMPT, AGENT_A_SYSTEM_PROMPT
+from .agent_b_prompts import AGENT_B_SYSTEM_PROMPT, AGENT_B_TOOL_PROMPT
+from .jury_prompts import JURY_SYSTEM_PROMPT
+
+__all__ = [
+    "AGENT_A_EVOLUTION_PROMPT",
+    "AGENT_A_SYSTEM_PROMPT",
+    "AGENT_B_SYSTEM_PROMPT",
+    "AGENT_B_TOOL_PROMPT",
+    "JURY_SYSTEM_PROMPT",
+]
