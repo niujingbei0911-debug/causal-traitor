@@ -16,6 +16,7 @@ fastapi>=0.108.0
 uvicorn>=0.25.0
 websockets>=12.0
 pydantic>=2.5.0
+openai>=1.40.0  # used for DashScope OpenAI-compatible endpoint (Qwen)
 
 # Data & Computation
 numpy>=1.26.0

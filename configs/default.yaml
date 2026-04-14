@@ -3,27 +3,29 @@
 # ============================================
 
 # --- Model Configuration ---
+# Backend options: "dashscope"/"api" (Alibaba Bailian Qwen API), "vllm",
+# "ollama", or "mock". DashScope requires the DASHSCOPE_API_KEY env var.
 models:
   agent_a:  # Traitor
-    name: "Qwen/Qwen2.5-7B-Instruct"
-    backend: "vllm"  # vllm | ollama | api
+    name: "qwen2.5-7b-instruct"
+    backend: "dashscope"
     temperature: 0.8
     max_tokens: 2048
   agent_b:  # Scientist
-    name: "Qwen/Qwen2.5-14B-Instruct"
-    backend: "vllm"
+    name: "qwen2.5-14b-instruct"
+    backend: "dashscope"
     temperature: 0.3
     max_tokens: 2048
   agent_c:  # Auditor
-    name: "Qwen/Qwen2.5-72B-Instruct"
-    backend: "vllm"
+    name: "qwen2.5-72b-instruct"
+    backend: "dashscope"
     temperature: 0.1
     max_tokens: 4096
   jury:
     models:
-      - "Qwen/Qwen2.5-7B-Instruct"
-      - "Qwen/Qwen2.5-14B-Instruct"
-      - "Qwen/Qwen2.5-7B-Instruct"
+      - "qwen2.5-7b-instruct"
+      - "qwen2.5-14b-instruct"
+      - "qwen2.5-7b-instruct"
     voting: "weighted"  # majority | weighted | bayesian
 
 # --- Game Configuration ---
