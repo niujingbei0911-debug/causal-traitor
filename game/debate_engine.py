@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from agents.agent_a import AgentA
 from agents.agent_a import AgentResponse as AgentAResponse
+from agents.agent_b import AgentB
 from agents.agent_b import DetectionResult
+from agents.agent_c import AgentC
 from agents.agent_c import AuditVerdict
+from agents.jury import JuryAggregator
 from agents.jury import JuryVerdict, JuryVote
 
 from .data_generator import DataGenerator
@@ -201,21 +205,41 @@ class DebateEngine:
             self.config.get("evolution", {})
         )
 
-        self.agent_a = await self._prepare_component(self.agent_a, _MockTraitorAgent)
-        self.agent_b = await self._prepare_component(self.agent_b, _MockScientistAgent)
-        self.agent_c = await self._prepare_component(self.agent_c, _MockAuditorAgent)
+        self.agent_a = await self._prepare_component(
+            self.agent_a,
+            lambda: AgentA(self.config),
+            _MockTraitorAgent,
+        )
+        self.agent_b = await self._prepare_component(
+            self.agent_b,
+            lambda: AgentB(self.config),
+            _MockScientistAgent,
+        )
+        self.agent_c = await self._prepare_component(
+            self.agent_c,
+            lambda: AgentC(self.config),
+            _MockAuditorAgent,
+        )
         self.jury = await self._prepare_component(
             self.jury,
+            lambda: JuryAggregator(self.config),
             lambda: _MockJuryAggregator(self.config.get("models", {}).get("jury", {})),
         )
 
-    async def run_game(self, num_rounds: int = 5) -> list[dict[str, Any]]:
+    async def run_game(
+        self,
+        num_rounds: int = 5,
+        *,
+        level_schedule: list[int] | None = None,
+        use_evolution: bool = True,
+        update_difficulty: bool = True,
+    ) -> list[dict[str, Any]]:
         """Run a full multi-round game."""
 
         if self.data_generator is None or self.difficulty_controller is None:
             await self.initialize()
 
-        levels = self.config.get("game", {}).get("causal_levels", [1, 2, 3])
+        levels = level_schedule or self.config.get("game", {}).get("causal_levels", [1, 2, 3])
         self.round_results = []
 
         for round_index in range(1, num_rounds + 1):
@@ -229,13 +253,17 @@ class DebateEngine:
                 **scenario.difficulty_config,
                 **self.difficulty_controller.get_config(),
             }
-            evolution_context = self._build_evolution_context()
+            evolution_context = self._build_evolution_context() if use_evolution else None
             result = await self.run_round(
                 scenario,
                 round_number=round_index,
                 evolution_context=evolution_context,
             )
-            next_difficulty = self.difficulty_controller.update(result["deception_success"])
+            next_difficulty = (
+                self.difficulty_controller.update(result["deception_success"])
+                if update_difficulty
+                else self.difficulty_controller.get_difficulty()
+            )
             record = StrategyRecord(
                 round_id=round_index,
                 strategy_type=self._strategy_type_from_result(result),
@@ -293,27 +321,27 @@ class DebateEngine:
             "strategy": rebuttal.deception_strategy,
         })
 
+        context.current_phase = GamePhase.JURY
+        jury_verdict = await self._invoke_jury(scenario, context)
+        context.jury_verdict = asdict(jury_verdict)
+        context.jury_result = context.jury_verdict
+        self._append_turn(
+            context,
+            "jury",
+            GamePhase.JURY,
+            context.jury_verdict,
+            {},
+        )
+
         context.current_phase = GamePhase.AUDIT
         audit = await self._invoke_agent_c(scenario, context)
         self._append_turn(context, "agent_c", GamePhase.AUDIT, audit.reasoning, {
             "winner": audit.winner,
             "causal_validity_score": audit.causal_validity_score,
             "identified_issues": audit.identified_issues,
+            "tools_used": getattr(audit, "tools_used", []),
+            "jury_consensus": getattr(audit, "jury_consensus", 0.0),
         })
-
-        context.current_phase = GamePhase.JURY
-        jury_verdict = await self._invoke_jury(scenario, context)
-        self._append_turn(
-            context,
-            "jury",
-            GamePhase.JURY,
-            f"Jury winner: {jury_verdict.final_winner} (agreement={jury_verdict.agreement_rate:.2f})",
-            {
-                "votes": [asdict(vote) for vote in jury_verdict.votes],
-                "final_winner": jury_verdict.final_winner,
-                "agreement_rate": jury_verdict.agreement_rate,
-            },
-        )
 
         context.current_phase = GamePhase.COMPLETE
         winner = self._resolve_winner(audit, jury_verdict)
@@ -331,8 +359,13 @@ class DebateEngine:
             "difficulty": scenario.difficulty,
         }
 
-    async def _prepare_component(self, component: Any | None, factory: Any) -> Any:
-        instance = component or factory()
+    async def _prepare_component(
+        self,
+        component: Any | None,
+        primary_factory: Any,
+        fallback_factory: Any,
+    ) -> Any:
+        instance = component or primary_factory()
         initializer = getattr(instance, "initialize", None)
         if initializer is None:
             return instance
@@ -340,8 +373,8 @@ class DebateEngine:
             result = initializer()
             if hasattr(result, "__await__"):
                 await result
-        except NotImplementedError:
-            instance = factory()
+        except Exception:
+            instance = fallback_factory()
             fallback_init = getattr(instance, "initialize", None)
             if fallback_init is not None:
                 maybe = fallback_init()
@@ -407,7 +440,7 @@ class DebateEngine:
         context: DebateContext,
         speaker: str,
         phase: GamePhase,
-        content: str,
+        content: Any,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         context.turns.append(
@@ -420,12 +453,7 @@ class DebateEngine:
         )
 
     def _turn_to_dict(self, turn: DebateTurn) -> dict[str, Any]:
-        return {
-            "speaker": turn.speaker,
-            "phase": turn.phase.value,
-            "content": turn.content,
-            "metadata": turn.metadata,
-        }
+        return turn.to_dict()
 
     def _format_detection(self, result: DetectionResult) -> str:
         issues = ", ".join(result.detected_fallacies) if result.detected_fallacies else "no major issue"

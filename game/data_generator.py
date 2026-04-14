@@ -385,6 +385,7 @@ class DataGenerator:
             hidden_variables=["genetic_risk", "noise_cancer"],
             observed_data=observed,
             full_data=full,
+            data=observed,
             ground_truth={
                 "treatment": "smoking",
                 "outcome": "cancer",
@@ -397,6 +398,24 @@ class DataGenerator:
             causal_level=1,
             difficulty=difficulty,
             difficulty_config=profile,
+            true_scm={
+                "graph": {
+                    "genetic_risk": ["smoking", "cancer_risk"],
+                    "age": ["smoking", "cancer_risk"],
+                    "smoking": ["cancer_risk"],
+                    "cancer_risk": ["cancer"],
+                },
+                "coefficients": {
+                    "smoking": {"intercept": -0.2, "genetic_risk": 0.7, "age": 0.025},
+                    "cancer_risk": {
+                        "intercept": -0.5,
+                        "smoking": 1.4,
+                        "genetic_risk": 0.9,
+                        "age": 0.018,
+                    },
+                    "cancer": {"intercept": -0.6, "cancer_risk": 1.0},
+                },
+            },
             metadata={"scenario_family": "l1_association"},
         )
 
@@ -444,6 +463,7 @@ class DataGenerator:
             hidden_variables=["family_background", "noise_income"],
             observed_data=observed,
             full_data=full,
+            data=observed,
             ground_truth={
                 "treatment": "education_years",
                 "outcome": "income",
@@ -456,6 +476,28 @@ class DataGenerator:
             causal_level=2,
             difficulty=difficulty,
             difficulty_config=profile,
+            true_scm={
+                "graph": {
+                    "quarter_of_birth": ["education_years"],
+                    "family_background": ["education_years", "income"],
+                    "ability": ["education_years", "income"],
+                    "education_years": ["income"],
+                },
+                "coefficients": {
+                    "education_years": {
+                        "intercept": 12.0,
+                        "family_background": 1.4,
+                        "ability": 0.9,
+                        "quarter_of_birth": 0.2,
+                    },
+                    "income": {
+                        "intercept": 22.0,
+                        "education_years": 3.4,
+                        "family_background": 6.5,
+                        "ability": 0.8,
+                    },
+                },
+            },
             metadata={"scenario_family": "l2_intervention"},
         )
 
@@ -502,6 +544,7 @@ class DataGenerator:
             hidden_variables=["genotype", "noise_biomarker", "noise_recovery"],
             observed_data=observed,
             full_data=full,
+            data=observed,
             ground_truth={
                 "treatment": "drug_taken",
                 "outcome": "recovered",
@@ -515,6 +558,31 @@ class DataGenerator:
             causal_level=3,
             difficulty=difficulty,
             difficulty_config=profile,
+            true_scm={
+                "graph": {
+                    "genotype": ["severity", "biomarker", "recovery_score"],
+                    "severity": ["drug_taken", "biomarker", "recovery_score"],
+                    "drug_taken": ["biomarker", "recovery_score"],
+                    "biomarker": ["recovery_score"],
+                    "recovery_score": ["recovered"],
+                },
+                "coefficients": {
+                    "biomarker": {
+                        "intercept": 0.0,
+                        "drug_taken": 0.9,
+                        "severity": -0.7,
+                        "genotype": 0.5,
+                    },
+                    "recovery_score": {
+                        "intercept": 0.0,
+                        "drug_taken": 0.8,
+                        "biomarker": 0.6,
+                        "severity": -0.9,
+                        "genotype": 0.5,
+                    },
+                    "recovered": {"intercept": -0.2, "recovery_score": 1.0},
+                },
+            },
             metadata={"scenario_family": "l3_counterfactual"},
         )
 

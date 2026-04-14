@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -55,8 +56,21 @@ async def run_experiment(
     return summary
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the Pearl ladder benchmark experiment.")
+    parser.add_argument("--rounds-per-level", type=int, default=20, help="Rounds to run for each causal level.")
+    parser.add_argument("--output", default=None, help="Optional JSON output path.")
+    return parser
+
+
 def main() -> None:
-    payload = asyncio.run(run_experiment())
+    args = build_parser().parse_args()
+    payload = asyncio.run(
+        run_experiment(
+            rounds_per_level=args.rounds_per_level,
+            output_path=args.output,
+        )
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

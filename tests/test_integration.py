@@ -66,6 +66,23 @@ async def test_debate_engine_runs_mock_rounds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_debate_engine_supports_fixed_level_schedule_without_evolution() -> None:
+    config = ConfigLoader().load()
+    engine = DebateEngine(config)
+    await engine.initialize()
+    results = await engine.run_game(
+        num_rounds=2,
+        level_schedule=[2, 2],
+        use_evolution=False,
+        update_difficulty=False,
+    )
+
+    assert len(results) == 2
+    assert all(result["scenario"].causal_level == 2 for result in results)
+    assert all(result["difficulty"] == results[0]["difficulty"] for result in results)
+
+
+@pytest.mark.asyncio
 async def test_main_run_writes_json_output(tmp_path) -> None:
     output_path = tmp_path / "run.json"
     payload = await run_game(rounds=1, output_path=str(output_path))

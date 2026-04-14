@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -12,17 +13,12 @@ from game.debate_engine import DebateEngine
 
 
 async def _run_without_evolution(engine: DebateEngine, rounds: int, level: int) -> list[dict[str, Any]]:
-    results = []
-    difficulty = engine.config.get("game", {}).get("initial_difficulty", 0.5)
-    for round_index in range(1, rounds + 1):
-        scenario = engine.data_generator.generate_scenario(difficulty=difficulty, causal_level=level)
-        result = await engine.run_round(
-            scenario,
-            round_number=round_index,
-            evolution_context=None,
-        )
-        results.append(result)
-    return results
+    return await engine.run_game(
+        num_rounds=rounds,
+        level_schedule=[level] * rounds,
+        use_evolution=False,
+        update_difficulty=False,
+    )
 
 
 async def run_experiment(
@@ -38,7 +34,12 @@ async def run_experiment(
 
     evolution_engine = DebateEngine(config)
     await evolution_engine.initialize()
-    evolution_results = await evolution_engine.run_game(num_rounds=rounds)
+    evolution_results = await evolution_engine.run_game(
+        num_rounds=rounds,
+        level_schedule=[level] * rounds,
+        use_evolution=True,
+        update_difficulty=False,
+    )
 
     payload = {
         "without_evolution": {
@@ -74,8 +75,23 @@ async def run_experiment(
     return payload
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the evolution-vs-no-evolution experiment.")
+    parser.add_argument("--rounds", type=int, default=10, help="Number of rounds per condition.")
+    parser.add_argument("--level", type=int, default=2, help="Pearl level to use for the independent condition.")
+    parser.add_argument("--output", default=None, help="Optional JSON output path.")
+    return parser
+
+
 def main() -> None:
-    payload = asyncio.run(run_experiment())
+    args = build_parser().parse_args()
+    payload = asyncio.run(
+        run_experiment(
+            rounds=args.rounds,
+            level=args.level,
+            output_path=args.output,
+        )
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
