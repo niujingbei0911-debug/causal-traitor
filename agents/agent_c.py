@@ -11,6 +11,7 @@ from typing import Optional
 from agents.jury import JuryAggregator, JuryVerdict
 from agents.tool_executor import ToolExecutor
 from causal_tools.meta_tools import argument_logic_check
+from game.llm_service import LLMService
 
 
 @dataclass
@@ -40,13 +41,20 @@ class AgentC:
     def __init__(self, config: dict):
         self.config = config
         self.model = None
+        self.llm_service: LLMService | None = None
         self.tool_executor = ToolExecutor(config)
         self.jury = JuryAggregator(config)
 
     async def initialize(self):
         """初始化模型连接"""
         self.model = self.config.get("models", {}).get("agent_c", self.config.get("agent_c", {}))
+        if self.llm_service is None:
+            self.llm_service = LLMService(self.model if isinstance(self.model, dict) else {})
+        await self.llm_service.initialize()
         await self.jury.initialize()
+
+    def attach_llm_service(self, service: LLMService) -> None:
+        self.llm_service = service
 
     async def evaluate_round(
         self,
@@ -131,6 +139,17 @@ class AgentC:
             agent_a_logic=agent_a_logic,
             agent_b_logic=agent_b_logic,
         )
+
+        narration = await self._narrate(
+            winner=winner,
+            jury_winner=jury_winner,
+            jury_consensus=jury_consensus,
+            tool_report=tool_report,
+            agent_a_text=agent_a_text,
+            agent_b_text=agent_b_text,
+        )
+        if narration:
+            reasoning = f"{reasoning}\n\n[LLM audit]\n{narration}"
 
         return AuditVerdict(
             winner=winner,
@@ -239,3 +258,36 @@ class AgentC:
 
     def _clamp(self, value: float) -> float:
         return max(0.0, min(1.0, value))
+
+    async def _narrate(
+        self,
+        *,
+        winner: str,
+        jury_winner: str,
+        jury_consensus: float,
+        tool_report: dict,
+        agent_a_text: str,
+        agent_b_text: str,
+    ) -> str:
+        if self.llm_service is None or getattr(self.llm_service, "backend", "mock") == "mock":
+            return ""
+        prompt = (
+            f"你是因果辩论的审计员，已完成工具验证与陪审团听证，请用 4-6 句话给出最终审计陈述。\n"
+            f"裁定：{winner}。陪审团倾向：{jury_winner}，共识度 {jury_consensus:.2f}。\n"
+            f"工具识别的问题：{'; '.join(tool_report.get('identified_issues', [])) or '无显著问题'}\n"
+            f"工具提供的支持证据：{'; '.join(tool_report.get('supporting_evidence', [])) or '较弱'}\n"
+            f"Agent A 的论述节选：{agent_a_text[:500]}\n"
+            f"Agent B 的论述节选：{agent_b_text[:500]}\n"
+            f"请基于以上写一段客观、专业的审计总结。"
+        )
+        try:
+            response = await self.llm_service.generate(
+                prompt,
+                system_prompt="你是一个冷静、严谨的因果辩论审计员，必须依据工具与陪审团证据给出结论。",
+            )
+            text = (response.text or "").strip()
+            if text.startswith("[mock:"):
+                return ""
+            return text
+        except Exception:
+            return ""

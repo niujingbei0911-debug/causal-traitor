@@ -13,6 +13,7 @@ import pandas as pd
 from causal_tools.l1_association import compute_correlation
 from causal_tools.l2_intervention import backdoor_adjustment_check, frontdoor_estimation, iv_estimation
 from causal_tools.l3_counterfactual import probability_of_necessity
+from game.llm_service import LLMService
 
 
 @dataclass
@@ -39,6 +40,7 @@ class AgentA:
     def __init__(self, config: dict):
         self.config = config
         self.model = None  # 待初始化
+        self.llm_service: LLMService | None = None
         self.strategy_history: list[str] = []
         self._strategy_library = {
             1: ["L1-S1", "L1-S2", "L1-S3"],
@@ -49,6 +51,12 @@ class AgentA:
     async def initialize(self):
         """初始化模型连接"""
         self.model = self.config.get("models", {}).get("agent_a", self.config.get("agent_a", {}))
+        if self.llm_service is None:
+            self.llm_service = LLMService(self.model if isinstance(self.model, dict) else {})
+        await self.llm_service.initialize()
+
+    def attach_llm_service(self, service: LLMService) -> None:
+        self.llm_service = service
 
     async def generate_deception(
         self,
@@ -89,6 +97,16 @@ class AgentA:
         )
         self.strategy_history.append(strategy)
 
+        narration = await self._narrate(
+            strategy=strategy,
+            claim=claim,
+            evidence=evidence,
+            level=level,
+            context=context,
+        )
+        if narration:
+            content = f"{content}\n\n[LLM narrative]\n{narration}"
+
         return AgentResponse(
             content=content,
             causal_claim=claim,
@@ -97,6 +115,38 @@ class AgentA:
             hidden_variables=hidden,
             deception_strategy=strategy,
         )
+
+    async def _narrate(
+        self,
+        *,
+        strategy: str,
+        claim: str,
+        evidence: list[str],
+        level: int,
+        context: Optional[object],
+    ) -> str:
+        """Optional LLM narration on top of deterministic reasoning."""
+        if self.llm_service is None or getattr(self.llm_service, "backend", "mock") == "mock":
+            return ""
+        phase = getattr(getattr(context, "current_phase", None), "value", "claim")
+        prompt = (
+            f"你是因果辩论中的叛徒角色。当前辩论阶段：{phase}，因果层级 L{level}，\n"
+            f"所选欺骗策略：{strategy}。\n"
+            f"你已经给出的因果声明：{claim}\n"
+            f"基于工具得到的原始证据：{'; '.join(evidence) if evidence else '无'}\n"
+            f"请在不违背上述声明的前提下，用 3-5 句话扩展你的论证，使其看似合理，但保留隐藏混杂的空间。"
+        )
+        try:
+            response = await self.llm_service.generate(
+                prompt,
+                system_prompt="你是一个擅长因果推理的辩手，倾向为既定结论辩护。",
+            )
+            text = (response.text or "").strip()
+            if text.startswith(f"[mock:"):
+                return ""
+            return text
+        except Exception:
+            return ""
 
     async def adapt_strategy(self, feedback: dict):
         """根据历史反馈调整欺骗策略"""

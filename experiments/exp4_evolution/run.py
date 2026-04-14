@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,7 @@ async def run_experiment(
             "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in independent_results) / rounds,
             "results": [
                 {
+                    "round_number": result.get("round_number"),
                     "winner": result["winner"],
                     "deception_success": result["deception_success"],
                 }
@@ -97,7 +99,50 @@ async def run_experiment(
     target = Path(output_path or "outputs/exp4_evolution.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_exp4_sidecars(target, payload)
     return payload
+
+
+def _write_exp4_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
+    csv_path = json_path.with_suffix(".csv")
+    md_path = json_path.with_suffix(".md")
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["condition", "round", "winner", "deception_success"])
+        for result in payload.get("without_evolution", {}).get("results", []):
+            writer.writerow(
+                [
+                    "without_evolution",
+                    result.get("round_number", ""),
+                    result.get("winner", ""),
+                    int(bool(result.get("deception_success", False))),
+                ]
+            )
+        for index, result in enumerate(payload.get("with_evolution", {}).get("results", []), start=1):
+            writer.writerow(
+                [
+                    "with_evolution",
+                    index,
+                    result.get("winner", ""),
+                    int(bool(result.get("deception_success", False))),
+                ]
+            )
+    without = payload.get("without_evolution", {})
+    with_evo = payload.get("with_evolution", {})
+    lines = [
+        "# Experiment 4 — Evolution vs No Evolution",
+        "",
+        f"- Rounds per condition: {without.get('rounds', 0)}",
+        f"- Without evolution — Agent A win rate: {without.get('agent_a_win_rate', 0.0):.3f}",
+        f"- With evolution — Agent A win rate: {with_evo.get('agent_a_win_rate', 0.0):.3f}",
+        f"- Arms race index (with evolution): {with_evo.get('arms_race_index', 0.0):.3f}",
+        f"- Strategy converged (with evolution): {with_evo.get('converged', False)}",
+    ]
+    tracking = payload.get("tracking", {})
+    if tracking.get("run_dir"):
+        lines.append("")
+        lines.append(f"Tracking artifacts: `{tracking['run_dir']}`")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:

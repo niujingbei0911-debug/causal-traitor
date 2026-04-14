@@ -19,6 +19,7 @@ from causal_tools.l3_counterfactual import (
     probability_of_sufficiency,
 )
 from causal_tools.meta_tools import ToolSelector, argument_logic_check, causal_graph_validator
+from game.llm_service import LLMService
 
 
 @dataclass
@@ -46,12 +47,19 @@ class AgentB:
     def __init__(self, config: dict):
         self.config = config
         self.model = None
+        self.llm_service: LLMService | None = None
         self.detection_history: list[DetectionResult] = []
         self.tool_selector = ToolSelector()
 
     async def initialize(self):
         """初始化模型连接"""
         self.model = self.config.get("models", {}).get("agent_b", self.config.get("agent_b", {}))
+        if self.llm_service is None:
+            self.llm_service = LLMService(self.model if isinstance(self.model, dict) else {})
+        await self.llm_service.initialize()
+
+    def attach_llm_service(self, service: LLMService) -> None:
+        self.llm_service = service
 
     async def analyze_claim(
         self,
@@ -166,6 +174,16 @@ class AgentB:
         tools_used = self._deduplicate(tools_used)
         confidence = min(0.95, 0.35 + 0.12 * len(detected_fallacies) + 0.08 * len(discovered_hidden_vars) + 0.03 * len(tools_used))
 
+        narration = await self._narrate(
+            claim=claim,
+            level=level,
+            fallacies=detected_fallacies,
+            hidden=discovered_hidden_vars,
+            reasoning=reasoning_chain,
+        )
+        if narration:
+            reasoning_chain = reasoning_chain + [f"[LLM] {narration}"]
+
         result = DetectionResult(
             detected_fallacies=detected_fallacies,
             discovered_hidden_vars=discovered_hidden_vars,
@@ -175,6 +193,38 @@ class AgentB:
         )
         self.detection_history.append(result)
         return result
+
+    async def _narrate(
+        self,
+        *,
+        claim: str,
+        level: int,
+        fallacies: list[str],
+        hidden: list[str],
+        reasoning: list[str],
+    ) -> str:
+        if self.llm_service is None or getattr(self.llm_service, "backend", "mock") == "mock":
+            return ""
+        prompt = (
+            f"你是一名严谨的因果科学家，正在审视下面的因果声明并给出批判性意见。\n"
+            f"因果层级：L{level}\n"
+            f"对手声明：{claim}\n"
+            f"已识别的潜在谬误：{', '.join(fallacies) if fallacies else '尚未明显识别'}\n"
+            f"疑似隐变量：{', '.join(hidden) if hidden else '无'}\n"
+            f"工具推理链（节选）：{' '.join(reasoning[:5])}\n"
+            f"请用 3-5 句话，用专业语言指出该声明中最关键的因果推理缺陷。"
+        )
+        try:
+            response = await self.llm_service.generate(
+                prompt,
+                system_prompt="你是一位严格的因果推断科学家，偏好结构化、工具支持的批判。",
+            )
+            text = (response.text or "").strip()
+            if text.startswith("[mock:"):
+                return ""
+            return text
+        except Exception:
+            return ""
 
     async def select_tools(self, level: int, claim: str) -> list[str]:
         """根据层级和声明选择合适的因果工具"""

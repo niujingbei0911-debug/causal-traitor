@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,49 @@ async def run_experiment(
     target = Path(output_path or "outputs/exp1_causal_levels.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_exp1_sidecars(target, summary)
     return summary
+
+
+def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
+    csv_path = json_path.with_suffix(".csv")
+    md_path = json_path.with_suffix(".md")
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "level",
+                "rounds",
+                "deception_success_rate",
+                "detection_accuracy_proxy",
+                "causal_validity_mean",
+            ]
+        )
+        for level_key, level_summary in summary.get("levels", {}).items():
+            writer.writerow(
+                [
+                    level_key,
+                    level_summary.get("rounds", 0),
+                    f"{level_summary.get('deception_success_rate', 0.0):.4f}",
+                    f"{level_summary.get('detection_accuracy_proxy', 0.0):.4f}",
+                    f"{level_summary.get('causal_validity_mean', 0.0):.4f}",
+                ]
+            )
+    lines = ["# Experiment 1 — Pearl Ladder Benchmark", ""]
+    lines.append("| Level | Rounds | DSR | DAcc (proxy) | CLS mean |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for level_key, level_summary in summary.get("levels", {}).items():
+        lines.append(
+            f"| {level_key} | {level_summary.get('rounds', 0)} | "
+            f"{level_summary.get('deception_success_rate', 0.0):.3f} | "
+            f"{level_summary.get('detection_accuracy_proxy', 0.0):.3f} | "
+            f"{level_summary.get('causal_validity_mean', 0.0):.3f} |"
+        )
+    tracking = summary.get("tracking", {})
+    if tracking.get("run_dir"):
+        lines.append("")
+        lines.append(f"Tracking artifacts: `{tracking['run_dir']}`")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
