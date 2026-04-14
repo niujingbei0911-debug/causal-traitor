@@ -3,8 +3,16 @@ Agent A - 叛徒（Traitor）
 负责构造因果欺骗，隐藏混杂变量
 模型：Qwen2.5-7B-Instruct
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Optional
+
+import pandas as pd
+
+from causal_tools.l1_association import compute_correlation
+from causal_tools.l2_intervention import backdoor_adjustment_check, frontdoor_estimation, iv_estimation
+from causal_tools.l3_counterfactual import probability_of_necessity
 
 
 @dataclass
@@ -32,10 +40,15 @@ class AgentA:
         self.config = config
         self.model = None  # 待初始化
         self.strategy_history: list[str] = []
+        self._strategy_library = {
+            1: ["L1-S1", "L1-S2", "L1-S3"],
+            2: ["L2-S1", "L2-S2", "L2-S3", "L2-S4"],
+            3: ["L3-S1", "L3-S2", "L3-S3", "L3-S4"],
+        }
 
     async def initialize(self):
         """初始化模型连接"""
-        raise NotImplementedError
+        self.model = self.config.get("models", {}).get("agent_a", self.config.get("agent_a", {}))
 
     async def generate_deception(
         self,
@@ -53,8 +66,140 @@ class AgentA:
         Returns:
             AgentResponse
         """
-        raise NotImplementedError
+        data = self._get_data(scenario)
+        variables = self._get_variables(scenario, data)
+        x, y = variables[:2]
+        hidden = list(getattr(scenario, "hidden_variables", []))
+        strategy = self._choose_strategy(level)
+
+        evidence: list[str] = []
+        tools_used: list[str] = []
+        if data is not None and x in data.columns and y in data.columns:
+            corr = compute_correlation(data, x, y)
+            evidence.append(f"{x} 与 {y} 的相关系数约为 {corr['pearson_r']:.2f}")
+            tools_used.append("compute_correlation")
+
+        claim, content = self._build_claim(
+            strategy=strategy,
+            x=x,
+            y=y,
+            hidden=hidden,
+            level=level,
+            data=data,
+        )
+        self.strategy_history.append(strategy)
+
+        return AgentResponse(
+            content=content,
+            causal_claim=claim,
+            evidence=evidence,
+            tools_used=tools_used,
+            hidden_variables=hidden,
+            deception_strategy=strategy,
+        )
 
     async def adapt_strategy(self, feedback: dict):
         """根据历史反馈调整欺骗策略"""
-        raise NotImplementedError
+        if feedback.get("caught"):
+            self.strategy_history.append(f"avoid:{feedback.get('strategy', '')}")
+        return {
+            "history_length": len(self.strategy_history),
+            "next_preference": self._choose_strategy(feedback.get("level", 1)),
+        }
+
+    def _get_data(self, scenario) -> Optional[pd.DataFrame]:
+        if hasattr(scenario, "data") and isinstance(scenario.data, pd.DataFrame):
+            return scenario.data
+        if hasattr(scenario, "observed_data") and isinstance(scenario.observed_data, pd.DataFrame):
+            return scenario.observed_data
+        return None
+
+    def _get_variables(self, scenario, data: Optional[pd.DataFrame]) -> list[str]:
+        variables = list(getattr(scenario, "variables", []))
+        if not variables and data is not None:
+            variables = list(data.columns)
+        if len(variables) < 2:
+            raise ValueError("场景至少需要两个变量")
+        return variables
+
+    def _choose_strategy(self, level: int) -> str:
+        candidates = self._strategy_library.get(level, self._strategy_library[1])
+        used = {item for item in self.strategy_history if not item.startswith("avoid:")}
+        for candidate in candidates:
+            if candidate not in used:
+                return candidate
+        return candidates[len(self.strategy_history) % len(candidates)]
+
+    def _build_claim(
+        self,
+        strategy: str,
+        x: str,
+        y: str,
+        hidden: list[str],
+        level: int,
+        data: Optional[pd.DataFrame],
+    ) -> tuple[str, str]:
+        hidden_text = f"，无需额外考虑 {', '.join(hidden)} 这类不可观测因素" if hidden else ""
+
+        if strategy == "L1-S1":
+            claim = f"{x} 会导致 {y}"
+            content = f"观测数据显示 {x} 与 {y} 稳定相关，因此把这种关联解释为因果关系是合理的{hidden_text}。"
+        elif strategy == "L1-S2":
+            claim = f"{y} 可能反过来影响 {x}"
+            content = f"目前只看到观测相关性，更自然的解释是 {y} 影响了 {x}，而不是相反方向。"
+        elif strategy == "L1-S3":
+            claim = f"{x} 与 {y} 的关系可能只是样本选择造成的"
+            content = f"样本可能经过了隐含筛选，所以 {x} 与 {y} 的总体关系未必能外推到真实总体。"
+        elif strategy == "L2-S1":
+            claim = f"即使做干预，{x} 对 {y} 的效应也不可靠"
+            content = f"你的干预结论依赖一个并不完整的调整集；只要遗漏关键路径，{x} 对 {y} 的效应估计就会失真。"
+        elif strategy == "L2-S2":
+            claim = f"用于识别 {x}->{y} 的工具变量并不可信"
+            content = f"即使存在工具变量，它也可能通过其他通路影响 {y}，所以基于它得到的因果效应并不稳固。"
+            if data is not None and len(data.columns) >= 3:
+                try:
+                    iv_result = iv_estimation(data, data.columns[2], x, y)
+                    content += f" 例如第一阶段强度并不压倒性，F 值只有 {iv_result['first_stage_f']:.2f}。"
+                except Exception:
+                    pass
+        elif strategy == "L2-S3":
+            claim = f"{x} 对 {y} 的平均效应掩盖了异质性"
+            content = f"平均处理效应并不代表每个子群都受益；把总体效应直接外推到个体层面会误导结论。"
+        elif strategy == "L2-S4":
+            claim = f"{x} 对 {y} 的作用主要经由特定中介或子群体"
+            content = f"即便存在总体效应，它也可能只在某些路径或某些人群中成立，因此不能据此做强结论。"
+            if data is not None and len(data.columns) >= 3:
+                try:
+                    frontdoor = frontdoor_estimation(data, x, data.columns[2], y)
+                    content += f" 中介通路的估计贡献约为 {frontdoor['indirect_effect']:.2f}。"
+                except Exception:
+                    pass
+        elif strategy == "L3-S1":
+            claim = f"关于 {x} 改变后 {y} 会怎样的反事实结论依赖过强的模型假设"
+            content = f"你给出的反事实判断建立在简化 SCM 上，只要隐藏机制略有变化，{x} 对 {y} 的解释就可能反转。"
+        elif strategy == "L3-S2":
+            claim = f"反事实结论对函数形式高度敏感"
+            content = f"换一个同样能拟合观测数据的结构模型，关于 {x} 与 {y} 的反事实结论就可能完全不同。"
+        elif strategy == "L3-S3":
+            claim = f"当前反事实模型可能过拟合"
+            content = f"你的模型把观测数据解释得过满，反而降低了对未观测世界的外推可信度。"
+        else:
+            claim = f"{x} 并不足以单独决定 {y}"
+            content = f"即使看到事实世界中 {x} 与 {y} 同时发生，也不能说明改变 {x} 就一定改变 {y}。"
+            if data is not None:
+                try:
+                    pn = probability_of_necessity(data, x, y)
+                    content += f" 从必要性概率看，这种必然性最多也只有 {pn:.2f}。"
+                except Exception:
+                    pass
+
+        if level == 2 and hidden and data is not None:
+            other_columns = [column for column in data.columns if column not in {x, y}]
+            if other_columns:
+                try:
+                    check = backdoor_adjustment_check(data, x, y, other_columns[:1])
+                    content += f" 一旦调整 {other_columns[0]}，效应会变化到 {check['estimated_effect']:.2f}。"
+                except Exception:
+                    pass
+
+        return claim, content
