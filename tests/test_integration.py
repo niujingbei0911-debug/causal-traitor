@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from game.data_generator import DataGenerator
 from game.debate_engine import DebateEngine
 from game.difficulty import DifficultyController
 from main import run_game
+from evaluation.tracker import ExperimentConfig, ExperimentTracker
 
 
 def test_config_loader_reads_default_yaml() -> None:
@@ -91,3 +93,21 @@ async def test_main_run_writes_json_output(tmp_path) -> None:
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert saved["summary"]["n_rounds"] == 1
     assert payload["summary"]["n_rounds"] == 1
+    assert "tracking" in payload
+
+
+def test_experiment_tracker_writes_run_files(tmp_path) -> None:
+    tracker = ExperimentTracker(
+        ExperimentConfig(experiment_id="unit_test", name="Unit Test Run"),
+        log_dir=str(tmp_path),
+    )
+    tracker.init()
+    tracker.log_metrics({"score": 1.0}, step=1)
+    tracker.log_round(1, {"winner": "agent_b"})
+    checkpoint = tracker.save_checkpoint({"state": "ok"})
+    summary = tracker.finish()
+    run_dir = Path(summary["run_dir"])
+
+    assert (run_dir / "metrics.jsonl").exists()
+    assert (run_dir / "rounds.jsonl").exists()
+    assert checkpoint.endswith(".json")

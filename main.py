@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
@@ -42,7 +43,22 @@ async def run_game(
     engine = DebateEngine(config)
     await engine.initialize()
     num_rounds = rounds or config.get("game", {}).get("max_rounds", 5)
+    tracker = ExperimentTracker(
+        ExperimentConfig(
+            experiment_id="main_run",
+            name="Main Game Run",
+            params={
+                "rounds": num_rounds,
+                "config_path": config_path,
+            },
+        ),
+        log_dir=config.get("logging", {}).get("save_dir", "logs"),
+        use_wandb=bool(config.get("logging", {}).get("use_wandb", False)),
+    )
+    tracker.init()
     results = await engine.run_game(num_rounds=num_rounds)
+    for result in results:
+        tracker.log_round(result["round_number"], result)
     summary = {
         "n_rounds": len(results),
         "agent_a_wins": sum(result["winner"] == "agent_a" for result in results),
@@ -50,10 +66,13 @@ async def run_game(
         "final_difficulty": engine.difficulty_controller.get_difficulty(),
         "arms_race_index": engine.evolution_tracker.get_arms_race_index(),
     }
+    tracker.log_metrics(summary, step=len(results))
     payload = {
         "summary": summary,
         "results": _json_ready(results),
     }
+    tracker.log_artifact("run_payload", payload, artifact_type="json")
+    payload["tracking"] = tracker.finish()
 
     target = Path(output_path) if output_path else _default_output_path(config)
     target.parent.mkdir(parents=True, exist_ok=True)

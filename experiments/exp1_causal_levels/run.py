@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
@@ -19,6 +20,16 @@ async def run_experiment(
     config = ConfigLoader().load()
     engine = DebateEngine(config)
     await engine.initialize()
+    tracker = ExperimentTracker(
+        ExperimentConfig(
+            experiment_id="exp1_causal_levels",
+            name="Pearl Ladder Benchmark",
+            params={"rounds_per_level": rounds_per_level},
+        ),
+        log_dir=config.get("logging", {}).get("save_dir", "logs"),
+        use_wandb=bool(config.get("logging", {}).get("use_wandb", False)),
+    )
+    tracker.init()
 
     summary: dict[str, Any] = {"levels": {}}
     for level in config.get("game", {}).get("causal_levels", [1, 2, 3]):
@@ -34,6 +45,7 @@ async def run_experiment(
                 round_number=round_index,
                 evolution_context=None,
             )
+            tracker.log_round(round_index + (level - 1) * rounds_per_level, result)
             level_results.append(
                 {
                     "winner": result["winner"],
@@ -49,7 +61,17 @@ async def run_experiment(
             "causal_validity_mean": sum(r["causal_validity_score"] for r in level_results) / rounds_per_level,
             "results": level_results,
         }
+        tracker.log_metrics(
+            {
+                f"L{level}_deception_success_rate": summary["levels"][f"L{level}"]["deception_success_rate"],
+                f"L{level}_detection_accuracy_proxy": summary["levels"][f"L{level}"]["detection_accuracy_proxy"],
+                f"L{level}_causal_validity_mean": summary["levels"][f"L{level}"]["causal_validity_mean"],
+            },
+            step=level,
+        )
 
+    tracker.log_artifact("exp1_summary", summary, artifact_type="json")
+    summary["tracking"] = tracker.finish()
     target = Path(output_path or "outputs/exp1_causal_levels.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

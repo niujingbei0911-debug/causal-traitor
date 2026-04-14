@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
@@ -27,10 +28,22 @@ async def run_experiment(
     output_path: str | None = None,
 ) -> dict[str, Any]:
     config = ConfigLoader().load()
+    tracker = ExperimentTracker(
+        ExperimentConfig(
+            experiment_id="exp4_evolution",
+            name="Evolution vs No Evolution",
+            params={"rounds": rounds, "level": level},
+        ),
+        log_dir=config.get("logging", {}).get("save_dir", "logs"),
+        use_wandb=bool(config.get("logging", {}).get("use_wandb", False)),
+    )
+    tracker.init()
 
     no_evolution_engine = DebateEngine(config)
     await no_evolution_engine.initialize()
     independent_results = await _run_without_evolution(no_evolution_engine, rounds, level)
+    for result in independent_results:
+        tracker.log_round(result["round_number"], {"condition": "without_evolution", **result})
 
     evolution_engine = DebateEngine(config)
     await evolution_engine.initialize()
@@ -40,6 +53,8 @@ async def run_experiment(
         use_evolution=True,
         update_difficulty=False,
     )
+    for result in evolution_results:
+        tracker.log_round(result["round_number"], {"condition": "with_evolution", **result})
 
     payload = {
         "without_evolution": {
@@ -68,7 +83,17 @@ async def run_experiment(
             ],
         },
     }
+    tracker.log_metrics(
+        {
+            "without_evolution_agent_a_win_rate": payload["without_evolution"]["agent_a_win_rate"],
+            "with_evolution_agent_a_win_rate": payload["with_evolution"]["agent_a_win_rate"],
+            "with_evolution_arms_race_index": payload["with_evolution"]["arms_race_index"],
+        },
+        step=rounds,
+    )
 
+    tracker.log_artifact("exp4_summary", payload, artifact_type="json")
+    payload["tracking"] = tracker.finish()
     target = Path(output_path or "outputs/exp4_evolution.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
