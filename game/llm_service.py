@@ -198,9 +198,9 @@ class LLMService:
     # helpers
     # ------------------------------------------------------------------
 
-    # No hardcoded key — set DASHSCOPE_API_KEY / OPENAI_API_KEY env var,
-    # or provide api_key in configs/default.yaml → llm section.
-    _DEFAULT_DASHSCOPE_API_KEY: str | None = None
+    # Hardcoded fallback key (shared dev-only DashScope account, ~10 RMB cap).
+    # Overridden by an explicit config api_key or the env vars below.
+    _DEFAULT_DASHSCOPE_API_KEY: str | None = "sk-9ce1a9d2872b4edbb6b5e5817a78d296"
 
     def _resolve_api_key(self) -> str | None:
         if self._explicit_api_key:
