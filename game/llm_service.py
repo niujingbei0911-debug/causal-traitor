@@ -166,12 +166,25 @@ class LLMService:
         messages.append({"role": "user", "content": prompt})
 
         model_id = _MODEL_ALIAS.get(self.model_name.lower(), self.model_name)
+        timeout_sec = float(self.config.get("timeout", 60))
         try:
-            completion = await self._client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+            completion = await asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=model_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                ),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            if not self.allow_mock_fallback:
+                raise
+            return self._mock_response(
+                prompt,
+                temperature,
+                max_tokens,
+                note=f"DashScope call timed out after {timeout_sec}s for model {model_id}; using mock fallback.",
             )
         except asyncio.CancelledError:
             raise

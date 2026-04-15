@@ -277,6 +277,12 @@ class DebateEngine:
         update_difficulty: bool = True,
     ) -> list[dict[str, Any]]:
         """Run a full multi-round game."""
+        import sys
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
 
         if self.data_generator is None or self.difficulty_controller is None:
             await self.initialize()
@@ -287,6 +293,11 @@ class DebateEngine:
         for round_index in range(1, num_rounds + 1):
             level = levels[(round_index - 1) % len(levels)]
             difficulty = self.difficulty_controller.get_difficulty()
+            print(
+                f"  ⏳ 第 {round_index}/{num_rounds} 轮 (L{level}, 难度 {difficulty:.2f}) ...",
+                end="",
+                flush=True,
+            )
             scenario = self.data_generator.generate_scenario(
                 difficulty=difficulty,
                 causal_level=level,
@@ -301,6 +312,7 @@ class DebateEngine:
                 round_number=round_index,
                 evolution_context=evolution_context,
             )
+            print(f" ✅ 胜者: {result.get('winner', '?')}")
             next_difficulty = (
                 self.difficulty_controller.update(result["deception_success"])
                 if update_difficulty
@@ -393,6 +405,14 @@ class DebateEngine:
             "fallacies": agent_b_result.detected_fallacies,
         })
 
+        # --- Agent A rebuttal: 让 A 针对 B 的检测结果生成反驳 ---
+        context.metadata["agent_b_detection"] = self._format_detection(agent_b_result)
+        agent_a_rebuttal = await self._invoke_agent_a(scenario, context)
+        self._append_turn(context, "agent_a", GamePhase.REBUTTAL, agent_a_rebuttal.content, {
+            "strategy": agent_a_rebuttal.deception_strategy,
+            "hidden_variables": agent_a_rebuttal.hidden_variables,
+        })
+
         context.current_phase = GamePhase.JURY
         jury_verdict = await self._invoke_jury(scenario, context)
         context.jury_verdict = asdict(jury_verdict)
@@ -417,6 +437,37 @@ class DebateEngine:
 
         context.current_phase = GamePhase.COMPLETE
         winner = self._resolve_winner(audit, jury_verdict)
+
+        # ── 进化反馈：通知 Agent A 和 Agent C 本轮结果 ──
+        deception_success = winner == "agent_a"
+        strategy_used = getattr(agent_a_claim, "deception_strategy", "unknown")
+
+        # Agent A: 被识破时标记策略为 avoid
+        adapt = getattr(self.agent_a, "adapt_strategy", None)
+        if callable(adapt):
+            try:
+                await adapt({
+                    "detected": not deception_success,
+                    "strategy_used": strategy_used,
+                    "detection_confidence": agent_b_result.confidence,
+                    "round_id": round_number,
+                })
+            except Exception:
+                pass  # mock agent 可能不支持
+
+        # Agent C: 记录检测结果，升级防御灵敏度
+        upgrade = getattr(self.agent_c, "upgrade_defense", None)
+        if callable(upgrade):
+            try:
+                upgrade({
+                    "detected": not deception_success,
+                    "strategy_used": strategy_used,
+                    "deception_score": float(audit.causal_validity_score),
+                    "round_id": round_number,
+                })
+            except Exception:
+                pass
+
         return {
             "round_number": round_number,
             "scenario": scenario,
@@ -424,7 +475,7 @@ class DebateEngine:
             "agent_b_claim": asdict(agent_b_claim),
             "agent_a_claim": asdict(agent_a_claim),
             "agent_b_analysis": asdict(agent_b_result),
-            "agent_a_rebuttal": asdict(agent_a_claim),
+            "agent_a_rebuttal": asdict(agent_a_rebuttal),
             "audit_verdict": asdict(audit),
             "jury_verdict": asdict(jury_verdict),
             "winner": winner,
@@ -563,9 +614,37 @@ class DebateEngine:
         if self.evolution_tracker is None or not self.evolution_tracker.records:
             return None
         last_records = self.evolution_tracker.export_history()["records"][-3:]
+        arms_race = self.evolution_tracker.get_arms_race_index()
+
+        # ── Agent A 专属：欺骗复杂度趋势 + 已被识破的策略 ──
+        complexity_trend = self.evolution_tracker.get_deception_complexity_trend(window=5)
+        avoided: list[str] = []
+        if hasattr(self.agent_a, "strategy_history"):
+            avoided = [
+                s.removeprefix("avoid:")
+                for s in self.agent_a.strategy_history
+                if s.startswith("avoid:")
+            ]
+
+        # ── Agent C 专属：检测灵敏度趋势 + 已知欺骗模式 ──
+        sensitivity_trend = self.evolution_tracker.get_detection_sensitivity_trend(window=5)
+        known_patterns: list[str] = []
+        if hasattr(self.agent_c, "known_patterns"):
+            known_patterns = list(self.agent_c.known_patterns)
+
         return {
             "recent_strategies": last_records,
-            "arms_race_index": self.evolution_tracker.get_arms_race_index(),
+            "arms_race_index": arms_race,
+            # Agent A 读取这些字段来调整欺骗策略
+            "agent_a": {
+                "deception_complexity_trend": complexity_trend,
+                "detected_strategies": avoided,
+            },
+            # Agent C 读取这些字段来强化检测
+            "agent_c": {
+                "detection_sensitivity_trend": sensitivity_trend,
+                "known_patterns": known_patterns,
+            },
         }
 
     def _strategy_type_from_result(self, result: dict[str, Any]) -> StrategyType:

@@ -1,8 +1,8 @@
-# The Causal Traitor (因果叛徒) — 完整设计方案 v2
+# The Causal Traitor (因果叛徒) — 完整设计方案 v2.1
 
 > **多智能体信息不对称下的因果欺骗与隐变量反侦察**
 > 浙江大学 · 因果推断课程创新项目
-> v2.0 — 整合全部6项优化建议
+> v2.1 — 整合全部优化建议 + 进化对抗机制实现 + DashScope 集成
 
 ---
 
@@ -691,144 +691,199 @@ class DifficultyController:
 
 ## 六、多轮进化博弈机制
 
-### 6.1 进化循环
+### 6.1 进化循环总览
 
 ```mermaid
 graph LR
-    R1[第1轮辩论] --> S1[策略总结]
-    S1 --> E1[策略进化]
-    E1 --> R2[第2轮辩论]
-    R2 --> S2[策略总结]
-    S2 --> E2[策略进化]
-    E2 --> R3[第3轮辩论]
-    R3 --> S3[策略总结]
-    S3 --> EVAL[进化评估]
+    R1[第1轮辩论] --> FB1[进化反馈]
+    FB1 -->|adapt_strategy| A_EVO[Agent A 策略回避]
+    FB1 -->|upgrade_defense| C_EVO[Agent C 防御升级]
+    A_EVO --> CTX[差异化进化上下文]
+    C_EVO --> CTX
+    CTX --> R2[第2轮辩论]
+    R2 --> FB2[进化反馈]
+    FB2 --> TRACK[EvolutionTracker 记录]
+    TRACK --> EVAL[进化评估]
 
     style R1 fill:#ff9999
     style R2 fill:#ff7777
-    style R3 fill:#ff5555
+    style A_EVO fill:#ffcc66
+    style C_EVO fill:#66ccff
     style EVAL fill:#99ff99
 ```
 
-### 6.2 策略总结生成
+每轮辩论结束后，`DebateEngine.run_round()` 自动触发双向进化反馈：
+
+1. **Agent A** 收到 `adapt_strategy(feedback)` — 记录被识破的策略，标记为 "avoid" 集合
+2. **Agent C** 收到 `upgrade_defense(feedback)` — 记录检测历史，提取已知模式，调整灵敏度
+3. **DebateEngine** 通过 `_build_evolution_context()` 为下一轮生成差异化上下文
+
+### 6.2 Agent A 策略回避机制（Avoid-Set）
+
+Agent A 的策略选择通过 `_choose_strategy(level, *, arms_race_index)` 实现自适应回避：
 
 ```python
-STRATEGY_SUMMARY_PROMPT = """分析以下辩论记录，提取Agent的策略模式。
+# agents/agent_a.py — _choose_strategy()
+def _choose_strategy(self, level: int, *, arms_race_index: float = 0.0) -> str:
+    candidates = self._strategy_priority.get(level, [...])
 
-## 辩论记录
-{transcript}
+    # 1. 从 adapt_strategy() 记录中提取 "avoid:xxx" 标记
+    avoided = {
+        r.get("strategy", "")
+        for r in self._history
+        if str(r.get("strategy", "")).startswith("avoid:")
+    }
+    avoid_names = {s.removeprefix("avoid:") for s in avoided}
 
-## 结果
-- 胜者: {winner}
-- Agent A 欺骗是否成功: {deception_success}
-- Agent C 识别的欺骗手法: {detected_tactics}
+    # 2. 统计本层级已使用策略
+    level_history = [
+        r.get("strategy") for r in self._history
+        if r.get("level") == level and r.get("strategy")
+    ]
 
-请输出策略总结（JSON格式）：
-{{
-    "agent_a_strategies": {{
-        "deception_tactics_used": ["列出使用的欺骗策略"],
-        "successful_tactics": ["成功的策略"],
-        "failed_tactics": ["失败的策略"],
-        "weakness_exploited": "利用了对手的什么弱点"
-    }},
-    "agent_b_strategies": {{
-        "defense_tactics_used": ["使用的防御策略"],
-        "effective_counters": ["有效的反驳"],
-        "missed_opportunities": ["错过的反驳机会"]
-    }},
-    "agent_c_analysis": {{
-        "tools_used": ["使用的工具"],
-        "key_evidence": "关键证据",
-        "reasoning_chain": "推理链"
-    }},
-    "meta_insights": "本轮的关键洞察"
-}}
-"""
+    # 3. 优先选择：未使用 + 未被回避的策略
+    fresh = [c for c in candidates if c not in level_history and c not in avoid_names]
+    if fresh:
+        return fresh[0]
+
+    # 4. 次选：已使用但未被回避的策略
+    reusable = [c for c in candidates if c not in avoid_names]
+    return reusable[0] if reusable else candidates[0]
 ```
 
-### 6.3 Agent A 进化 Prompt
+**arms_race_index** 由 `EvolutionTracker.get_arms_race_index()` 计算，反映对手检测强度。当 LLM 后端可用时，该指数会注入到 `_llm_decide()` 的 prompt 中，引导 LLM 生成更复杂的欺骗策略：
 
 ```python
-AGENT_A_EVOLUTION_PROMPT = """你是因果叛徒（Agent A），正在进化你的欺骗策略。
-
-## 前几轮的策略总结
-{previous_strategy_summaries}
-
-## 你的历史战绩
-- 总轮数: {total_rounds}
-- 欺骗成功次数: {success_count}
-- 被识破次数: {caught_count}
-
-## 对手的已知弱点
-{opponent_weaknesses}
-
-## 本轮任务
-- 因果层级: {causal_level}
-- 真实SCM: {true_scm}
-- 你独占的隐变量信息: {hidden_info}
-
-## 进化要求
-1. 避免重复使用已被识破的策略
-2. 针对对手的弱点设计新策略
-3. 可以组合多种欺骗手法
-4. 考虑陪审团的存在，设计更隐蔽的欺骗
-
-请制定本轮欺骗策略，然后开始辩论。
-"""
+# agents/agent_a.py — _llm_decide() 中的进化提示注入
+evolution_hint = ""
+if arms_race_index > 0:
+    detected_strategies = [
+        r.get("strategy") for r in self._history
+        if str(r.get("strategy", "")).startswith("avoid:")
+    ]
+    evolution_hint = (
+        f"\n[进化提示] 对手检测强度={arms_race_index:.2f}; "
+        f"已被识破策略={detected_strategies}; 请使用更复杂的欺骗手法。"
+    )
 ```
 
-### 6.4 Agent C 防御升级 Prompt
+### 6.3 Agent C 跨轮防御学习（upgrade_defense）
+
+Agent C 通过 `upgrade_defense(feedback)` 方法实现跨轮学习：
 
 ```python
-AGENT_C_DEFENSE_UPGRADE_PROMPT = """你是因果审计官（Agent C），正在升级你的检测能力。
+# agents/agent_c.py — upgrade_defense()
+def upgrade_defense(self, feedback: dict) -> None:
+    """跨轮防御学习：记录检测历史，提取已知模式，调整灵敏度。"""
+    self.detection_history.append(feedback)
 
-## 前几轮的策略总结
-{previous_strategy_summaries}
+    # 提取 Agent A 使用的策略作为已知模式
+    strategy = feedback.get("a_strategy")
+    if strategy and strategy not in self.known_patterns:
+        self.known_patterns.append(strategy)
 
-## Agent A 的已知欺骗模式
-{known_deception_patterns}
-
-## 你的历史表现
-- 正确识别欺骗: {correct_detections}
-- 漏检（被骗）: {missed_detections}
-- 误报（冤枉好人）: {false_alarms}
-
-## 升级方向
-1. 针对Agent A的新策略，准备对应的检测工具
-2. 优化你的因果分析流程
-3. 更好地利用陪审团的意见
-4. 开发新的统计检验方法
-
-请制定本轮的审计策略。
-"""
+    # 根据检测成功率动态调整灵敏度加成
+    if len(self.detection_history) >= 2:
+        recent = self.detection_history[-5:]
+        detect_rate = sum(
+            1 for r in recent if r.get("detected")
+        ) / len(recent)
+        self.sensitivity_boost = max(0.0, 0.5 - detect_rate) * 0.2
 ```
 
-### 6.5 进化指标追踪
+**关键状态变量：**
+
+| 变量 | 类型 | 作用 |
+|------|------|------|
+| `detection_history` | `list[dict]` | 存储每轮检测反馈（策略、是否识破等） |
+| `known_patterns` | `list[str]` | 已知的 Agent A 欺骗策略名称列表 |
+| `sensitivity_boost` | `float` | 动态灵敏度加成，在 `evaluate_round` 评分中应用 |
+
+### 6.4 差异化进化上下文（_build_evolution_context）
+
+`DebateEngine._build_evolution_context()` 为 Agent A 和 Agent C 生成不同的进化上下文：
+
+```python
+# game/debate_engine.py — _build_evolution_context()
+def _build_evolution_context(self) -> dict[str, Any] | None:
+    if not self.evolution_tracker or not self.evolution_tracker._history:
+        return None
+
+    # Agent A 视角：需要回避的策略 + 欺骗复杂度趋势
+    avoided = [
+        r.get("strategy", "")
+        for r in (getattr(self.agent_a, "_history", None) or [])
+        if str(r.get("strategy", "")).startswith("avoid:")
+    ]
+    context = {
+        "arms_race_index": self.evolution_tracker.get_arms_race_index(),
+        "strategy_trend": self.evolution_tracker.get_strategy_trend(window=5),
+        "avoided_strategies": avoided,                              # ← Agent A 专用
+        "deception_complexity_trend":                               # ← Agent A 专用
+            self.evolution_tracker.get_deception_complexity_trend(),
+        "detection_sensitivity_trend":                              # ← Agent C 专用
+            self.evolution_tracker.get_detection_sensitivity_trend(),
+        "known_patterns":                                           # ← Agent C 专用
+            getattr(self.agent_c, "known_patterns", []),
+    }
+    if self.evolution_tracker.detect_convergence():
+        context["converged"] = True
+    return context
+```
+
+### 6.5 进化反馈触发点
+
+在 `DebateEngine.run_round()` 末尾，自动调用双向进化反馈：
+
+```python
+# game/debate_engine.py — run_round() 末尾
+# --- 进化反馈 ---
+a_feedback = {
+    "round_id": round_id,
+    "detected": winner != "agent_a",
+    "a_strategy": result.get("a_strategy", ""),
+}
+if hasattr(self.agent_a, "adapt_strategy"):
+    await self.agent_a.adapt_strategy(a_feedback)
+
+c_feedback = {
+    "round_id": round_id,
+    "detected": winner != "agent_a",
+    "a_strategy": result.get("a_strategy", ""),
+    "detection_score": result.get("detection_score", 0.0),
+}
+if hasattr(self.agent_c, "upgrade_defense"):
+    self.agent_c.upgrade_defense(c_feedback)
+```
+
+### 6.6 进化指标追踪（EvolutionTracker）
+
+`game/evolution.py` 中的 `EvolutionTracker` 提供完整的进化指标计算：
 
 ```python
 class EvolutionTracker:
     """追踪多轮进化的关键指标"""
 
-    def __init__(self):
-        self.rounds = []
+    def record_round(self, record: StrategyRecord) -> None: ...
+    def take_snapshot(self, round_id: int) -> EvolutionSnapshot: ...
 
-    def record_round(self, round_data: dict):
-        self.rounds.append(round_data)
-
-    def get_evolution_metrics(self) -> dict:
-        return {
-            # 策略多样性：Agent A 使用了多少种不同策略
-            "strategy_diversity": self._compute_diversity(),
-            # 军备竞赛指数：攻防能力是否同步提升
-            "arms_race_index": self._compute_arms_race(),
-            # 欺骗复杂度：欺骗策略的平均复杂度趋势
-            "deception_complexity_trend": self._complexity_trend(),
-            # 检测灵敏度：Agent C 的检测能力趋势
-            "detection_sensitivity_trend": self._sensitivity_trend(),
-            # Nash均衡接近度：是否趋向稳定策略
-            "nash_convergence": self._nash_convergence()
-        }
+    # 核心指标
+    def get_strategy_trend(self, window=10) -> dict[str, list[float]]: ...
+    def get_arms_race_index(self) -> float: ...
+    def get_deception_complexity_trend(self, window=5) -> list[float]: ...
+    def get_detection_sensitivity_trend(self, window=5) -> list[float]: ...
+    def detect_convergence(self, threshold=0.05) -> bool: ...
+    def get_nash_convergence(self) -> float: ...
+    def export_history(self) -> dict[str, Any]: ...
 ```
+
+| 指标 | 计算方式 | 含义 |
+|------|---------|------|
+| `arms_race_index` | `abs(mean(deception_scores) - mean(detection_scores))` | 攻防能力差距，越小越均衡 |
+| `deception_complexity_trend` | 滑动窗口内欺骗分数均值序列 | Agent A 欺骗复杂度变化趋势 |
+| `detection_sensitivity_trend` | 滑动窗口内检测分数均值序列 | Agent C 检测灵敏度变化趋势 |
+| `nash_convergence` | 最近窗口策略分布标准差 | 趋近0表示策略趋于稳定（纳什均衡） |
+| `strategy_diversity` | 各策略类型使用频率分布 | Agent A 策略多样性 |
 
 ---
 

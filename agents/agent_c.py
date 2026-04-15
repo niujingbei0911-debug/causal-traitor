@@ -46,6 +46,10 @@ class AgentC:
         self.llm_service: LLMService | None = None
         self.tool_executor = ToolExecutor(config)
         self.jury = JuryAggregator(config)
+        # ── 防御升级：跨轮学习状态 ──
+        self.detection_history: list[dict] = []
+        self.known_patterns: list[str] = []
+        self.sensitivity_boost: float = 0.0
 
     async def initialize(self):
         """初始化模型连接"""
@@ -57,6 +61,38 @@ class AgentC:
 
     def attach_llm_service(self, service: LLMService) -> None:
         self.llm_service = service
+
+    # ── 防御升级：跨轮学习 ──────────────────────────────
+    def upgrade_defense(self, feedback: dict) -> None:
+        """根据上一轮检测结果升级防御能力。
+
+        *feedback* 由 debate_engine 在每轮结束后构造，包含:
+        - detected (bool): 本轮是否成功识破欺骗
+        - strategy_used (str): Agent A 本轮使用的策略类型
+        - deception_score (float): Agent A 的欺骗质量分
+        - round_id (int): 轮次编号
+        """
+        self.detection_history.append(feedback)
+
+        # 记录已知策略模式（去重）
+        strategy = feedback.get("strategy_used", "")
+        if strategy and strategy not in self.known_patterns:
+            self.known_patterns.append(strategy)
+
+        # 根据近 N 轮检测成功率动态调整灵敏度
+        window = self.detection_history[-10:]
+        n_detected = sum(1 for r in window if r.get("detected", False))
+        detection_rate = n_detected / len(window)
+
+        if detection_rate >= 0.7:
+            # 检测能力强 → 小幅提升，避免过拟合
+            self.sensitivity_boost = min(self.sensitivity_boost + 0.02, 0.15)
+        elif detection_rate <= 0.3:
+            # 检测能力弱 → 大幅提升，加速学习
+            self.sensitivity_boost = min(self.sensitivity_boost + 0.05, 0.25)
+        else:
+            # 中等 → 稳步提升
+            self.sensitivity_boost = min(self.sensitivity_boost + 0.03, 0.20)
 
     async def evaluate_round(
         self,
@@ -127,6 +163,14 @@ class AgentC:
         argument_quality_b += profile["tool_awareness_weight"] * self._tool_awareness_bonus(agent_b_text)
         argument_quality_a += 0.01 * len(tool_report_a["successful_tools"]) * tool_report_a["support_score"]
         argument_quality_b += 0.01 * len(tool_report_b["successful_tools"]) * tool_report_b["support_score"]
+
+        # ── 防御升级：已知模式惩罚 + 灵敏度提升 ──
+        if self.known_patterns and agent_a_text:
+            a_lower = agent_a_text.lower()
+            pattern_hits = sum(1 for p in self.known_patterns if p.lower() in a_lower)
+            if pattern_hits:
+                argument_quality_a -= 0.04 * pattern_hits  # 重复策略惩罚
+        argument_quality_b += self.sensitivity_boost  # 跨轮学习增益
 
         if jury_consensus >= 0.8:
             if jury_winner == "agent_b":

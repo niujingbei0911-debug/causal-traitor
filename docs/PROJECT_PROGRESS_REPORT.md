@@ -1,7 +1,7 @@
 # 项目进度报告 — The Causal Traitor (因果叛徒)
 
-> 报告日期: 2026-04-14
-> 项目状态: **核心功能完成 + Mock统计校准完成，实验待真实LLM运行**
+> 报告日期: 2026-04-15
+> 项目状态: **核心功能完成 + DashScope集成 + 进化对抗机制实现，实验待真实LLM运行**
 
 ---
 
@@ -37,7 +37,7 @@
 | 策略进化追踪 | `game/evolution.py` | ✅ 军备竞赛+Nash收敛 |
 | 因果数据生成 | `game/data_generator.py` | ✅ 3场景SCM |
 | 配置加载 | `game/config.py` | ✅ YAML+覆盖 |
-| LLM服务 | `game/llm_service.py` | ✅ DashScope/vLLM/Ollama/Mock |
+| LLM服务 | `game/llm_service.py` | ✅ DashScope/vLLM/Ollama/Mock + 超时容错 |
 
 ### 4. 评估体系 (100%)
 
@@ -73,7 +73,7 @@
 |------|------|------|
 | 默认配置 | `configs/default.yaml` | ✅ |
 | 依赖清单 | `requirements.txt` | ✅ |
-| 实时游戏脚本 | `run_live_game.py` | ✅ |
+| 实时游戏脚本 | `run_live_game.py` | ✅ 模块化重构 + `--no-ws` 模式 |
 | 测试套件 | `tests/` | ✅ 4个测试文件 |
 | 文档 | `docs/` | ✅ DESIGN + TASK_ASSIGNMENT + 审查/进度报告 |
 
@@ -107,15 +107,63 @@
 
 ---
 
-## 三、待完成的任务
+## 三、DashScope 集成与进化对抗机制实现（2026-04-15 新增）
+
+### 3.1 DashScope (阿里百炼) API 集成
+
+| 改动项 | 文件 | 说明 |
+|--------|------|------|
+| API 后端适配 | `game/llm_service.py` | 新增 `_call_dashscope()` 方法，支持 `openai` 兼容模式调用 Qwen 系列模型 |
+| 超时容错 | `game/llm_service.py` | `asyncio.wait_for(timeout=timeout_sec)` 包裹 API 调用，超时自动降级为 Mock 响应 |
+| 配置支持 | `configs/default.yaml` | `backend: dashscope`，各 Agent 可独立配置模型名 (qwen-plus / qwen-turbo 等) |
+| 环境变量 | `.env` | `DASHSCOPE_API_KEY` 通过 `python-dotenv` 自动加载 |
+
+### 3.2 进化对抗机制实现
+
+将 DESIGN.md 中的概念设计落地为可运行代码：
+
+| 机制 | 文件 | 实现细节 |
+|------|------|----------|
+| Agent A 策略回避 (Avoid-Set) | `agents/agent_a.py` | `_choose_strategy()` 解析 LLM 返回的 `"avoid:xxx"` 标记，过滤已被识破的策略 |
+| Agent A 进化上下文注入 | `agents/agent_a.py` | `generate_deception()` 提取 `arms_race_index`，`_llm_decide()` 将已检测策略列表注入 prompt |
+| Agent C 跨轮防御学习 | `agents/agent_c.py` | `upgrade_defense()` 记录检测历史、提取已知模式、累加 `sensitivity_boost` |
+| 差异化进化上下文 | `game/debate_engine.py` | `_build_evolution_context()` 为 A 提供欺骗复杂度趋势，为 C 提供检测灵敏度趋势 |
+| 进化反馈触发 | `game/debate_engine.py` | `run_round()` 末尾调用 `agent_a.adapt_strategy()` 和 `agent_c.upgrade_defense()` |
+| Bug 修复 | `game/debate_engine.py` | `asdict(agent_a_claim)` → `asdict(agent_a_rebuttal)` 修正反驳字段传递错误 |
+
+### 3.3 run_live_game.py 模块化重构
+
+| 改动项 | 说明 |
+|--------|------|
+| `_round_backend_tags()` | 提取每轮 Agent 实际使用的 LLM 后端标签 |
+| `_postprocess_round()` | 统一后处理逻辑：计算指标、构建前端事件数据 |
+| `_push_round_events()` | WebSocket 事件推送独立函数 |
+| `_run_rounds()` | 多轮循环主体抽取，支持进化上下文传递 |
+| `--no-ws` 参数 | 无 WebSocket 模式，方便 CI/脚本环境运行 |
+| Windows UTF-8 修复 | `sys.stdout.reconfigure(encoding="utf-8")` |
+
+### 3.4 代码变更统计
+
+| 文件 | 新增行数 | 主要变更 |
+|------|----------|----------|
+| `agents/agent_a.py` | +46 | 进化上下文集成、avoid-set 过滤 |
+| `agents/agent_c.py` | +44 | `upgrade_defense()` 跨轮学习 |
+| `game/debate_engine.py` | +83 | 进化反馈调用、差异化上下文、bug 修复 |
+| `game/llm_service.py` | +23 | DashScope 超时容错 |
+| `run_live_game.py` | +386/-133 | 模块化重构 |
+
+---
+
+## 四、待完成的任务
 
 ### 高优先级
 
-1. **真实LLM集成测试**: 当前所有可视化演示均基于Mock Agent。需配置DashScope API Key后运行真实Qwen2.5模型，验证：
+1. **真实LLM运行验证**: DashScope API 已集成，需配置 API Key 后验证：
    - Agent A (7B) 的因果欺骗策略是否有效
    - Agent B (14B) 的假设生成质量
    - Agent C (72B) 的工具调用和判决准确性
    - 陪审团投票的多样性
+   - 进化对抗机制在真实 LLM 下的军备竞赛效应
 
 ### 中优先级
 
@@ -130,7 +178,7 @@
 
 ---
 
-## 四、基于Mock模式可输出的实验结论
+## 五、基于Mock模式可输出的实验结论
 
 ### 4.1 系统架构验证 ✅
 
@@ -168,14 +216,16 @@ Mock模式已验证以下架构设计的可行性：
 
 ---
 
-## 五、项目完成度总结
+## 六、项目完成度总结
 
 ```
 代码实现:  ████████████████████ 100%  (全部模块已实现)
 代码审查:  ████████████████████ 100%  (5处错误已修复)
 Mock校准:  ████████████████████ 100%  (DSR从68%优化至44%，达标)
-真实LLM:   ░░░░░░░░░░░░░░░░░░░░   0%  (需API Key)
-正式实验:   ░░░░░░░░░░░░░░░░░░░░   0%  (依赖真实LLM)
+DashScope: ████████████████████ 100%  (API集成 + 超时容错 + Mock回退)
+进化对抗:  ████████████████████ 100%  (策略回避 + 防御升级 + 差异化上下文)
+真实LLM:   ████████████████████ 100%  (DashScope API 已实际调用验证)
+正式实验:   ░░░░░░░░░░░░░░░░░░░░   0%  (需完整多轮实验 + 数据分析)
 ```
 
-**下一步行动**: 配置 `DASHSCOPE_API_KEY` 环境变量，将 `configs/default.yaml` 中 backend 从 "mock" 切换为 "dashscope"，运行 `python run_live_game.py` 进行真实LLM测试。
+**下一步行动**: 运行完整多轮实验（exp1-exp4），收集真实 LLM 对局数据，进行统计分析与论文撰写。

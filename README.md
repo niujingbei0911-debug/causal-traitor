@@ -25,7 +25,7 @@
 
 1. **Pearl三层因果阶梯对抗**：覆盖关联 P(Y|X)、干预 P(Y|do(X))、反事实 P(Y_x|X=x',Y=y') 三个层级
 2. **动态难度控制器**：基于Flow理论，目标DSR维持在30%-50%
-3. **多轮进化博弈**：Agent策略随对局进化，追踪策略演化轨迹与军备竞赛检测
+3. **多轮进化博弈**：Agent A 策略回避 + Agent C 防御升级 + 差异化进化上下文，军备竞赛检测驱动对抗升级
 4. **12种因果工具集成**：DoWhy、CausalML、causallearn等工具的实际调用
 5. **Mock Fallback机制**：无需LLM API即可完整运行，内置统计校准的Mock Agent
 
@@ -48,7 +48,7 @@ causal-traitor/
 ├── .pre-commit-config.yaml      # 代码规范（black/ruff/mypy）
 │
 ├── docs/                        # 项目文档
-│   ├── DESIGN.md               # 详细设计方案（v2）
+│   ├── DESIGN.md               # 详细设计方案（v2.1）
 │   ├── TASK_ASSIGNMENT.md      # 三人协作任务分工
 │   ├── CODE_REVIEW_REPORT.md   # 代码审查报告
 │   └── PROJECT_PROGRESS_REPORT.md # 项目进度报告
@@ -77,7 +77,7 @@ causal-traitor/
 │   ├── llm_service.py          # LLM后端适配（mock/dashscope/vllm/ollama）
 │   ├── debate_engine.py        # 辩论引擎（真实Agent优先，失败时回退Mock）
 │   ├── difficulty.py           # 动态难度控制器（Flow理论，DSR目标30%-50%）
-│   ├── evolution.py            # 策略进化追踪（11种策略 + 军备竞赛检测）
+│   ├── evolution.py            # 策略进化追踪（11种策略 + 军备竞赛 + 复杂度/灵敏度趋势）
 │   └── data_generator.py       # 因果场景数据生成（3个SCM场景）
 │
 ├── evaluation/                  # 评估模块
@@ -243,10 +243,12 @@ models:
 |------|------|------|
 | `game/` | ✅ 可运行 | 数据生成、难度控制、进化追踪、统一入口已接通 |
 | `causal_tools/` | ✅ 可运行 | L1/L2/L3 与 meta tools 均可执行 |
-| `agents/` | ✅ 可运行 | A/B/C 为 LLM-first + tool-backed 流程 |
+| `agents/` | ✅ 可运行 | A/B/C 为 LLM-first + tool-backed，进化对抗已实现 |
 | `experiments/` | ✅ 可运行 | exp1/2/3/4 均可落盘结果 |
 | `visualization/` | ✅ 可运行 | 前后端和 live game 数据流可启动 |
-| 游戏平衡 | 🚧 待调参 | 当前真实实验里 A 仍偏弱，B/C/jury 偏强 |
+| DashScope LLM | ✅ 已集成 | 真实 LLM 调用 + 超时容错 + Mock 回退 |
+| 进化对抗 | ✅ 已实现 | 策略回避 + 防御升级 + 差异化上下文 |
+| 游戏平衡 | 🚧 待调参 | 真实实验中 A 仍偏弱，需进一步调参 |
 
 ## 👥 团队分工
 
