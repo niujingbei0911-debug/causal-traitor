@@ -30,6 +30,20 @@ except ImportError:  # pragma: no cover - openai is declared in requirements.txt
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+
+def _looks_like_api_key(value: Any) -> bool:
+    """Reject placeholders like '在这里粘贴你的API_KEY' that would break header encoding."""
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    if not candidate.startswith("sk-"):
+        return False
+    try:
+        candidate.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
 # Friendly aliases → DashScope model ids.
 _MODEL_ALIAS = {
     "qwen/qwen2.5-7b-instruct": "qwen2.5-7b-instruct",
@@ -203,10 +217,10 @@ class LLMService:
     _DEFAULT_DASHSCOPE_API_KEY: str | None = "sk-9ce1a9d2872b4edbb6b5e5817a78d296"
 
     def _resolve_api_key(self) -> str | None:
-        if self._explicit_api_key:
+        if self._explicit_api_key and _looks_like_api_key(self._explicit_api_key):
             return str(self._explicit_api_key)
         for env_name in ("DASHSCOPE_API_KEY", "OPENAI_API_KEY"):
             value = os.environ.get(env_name)
-            if value:
+            if value and _looks_like_api_key(value):
                 return value
         return self._DEFAULT_DASHSCOPE_API_KEY or None

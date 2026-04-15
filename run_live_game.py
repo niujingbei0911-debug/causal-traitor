@@ -116,6 +116,35 @@ def _arms_race(deception: float, detection: float) -> float:
     return round(balance * intensity, 4)
 
 
+def _describe_runtime_mode(engine: DebateEngine) -> str:
+    """Summarize whether the current run is using real LLM APIs or mock fallbacks."""
+    labels: list[str] = []
+    for agent_name in ("agent_a", "agent_b", "agent_c"):
+        agent = getattr(engine, agent_name, None)
+        service = getattr(agent, "llm_service", None)
+        if service is None:
+            labels.append(f"{agent_name}=mock")
+            continue
+
+        backend = getattr(service, "backend", "mock")
+        client = getattr(service, "_client", None)
+        if backend in {"dashscope", "api"} and client is not None:
+            labels.append(f"{agent_name}=dashscope")
+        elif backend in {"vllm", "ollama"}:
+            labels.append(f"{agent_name}={backend}(fallback)")
+        else:
+            labels.append(f"{agent_name}=mock")
+
+    unique_labels = {label.split("=", 1)[1] for label in labels}
+    if unique_labels == {"mock"}:
+        prefix = "mock 模式"
+    elif len(unique_labels) == 1:
+        prefix = f"{next(iter(unique_labels))} 模式"
+    else:
+        prefix = "mixed 模式"
+    return f"{prefix}; " + ", ".join(labels)
+
+
 # ── WebSocket 发送 ───────────────────────────────────────────────────
 
 async def _send(ws, event_type: str, round_id: int, data: dict, delay: float):
@@ -141,7 +170,7 @@ async def run(rounds: int, delay: float, ws_url: str):
     engine = DebateEngine(cfg)
     await engine.initialize()
 
-    print(f"🎮 运行 {rounds} 轮游戏 (mock 模式)...")
+    print(f"🎮 运行 {rounds} 轮游戏 ({_describe_runtime_mode(engine)})...")
     results: list[dict[str, Any]] = await engine.run_game(num_rounds=rounds)
     print(f"✅ 引擎完成, 共 {len(results)} 轮结果\n")
 
