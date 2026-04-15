@@ -11,6 +11,7 @@ from typing import Optional
 import networkx as nx
 import pandas as pd
 
+from agents.prompts.agent_b_prompts import AGENT_B_SYSTEM_PROMPT
 from causal_tools.l1_association import conditional_independence_test, compute_correlation, partial_correlation
 from causal_tools.l2_intervention import backdoor_adjustment_check, iv_estimation, sensitivity_analysis
 from causal_tools.l3_counterfactual import (
@@ -81,7 +82,7 @@ class AgentB:
         data = self._get_data(scenario)
         graph = self._get_graph(scenario)
         variables = self._get_variables(scenario, data)
-        treatment, outcome = self._infer_focus_variables(claim, variables)
+        treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario)
         conditioning = [variable for variable in variables if variable not in {treatment, outcome}][:2]
 
         reasoning_chain: list[str] = []
@@ -172,29 +173,52 @@ class AgentB:
         detected_fallacies = self._deduplicate(detected_fallacies)
         discovered_hidden_vars = self._deduplicate(discovered_hidden_vars)
         tools_used = self._deduplicate(tools_used)
-        confidence = min(0.95, 0.35 + 0.12 * len(detected_fallacies) + 0.08 * len(discovered_hidden_vars) + 0.03 * len(tools_used))
+        fallback_confidence = min(
+            0.95,
+            0.35
+            + 0.12 * len(detected_fallacies)
+            + 0.08 * len(discovered_hidden_vars)
+            + 0.03 * len(tools_used),
+        )
 
-        narration = await self._narrate(
+        llm_payload = await self._llm_decide(
             claim=claim,
             level=level,
             fallacies=detected_fallacies,
             hidden=discovered_hidden_vars,
             reasoning=reasoning_chain,
+            tools=tools_used,
         )
-        if narration:
-            reasoning_chain = reasoning_chain + [f"[LLM] {narration}"]
+        final_fallacies = self._merge_lists(
+            detected_fallacies,
+            self._normalize_list(llm_payload.get("detected_fallacies")),
+        )
+        final_hidden = self._merge_lists(
+            discovered_hidden_vars,
+            self._normalize_list(llm_payload.get("discovered_hidden_vars")),
+        )
+        final_tools = self._merge_lists(
+            tools_used,
+            self._normalize_list(llm_payload.get("tools_used")),
+        )
+        llm_reasoning = self._normalize_list(llm_payload.get("reasoning_chain"))
+        final_reasoning = llm_reasoning or reasoning_chain
+        final_confidence = self._normalize_confidence(
+            llm_payload.get("confidence"),
+            fallback=fallback_confidence,
+        )
 
         result = DetectionResult(
-            detected_fallacies=detected_fallacies,
-            discovered_hidden_vars=discovered_hidden_vars,
-            confidence=confidence,
-            reasoning_chain=reasoning_chain,
-            tools_used=tools_used,
+            detected_fallacies=final_fallacies,
+            discovered_hidden_vars=final_hidden,
+            confidence=final_confidence,
+            reasoning_chain=final_reasoning,
+            tools_used=final_tools,
         )
         self.detection_history.append(result)
         return result
 
-    async def _narrate(
+    async def _llm_decide(
         self,
         *,
         claim: str,
@@ -202,29 +226,29 @@ class AgentB:
         fallacies: list[str],
         hidden: list[str],
         reasoning: list[str],
-    ) -> str:
+        tools: list[str],
+    ) -> dict:
         if self.llm_service is None or getattr(self.llm_service, "backend", "mock") == "mock":
-            return ""
+            return {}
         prompt = (
-            f"你是一名严谨的因果科学家，正在审视下面的因果声明并给出批判性意见。\n"
             f"因果层级：L{level}\n"
             f"对手声明：{claim}\n"
-            f"已识别的潜在谬误：{', '.join(fallacies) if fallacies else '尚未明显识别'}\n"
-            f"疑似隐变量：{', '.join(hidden) if hidden else '无'}\n"
-            f"工具推理链（节选）：{' '.join(reasoning[:5])}\n"
-            f"请用 3-5 句话，用专业语言指出该声明中最关键的因果推理缺陷。"
+            f"工具初步识别出的谬误：{fallacies or ['无']}\n"
+            f"疑似隐变量：{hidden or ['无']}\n"
+            f"已调用工具：{tools or ['无']}\n"
+            f"工具推理链：{reasoning[:8]}\n"
+            "请基于这些证据，直接输出一个 JSON 对象，字段必须包括："
+            'detected_fallacies, discovered_hidden_vars, confidence, reasoning_chain, tools_used。'
+            "你需要自己做最终判断，而不是复述输入。"
         )
         try:
-            response = await self.llm_service.generate(
+            _, payload = await self.llm_service.generate_json(
                 prompt,
-                system_prompt="你是一位严格的因果推断科学家，偏好结构化、工具支持的批判。",
+                system_prompt=AGENT_B_SYSTEM_PROMPT,
             )
-            text = (response.text or "").strip()
-            if text.startswith("[mock:"):
-                return ""
-            return text
+            return payload or {}
         except Exception:
-            return ""
+            return {}
 
     async def select_tools(self, level: int, claim: str) -> list[str]:
         """根据层级和声明选择合适的因果工具"""
@@ -266,7 +290,12 @@ class AgentB:
             raise ValueError("场景至少需要两个变量")
         return variables
 
-    def _infer_focus_variables(self, claim: str, variables: list[str]) -> tuple[str, str]:
+    def _infer_focus_variables(self, claim: str, variables: list[str], scenario=None) -> tuple[str, str]:
+        ground_truth = getattr(scenario, "ground_truth", {}) or {}
+        treatment = ground_truth.get("treatment")
+        outcome = ground_truth.get("outcome")
+        if treatment in variables and outcome in variables:
+            return str(treatment), str(outcome)
         matched = [variable for variable in variables if variable.lower() in claim.lower()]
         if len(matched) >= 2:
             return matched[0], matched[1]
@@ -297,3 +326,18 @@ class AgentB:
             if item and item not in seen:
                 seen.append(item)
         return seen
+
+    def _normalize_list(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    def _normalize_confidence(self, value: object, *, fallback: float) -> float:
+        try:
+            number = float(value)
+        except Exception:
+            return fallback
+        return max(0.0, min(1.0, number))
+
+    def _merge_lists(self, left: list[str], right: list[str]) -> list[str]:
+        return self._deduplicate([*left, *right])

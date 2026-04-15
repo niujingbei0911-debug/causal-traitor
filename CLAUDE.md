@@ -13,15 +13,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
+# Recommended local runtime in this repo (if present)
+./miniconda-env/bin/python main.py --rounds 1 --output outputs/run.json
+
 # Run a single game via the unified entry point
 python main.py --rounds 3 --output outputs/run.json
 
 # Run experiments (each writes JSON + CSV + Markdown sidecars)
 python -m experiments.exp1_causal_levels.run --rounds-per-level 20
+python -m experiments.exp2_jury_ablation.run --rounds 30 --level 2
+python -m experiments.exp3_difficulty.run --rounds 30
 python -m experiments.exp4_evolution.run --rounds 10 --level 2
 
-# Run visualization server (FastAPI + WebSocket)
-python -m visualization.api
+# Run visualization backend (FastAPI + WebSocket)
+python -c "import uvicorn; from visualization.api import VisualizationAPI; uvicorn.run(VisualizationAPI({'api_host':'127.0.0.1','api_port':8001,'websocket_path':'/ws/game'}).create_app(), host='127.0.0.1', port=8001)"
+
+# Run visualization frontend
+cd visualization/frontend && npm install && npm run dev -- --host 127.0.0.1 --port 5173
+
+# Stream a live game into the frontend
+python run_live_game.py --rounds 6 --delay 1.0 --ws ws://127.0.0.1:8001/ws/game
 
 # Tests
 pytest
@@ -63,8 +74,10 @@ The Jury votes before the Auditor so Agent C can factor jury consensus into its 
 - **Capability gradient**: Smaller model for creative deception (7B), larger for rigorous detection (14B) and auditing (72B)
 - **Dynamic difficulty**: `game/difficulty.py` targets ~0.4 deception success rate via Flow theory
 - **Strategy evolution**: `game/evolution.py` feeds round summaries back for adversarial co-evolution
-- **Mock-friendly engine**: `game/debate_engine.py` ships with built-in mock agents, so the full round loop runs without any real LLM. Real agents are tried first and fall back to mocks on failure or `NotImplementedError`.
-- **LLMService layering**: `game/llm_service.py` is the single backend adapter. `dashscope`/`api` is wired to Alibaba Bailian's OpenAI-compatible endpoint (default for Qwen2.5-7B/14B/72B); `vllm` and `ollama` are declared but fall back to mock until a local server is attached; `mock` is fully offline and deterministic. API key resolution order: explicit `api_key` in config → `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` env var → hardcoded low-cap dev key in `_DEFAULT_DASHSCOPE_API_KEY`. Agents call the service after their deterministic tool-backed reasoning to attach a natural-language extension; `[mock:...]` responses are silently dropped so behavior stays deterministic whenever the real backend is unavailable.
+- **LLM-first agents**: `Agent A/B/C` now ask the LLM for a structured JSON decision first, then validate/merge with tool evidence and fallback logic. The core target is no longer “rules first, LLM only adds narration.”
+- **Tool-backed guardrails**: `Agent B` and `Agent C` still run the Pearl toolchain and use its outputs as constraints, evidence, and fallback when the model response is missing or malformed.
+- **Mock-friendly engine**: `game/debate_engine.py` still ships with built-in mock agents, so the full round loop runs offline. Real agents are initialized first; mocks are only used when initialization or runtime fails.
+- **LLMService layering**: `game/llm_service.py` is the single backend adapter. `dashscope`/`api` is wired to Alibaba Bailian's OpenAI-compatible endpoint (default for Qwen2.5-7B/14B/72B). `vllm` and `ollama` remain placeholders and currently degrade to mock. `LLMService.generate_json(...)` is the key entrypoint for structured decisions.
 - **On-disk tracking**: `evaluation/tracker.py` writes `logs/<run_id>/` with `config.json`, `metrics.jsonl`, `rounds.jsonl`, and `artifacts/`. `main.py`, exp1, and exp4 all route results through it.
 
 ## Configuration
@@ -73,7 +86,13 @@ All game parameters in `configs/default.yaml`: model configs, debate rounds, cau
 
 ## Development Status
 
-Runnable end-to-end. `main.py`, exp1, and exp4 all execute full rounds (data generation → debate → evolution → tracking). Real agents (A/B/C) and the Pearl toolchain are wired in, and by default they hit Qwen2.5-7B/14B/72B on DashScope via the built-in LLMService. Tests and any run without the key still work through the mock fallback. The `vllm` / `ollama` backends are placeholders until a local server is attached. See `docs/TASK_ASSIGNMENT.md` for the phased implementation plan and team assignments.
+Runnable end-to-end. `main.py` plus `exp1/exp2/exp3/exp4` all execute full rounds (data generation → debate → jury → audit → evolution → tracking), and the visualization stack can consume a live event stream via `run_live_game.py`. Real agents (A/B/C) and the Pearl toolchain are wired in, and the default configuration targets Qwen2.5-7B/14B/72B on DashScope through the built-in `LLMService`.
+
+Current practical status:
+
+- The framework, experiment entrypoints, tracking, and frontend are all runnable.
+- The decision flow is now **LLM-first**, but `Agent B/C` plus the jury still form a strong “audit coalition,” so `Agent A` is currently underpowered in real runs.
+- The next tuning target is not infrastructure, but game balance: improving `Agent A` deception quality and/or reducing `Agent C` / jury bias so `DSR` moves closer to the intended range.
 
 ## Key Dependencies
 

@@ -6,9 +6,11 @@ Agent C - 审计员（Auditor）
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Optional
 
 from agents.jury import JuryAggregator, JuryVerdict
+from agents.prompts.agent_c_prompts import AGENT_C_WITH_JURY_PROMPT
 from agents.tool_executor import ToolExecutor
 from causal_tools.meta_tools import argument_logic_check
 from game.llm_service import LLMService
@@ -131,7 +133,7 @@ class AgentC:
             list(agent_a_logic.get("detected_fallacies", []))
             + tool_report["identified_issues"]
         )
-        reasoning = self._build_reasoning(
+        fallback_reasoning = self._build_reasoning(
             winner=winner,
             jury_winner=jury_winner,
             jury_consensus=jury_consensus,
@@ -140,24 +142,41 @@ class AgentC:
             agent_b_logic=agent_b_logic,
         )
 
-        narration = await self._narrate(
+        llm_payload = await self._llm_decide(
             winner=winner,
             jury_winner=jury_winner,
             jury_consensus=jury_consensus,
             tool_report=tool_report,
             agent_a_text=agent_a_text,
             agent_b_text=agent_b_text,
+            debate_transcript=transcript,
+            fallback_reasoning=fallback_reasoning,
         )
-        if narration:
-            reasoning = f"{reasoning}\n\n[LLM audit]\n{narration}"
+        final_winner = self._normalize_winner(llm_payload.get("winner"), fallback=winner)
+        final_reasoning = self._clean_text(llm_payload.get("reasoning")) or fallback_reasoning
+        final_identified_issues = self._deduplicate(
+            identified_issues + self._normalize_list(llm_payload.get("identified_issues"))
+        )
+        final_quality_a = self._normalize_score(
+            llm_payload.get("argument_quality_a"),
+            fallback=argument_quality_a,
+        )
+        final_quality_b = self._normalize_score(
+            llm_payload.get("argument_quality_b"),
+            fallback=argument_quality_b,
+        )
+        final_causal_validity = self._normalize_score(
+            llm_payload.get("causal_validity_score"),
+            fallback=causal_validity_score,
+        )
 
         return AuditVerdict(
-            winner=winner,
-            causal_validity_score=causal_validity_score,
-            argument_quality_a=argument_quality_a,
-            argument_quality_b=argument_quality_b,
-            reasoning=reasoning,
-            identified_issues=identified_issues,
+            winner=final_winner,
+            causal_validity_score=final_causal_validity,
+            argument_quality_a=final_quality_a,
+            argument_quality_b=final_quality_b,
+            reasoning=final_reasoning,
+            identified_issues=final_identified_issues,
             tools_used=tool_report["successful_tools"],
             jury_consensus=jury_consensus,
         )
@@ -259,7 +278,7 @@ class AgentC:
     def _clamp(self, value: float) -> float:
         return max(0.0, min(1.0, value))
 
-    async def _narrate(
+    async def _llm_decide(
         self,
         *,
         winner: str,
@@ -268,26 +287,58 @@ class AgentC:
         tool_report: dict,
         agent_a_text: str,
         agent_b_text: str,
-    ) -> str:
+        debate_transcript: str,
+        fallback_reasoning: str,
+    ) -> dict:
         if self.llm_service is None or getattr(self.llm_service, "backend", "mock") == "mock":
-            return ""
+            return {}
+        jury_payload = json.dumps(
+            {
+                "jury_winner": jury_winner,
+                "jury_consensus": jury_consensus,
+                "tool_issues": tool_report.get("identified_issues", []),
+                "tool_evidence": tool_report.get("supporting_evidence", []),
+                "fallback_winner": winner,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        transcript_payload = (
+            f"Agent A:\n{agent_a_text[:800]}\n\n"
+            f"Agent B:\n{agent_b_text[:800]}\n\n"
+            f"Full transcript excerpt:\n{debate_transcript[:1200]}\n\n"
+            f"Fallback reasoning:\n{fallback_reasoning}"
+        )
         prompt = (
-            f"你是因果辩论的审计员，已完成工具验证与陪审团听证，请用 4-6 句话给出最终审计陈述。\n"
-            f"裁定：{winner}。陪审团倾向：{jury_winner}，共识度 {jury_consensus:.2f}。\n"
-            f"工具识别的问题：{'; '.join(tool_report.get('identified_issues', [])) or '无显著问题'}\n"
-            f"工具提供的支持证据：{'; '.join(tool_report.get('supporting_evidence', [])) or '较弱'}\n"
-            f"Agent A 的论述节选：{agent_a_text[:500]}\n"
-            f"Agent B 的论述节选：{agent_b_text[:500]}\n"
-            f"请基于以上写一段客观、专业的审计总结。"
+            AGENT_C_WITH_JURY_PROMPT
+            .replace("{jury_result}", jury_payload)
+            .replace("{debate_transcript}", transcript_payload)
         )
         try:
-            response = await self.llm_service.generate(
+            _, payload = await self.llm_service.generate_json(
                 prompt,
                 system_prompt="你是一个冷静、严谨的因果辩论审计员，必须依据工具与陪审团证据给出结论。",
             )
-            text = (response.text or "").strip()
-            if text.startswith("[mock:"):
-                return ""
-            return text
+            return payload or {}
         except Exception:
-            return ""
+            return {}
+
+    def _normalize_winner(self, value: object, *, fallback: str) -> str:
+        if isinstance(value, str) and value in {"agent_a", "agent_b", "draw"}:
+            return value
+        return fallback
+
+    def _normalize_score(self, value: object, *, fallback: float) -> float:
+        try:
+            score = float(value)
+        except Exception:
+            return fallback
+        return self._clamp(score)
+
+    def _normalize_list(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    def _clean_text(self, value: object) -> str:
+        return value.strip() if isinstance(value, str) else ""

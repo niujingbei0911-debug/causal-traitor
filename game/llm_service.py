@@ -18,7 +18,9 @@ the rest of the pipeline keeps running.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,6 +123,24 @@ class LLMService:
 
         raise ValueError(f"Unsupported backend: {self.backend}")
 
+    async def generate_json(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[LLMResponse, dict[str, Any] | None]:
+        """Generate text and parse the first JSON object found in the response."""
+
+        response = await self.generate(
+            prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response, self.extract_json_object(response.text)
+
     # ------------------------------------------------------------------
     # backends
     # ------------------------------------------------------------------
@@ -207,6 +227,34 @@ class LLMService:
             model_name=self.model_name,
             metadata=metadata,
         )
+
+    @staticmethod
+    def extract_json_object(text: str | None) -> dict[str, Any] | None:
+        """Extract the first valid JSON object from a model response."""
+
+        if not text:
+            return None
+
+        candidates: list[str] = []
+        stripped = text.strip()
+        candidates.append(stripped)
+
+        fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)```", stripped, flags=re.IGNORECASE)
+        candidates.extend(block.strip() for block in fenced if block.strip())
+
+        first = stripped.find("{")
+        last = stripped.rfind("}")
+        if first != -1 and last != -1 and first < last:
+            candidates.append(stripped[first : last + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
 
     # ------------------------------------------------------------------
     # helpers

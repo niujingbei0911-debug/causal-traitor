@@ -14,26 +14,28 @@
 | **Agent C（审计员）** | Qwen2.5-72B | 评估因果论证质量，裁决胜负 |
 | **Jury（陪审团）** | 3-5个中等模型 | 多视角加权投票，增强鲁棒性 |
 
+当前实现不是简单的“规则脚本演示”。A/B/C 现在都走 **LLM-first 的结构化决策链**：
+- Agent A 先让 LLM 产出误导性 `causal_claim/content/evidence/strategy`
+- Agent B 先让 LLM 产出结构化检测结论，再和工具结果合并
+- Agent C 先让 LLM 产出结构化裁决，再与 jury / tool executor 结果对齐
+
+工具链仍然非常重要，但主要作用已经从“直接决定一切”转成了“证据、约束与 fallback”。
+
 ### 核心创新点
 
 1. **Pearl三层因果阶梯对抗**：覆盖关联 P(Y|X)、干预 P(Y|do(X))、反事实 P(Y_x|X=x',Y=y') 三个层级
-2. **动态难度控制器**：基于Flow理论，目标DSR维持在30%-50%（实测优化至44%）
+2. **动态难度控制器**：基于Flow理论，目标DSR维持在30%-50%
 3. **多轮进化博弈**：Agent策略随对局进化，追踪策略演化轨迹与军备竞赛检测
 4. **12种因果工具集成**：DoWhy、CausalML、causallearn等工具的实际调用
 5. **Mock Fallback机制**：无需LLM API即可完整运行，内置统计校准的Mock Agent
 
-### 实现优化（相对于原始设计方案）
+### 当前运行状态
 
-在实现过程中，对原始 `DESIGN.md` 方案进行了以下良性优化：
-
-| 优化项 | 原始设计 | 实际实现 | 效果 |
-|--------|---------|---------|------|
-| **Mock Agent参数校准** | 简单随机Mock | 基于统计分布的精细Mock（ScientistAgent噪声±0.15，AuditorAgent欺骗概率0.32/阈值0.52） | DSR从68%降至44%，进入目标区间 |
-| **陪审团聚合策略** | 简单多数投票 | 加权投票 + A胜率0.40 + 一致性阈值0.70 | 更平衡的裁决结果 |
-| **难度控制器参数** | adjustment_rate=0.15 | adjustment_rate=0.18, tolerance=0.08 | 更快收敛到Flow区间 |
-| **前端可视化** | 基础图表 | React + D3.js + Tailwind CSS + WebSocket实时推送 | 完整的实时博弈可视化 |
-| **实验脚本重构** | 4个占位实验 | 3个可运行实验（因果层级基准、陪审团消融、难度对比） | 实际可执行的实验流程 |
-| **Live Game入口** | 仅main.py CLI | 新增 `run_live_game.py` + WebSocket事件推送 | 支持前端实时观战 |
+- `main.py`、`exp1`、`exp2`、`exp3`、`exp4` 都可以实际运行并落盘 `JSON/CSV/MD` 结果。
+- `evaluation/tracker.py` 会把每次运行写到 `logs/<run_id>/`。
+- 前端可通过 `run_live_game.py` 收到实时 WebSocket 事件。
+- DashScope API 可作为默认后端；断网或调用失败时会退回 mock fallback。
+- 当前博弈仍偏向 `B + C + jury` 一侧，真实实验里 `Agent A` 还需要继续增强。
 
 ## 🏗️ 项目结构
 
@@ -73,7 +75,7 @@ causal-traitor/
 │   ├── config.py               # YAML配置加载器
 │   ├── types.py                # 共享数据结构（GamePhase, CausalScenario等）
 │   ├── llm_service.py          # LLM后端适配（mock/dashscope/vllm/ollama）
-│   ├── debate_engine.py        # 辩论引擎（轮次编排 + Mock Agent内置）
+│   ├── debate_engine.py        # 辩论引擎（真实Agent优先，失败时回退Mock）
 │   ├── difficulty.py           # 动态难度控制器（Flow理论，DSR目标30%-50%）
 │   ├── evolution.py            # 策略进化追踪（11种策略 + 军备竞赛检测）
 │   └── data_generator.py       # 因果场景数据生成（3个SCM场景）
@@ -126,7 +128,8 @@ causal-traitor/
 
 - Python 3.10+
 - Node.js 18+（仅前端可视化需要）
-- CUDA 12.0+（仅本地LLM推理需要，Mock模式无需GPU）
+- DashScope / OpenAI-compatible API key（若要跑真实 LLM 决策）
+- CUDA 12.0+（仅本地LLM推理需要，当前 `vllm` / `ollama` 仍是占位后端）
 
 ### 安装
 
@@ -152,22 +155,23 @@ cd ../..
 ### 运行
 
 ```bash
-# 1. 运行完整辩论博弈（默认mock后端，无需GPU/API）
-python main.py
+# 1. 运行完整辩论博弈
+python main.py --rounds 3 --output outputs/run.json
 
-# 2. 启动实时博弈（带WebSocket事件推送）
-python run_live_game.py
+# 2. 启动可视化后端（FastAPI + WebSocket）
+python -c "import uvicorn; from visualization.api import VisualizationAPI; uvicorn.run(VisualizationAPI({'api_host':'127.0.0.1','api_port':8001,'websocket_path':'/ws/game'}).create_app(), host='127.0.0.1', port=8001)"
 
-# 3. 启动可视化后端（FastAPI + WebSocket）
-python -m visualization.api
+# 3. 启动前端开发服务器
+cd visualization/frontend && npm install && npm run dev -- --host 127.0.0.1 --port 5173
 
-# 4. 启动前端开发服务器
-cd visualization/frontend && npm run dev
+# 4. 推送实时博弈到前端
+python run_live_game.py --rounds 6 --delay 1.0 --ws ws://127.0.0.1:8001/ws/game
 
 # 5. 运行实验
-python -m experiments.exp1_causal_levels.run   # 因果层级基准
-python -m experiments.exp2_jury_ablation.run   # 陪审团消融
-python -m experiments.exp3_difficulty.run      # 难度对比
+python -m experiments.exp1_causal_levels.run --rounds-per-level 20
+python -m experiments.exp2_jury_ablation.run --rounds 30 --level 2
+python -m experiments.exp3_difficulty.run --rounds 30
+python -m experiments.exp4_evolution.run --rounds 10 --level 2
 
 # 6. 运行测试
 pytest tests/ -v
@@ -175,22 +179,25 @@ pytest tests/ -v
 
 ### LLM后端配置
 
-在 `configs/default.yaml` 中配置LLM后端：
+在 `configs/default.yaml` 中配置模型后端：
 
 ```yaml
-llm:
-  backend: mock          # mock | dashscope | vllm | ollama
-  # dashscope_api_key: your-key-here  # 使用dashscope时需要
-  models:
-    agent_a: qwen2.5-7b-instruct
-    agent_b: qwen2.5-14b-instruct
-    agent_c: qwen2.5-72b-instruct
+models:
+  agent_a:
+    name: qwen2.5-7b-instruct
+    backend: dashscope
+  agent_b:
+    name: qwen2.5-14b-instruct
+    backend: dashscope
+  agent_c:
+    name: qwen2.5-72b-instruct
+    backend: dashscope
 ```
 
-- **mock**（默认）：内置统计校准的Mock Agent，无需任何外部依赖即可完整运行
-- **dashscope**：通义千问API
-- **vllm**：本地vLLM推理服务
-- **ollama**：本地Ollama推理
+- `dashscope` / `api`：真实 Qwen API 路径
+- `mock`：离线 fallback，用于测试、断网和本地联调
+- `vllm` / `ollama`：已保留配置入口，但当前仍会退回 mock
+- API key 通过 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY` 读取，也支持在模型配置里显式传 `api_key`
 
 ## 📊 系统架构
 
@@ -213,6 +220,7 @@ llm:
 │  │  7B     │  │  14B    │  │  72B    │  │ 3-5×中等  │  │
 │  └────┬────┘  └────┬────┘  └────┬────┘  └─────┬─────┘  │
 │       │            │            │              │         │
+│       │      LLM-first structured decisions + tools      │
 │  ┌────┴────────────┴────────────┴──────────────┘        │
 │  │         causal_tools (12个因果分析工具)                │
 │  │    L1: correlation, CI_test                           │
@@ -229,15 +237,16 @@ llm:
 └─────────────────────────────────────────────────────────┘
 ```
 
-## 📅 开发计划
+## 📅 当前状态
 
-| 阶段 | 时间 | 内容 | 状态 |
-|------|------|------|------|
-| Phase 0 | Day 1 | 环境搭建、接口定义 | ✅ 完成 |
-| Phase 1 | Day 1-2 | 核心引擎开发（数据生成、因果工具、评估框架） | ✅ 完成 |
-| Phase 2 | Day 3-5 | Agent策略 + 辩论引擎 + 难度控制 + 进化追踪 | ✅ 完成 |
-| Phase 3 | Day 6-7 | 评估系统 + 可视化前后端 + WebSocket集成 | ✅ 完成 |
-| Phase 4 | Day 8-11 | 实验运行 + DSR优化 + 代码审查 | ✅ 完成 |
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| `game/` | ✅ 可运行 | 数据生成、难度控制、进化追踪、统一入口已接通 |
+| `causal_tools/` | ✅ 可运行 | L1/L2/L3 与 meta tools 均可执行 |
+| `agents/` | ✅ 可运行 | A/B/C 为 LLM-first + tool-backed 流程 |
+| `experiments/` | ✅ 可运行 | exp1/2/3/4 均可落盘结果 |
+| `visualization/` | ✅ 可运行 | 前后端和 live game 数据流可启动 |
+| 游戏平衡 | 🚧 待调参 | 当前真实实验里 A 仍偏弱，B/C/jury 偏强 |
 
 ## 👥 团队分工
 

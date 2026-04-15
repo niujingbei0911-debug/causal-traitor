@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 from dataclasses import asdict
 from typing import Any
@@ -382,30 +381,12 @@ class DebateEngine:
             "difficulty": scenario.difficulty,
         }
 
-    def _is_mock_mode(self) -> bool:
-        """Return *True* when no real LLM API key is available."""
-        return not (
-            os.environ.get("DASHSCOPE_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
-
     async def _prepare_component(
         self,
         component: Any | None,
         primary_factory: Any,
         fallback_factory: Any,
     ) -> Any:
-        # When no LLM key is configured and no component was injected,
-        # skip the real agent entirely and use the mock fallback.
-        if component is None and self._is_mock_mode():
-            instance = fallback_factory()
-            init_fn = getattr(instance, "initialize", None)
-            if init_fn is not None:
-                maybe = init_fn()
-                if hasattr(maybe, "__await__"):
-                    await maybe
-            return instance
-
         instance = component or primary_factory()
         initializer = getattr(instance, "initialize", None)
         if initializer is None:
@@ -501,12 +482,15 @@ class DebateEngine:
         return f"Detected issues: {issues}. Confidence={result.confidence:.2f}."
 
     def _resolve_winner(self, audit: AuditVerdict, jury_verdict: JuryVerdict) -> str:
+        if jury_verdict.final_winner == "draw":
+            return audit.winner
         if jury_verdict.final_winner == audit.winner:
             return audit.winner
         if jury_verdict.agreement_rate >= 0.70:
             return jury_verdict.final_winner
-        # 陪审团与审计员不一致且无高度共识时，优先信任陪审团多数意见
-        if random.random() < 0.5 + jury_verdict.agreement_rate * 0.3:
+        # 陪审团与审计员不一致且无高度共识时，更多信任审计员；
+        # 陪审团只保留少量纠偏权重。
+        if random.random() < 0.2 + jury_verdict.agreement_rate * 0.2:
             return jury_verdict.final_winner
         return audit.winner
 

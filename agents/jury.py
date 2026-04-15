@@ -49,6 +49,9 @@ class JuryAggregator:
     def __init__(self, config: dict):
         self.config = config
         self.jury_models = []
+        jury_cfg = self.config.get("models", {}).get("jury", self.config.get("jury", {}))
+        self.draw_margin = float(jury_cfg.get("draw_margin", 0.035))
+        self.draw_vote_weight = float(jury_cfg.get("draw_vote_weight", 0.2))
 
     async def initialize(self):
         """初始化所有陪审团模型"""
@@ -70,7 +73,12 @@ class JuryAggregator:
             base_score_b += 0.1
         if any(token in transcript for token in ["样本偏差", "selection bias", "逆因果"]):
             base_score_b += 0.05
+        if any(token in transcript for token in ["【场景已确认】", "已封闭", "已观测验证", "稳健显示", "f=", "调整后效应"]):
+            base_score_b -= 0.08
+        if any(token in transcript for token in ["显著相关", "可复现", "理论预期一致", "强工具"]):
+            base_score_b -= 0.05
 
+        base_score_b = min(0.92, max(0.08, base_score_b))
         base_score_a = 1.0 - base_score_b
         voting_method = self.config.get("models", {}).get("jury", {}).get("voting", "weighted")
         jury_models = self.jury_models or ["baseline_juror_1", "baseline_juror_2", "baseline_juror_3"]
@@ -79,9 +87,10 @@ class JuryAggregator:
             jitter = (index - (len(jury_models) - 1) / 2) * 0.03
             adjusted_b = min(0.95, max(0.05, base_score_b + jitter))
             adjusted_a = 1.0 - adjusted_b
-            if abs(adjusted_b - adjusted_a) < 0.08:
+            gap = abs(adjusted_b - adjusted_a)
+            if gap < self.draw_margin and max(adjusted_a, adjusted_b) < 0.62:
                 winner = "draw"
-                confidence = 0.5
+                confidence = 0.5 - min(0.15, gap)
             elif adjusted_b > adjusted_a:
                 winner = "agent_b"
                 confidence = adjusted_b
@@ -122,10 +131,16 @@ class JuryAggregator:
             if method in {"weighted", "bayesian"}:
                 weight = _model_weight(vote.model_name)
             confidence = vote.confidence if method != "majority" else 1.0
+            if vote.winner == "draw":
+                scores["draw"] += weight * confidence * self.draw_vote_weight
+                continue
             scores[vote.winner] += weight * confidence
 
         top_winner = max(scores, key=scores.get)
         ordered = sorted(scores.values(), reverse=True)
-        if len(ordered) >= 2 and abs(ordered[0] - ordered[1]) < 0.05:
+        if top_winner == "draw":
+            non_draw = {key: value for key, value in scores.items() if key != "draw"}
+            return max(non_draw.items(), key=lambda item: item[1])[0]
+        if len(ordered) >= 2 and abs(ordered[0] - ordered[1]) < self.draw_margin:
             return "draw"
         return top_winner
