@@ -13,6 +13,10 @@ import math
 import time
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import websockets
 
 from game.config import ConfigLoader
