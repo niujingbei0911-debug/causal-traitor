@@ -75,6 +75,8 @@ class AgentC:
         turns = list(getattr(debate_context, "turns", []))
         agent_a_text = self._collect_speaker_text(turns, {"agent_a", "a", "agent a"})
         agent_b_text = self._collect_speaker_text(turns, {"agent_b", "b", "agent b"})
+        initial_b_claim = self._collect_phase_text(turns, {"agent_b", "b", "agent b"}, "claim")
+        rebuttal_b_text = self._collect_phase_text(turns, {"agent_b", "b", "agent b"}, "rebuttal")
         transcript = "\n".join(
             f"{turn.get('speaker', 'unknown')}: {turn.get('content', '')}"
             for turn in turns
@@ -88,38 +90,61 @@ class AgentC:
             agent_b_text=agent_b_text,
             transcript=transcript,
         )
-        tool_report = self.tool_executor.execute_for_claim(
+        combined_b_case = "\n".join(
+            part for part in [initial_b_claim, rebuttal_b_text] if part
+        ).strip() or agent_b_text or transcript
+        tool_report_a = self.tool_executor.execute_for_claim(
             scenario=scenario,
             claim=agent_a_text or transcript,
             level=level,
-            context=context_flags,
+            context={**context_flags, "claim_stance": "anti_causal"},
+        )
+        tool_report_b = self.tool_executor.execute_for_claim(
+            scenario=scenario,
+            claim=combined_b_case,
+            level=level,
+            context={**context_flags, "claim_stance": "pro_causal"},
         )
 
         agent_a_logic = argument_logic_check(agent_a_text) if agent_a_text else {"n_fallacies_detected": 0, "detected_fallacies": []}
         agent_b_logic = argument_logic_check(agent_b_text) if agent_b_text else {"n_fallacies_detected": 0, "detected_fallacies": []}
 
-        argument_quality_a = 0.78 - 0.12 * agent_a_logic["n_fallacies_detected"] - 0.08 * len(tool_report["identified_issues"])
-        argument_quality_b = 0.62 - 0.08 * agent_b_logic["n_fallacies_detected"] + self._tool_awareness_bonus(agent_b_text)
-        argument_quality_b += 0.02 * len(tool_report["successful_tools"])
+        profile = self._level_profile(level)
+        rebuttal_confidence = self._extract_rebuttal_confidence(debate_context)
+        argument_quality_a = (
+            profile["a_base"]
+            + profile["a_support_weight"] * tool_report_a["support_score"]
+            - 0.05 * agent_a_logic["n_fallacies_detected"]
+            + self._anti_causal_bonus(level, agent_a_text, scenario)
+        )
+        argument_quality_b = (
+            profile["b_base"]
+            + profile["b_support_weight"] * tool_report_b["support_score"]
+            - 0.05 * agent_b_logic["n_fallacies_detected"]
+        )
+        argument_quality_b += profile["claim_weight"] * self._extract_b_confidence(debate_context)
+        argument_quality_b += profile["rebuttal_weight"] * rebuttal_confidence
+        argument_quality_b += profile["tool_awareness_weight"] * self._tool_awareness_bonus(agent_b_text)
+        argument_quality_a += 0.01 * len(tool_report_a["successful_tools"]) * tool_report_a["support_score"]
+        argument_quality_b += 0.01 * len(tool_report_b["successful_tools"]) * tool_report_b["support_score"]
 
         if jury_consensus >= 0.8:
             if jury_winner == "agent_b":
-                argument_quality_b += 0.12
+                argument_quality_b += profile["jury_high"]
             elif jury_winner == "agent_a":
-                argument_quality_a += 0.12
+                argument_quality_a += profile["jury_high"]
         elif jury_consensus >= 0.6:
             if jury_winner == "agent_b":
-                argument_quality_b += 0.06
+                argument_quality_b += profile["jury_mid"]
             elif jury_winner == "agent_a":
-                argument_quality_a += 0.06
+                argument_quality_a += profile["jury_mid"]
 
         argument_quality_a = self._clamp(argument_quality_a)
         argument_quality_b = self._clamp(argument_quality_b)
 
-        evidence_strength = min(0.25, 0.05 * len(tool_report["identified_issues"]) + 0.02 * len(tool_report["supporting_evidence"]))
-        if argument_quality_b - argument_quality_a > 0.05 + evidence_strength / 2:
+        if argument_quality_b - argument_quality_a > profile["margin"]:
             winner = "agent_b"
-        elif argument_quality_a - argument_quality_b > 0.08 and not tool_report["identified_issues"]:
+        elif argument_quality_a - argument_quality_b > profile["margin"]:
             winner = "agent_a"
         else:
             winner = "draw"
@@ -131,13 +156,15 @@ class AgentC:
         )
         identified_issues = self._deduplicate(
             list(agent_a_logic.get("detected_fallacies", []))
-            + tool_report["identified_issues"]
+            + tool_report_a["identified_issues"]
+            + tool_report_b["identified_issues"]
         )
         fallback_reasoning = self._build_reasoning(
             winner=winner,
             jury_winner=jury_winner,
             jury_consensus=jury_consensus,
-            tool_report=tool_report,
+            tool_report_a=tool_report_a,
+            tool_report_b=tool_report_b,
             agent_a_logic=agent_a_logic,
             agent_b_logic=agent_b_logic,
         )
@@ -146,7 +173,10 @@ class AgentC:
             winner=winner,
             jury_winner=jury_winner,
             jury_consensus=jury_consensus,
-            tool_report=tool_report,
+            tool_report={
+                "identified_issues": tool_report_a["identified_issues"] + tool_report_b["identified_issues"],
+                "supporting_evidence": tool_report_b["supporting_evidence"] + tool_report_a["supporting_evidence"],
+            },
             agent_a_text=agent_a_text,
             agent_b_text=agent_b_text,
             debate_transcript=transcript,
@@ -177,7 +207,7 @@ class AgentC:
             argument_quality_b=final_quality_b,
             reasoning=final_reasoning,
             identified_issues=final_identified_issues,
-            tools_used=tool_report["successful_tools"],
+            tools_used=self._deduplicate(tool_report_a["successful_tools"] + tool_report_b["successful_tools"]),
             jury_consensus=jury_consensus,
         )
 
@@ -207,6 +237,15 @@ class AgentC:
         for turn in turns:
             speaker = str(turn.get("speaker", "")).lower()
             if speaker in speaker_aliases:
+                parts.append(str(turn.get("content", "")))
+        return "\n".join(parts)
+
+    def _collect_phase_text(self, turns: list[dict], speaker_aliases: set[str], phase_value: str) -> str:
+        parts = []
+        for turn in turns:
+            speaker = str(turn.get("speaker", "")).lower()
+            phase = str(turn.get("phase", "")).lower()
+            if speaker in speaker_aliases and phase == phase_value:
                 parts.append(str(turn.get("content", "")))
         return "\n".join(parts)
 
@@ -252,7 +291,8 @@ class AgentC:
         winner: str,
         jury_winner: str,
         jury_consensus: float,
-        tool_report: dict,
+        tool_report_a: dict,
+        tool_report_b: dict,
         agent_a_logic: dict,
         agent_b_logic: dict,
     ) -> str:
@@ -261,10 +301,14 @@ class AgentC:
             f"Agent A 被检测到 {agent_a_logic.get('n_fallacies_detected', 0)} 个明显逻辑问题。",
             f"Agent B 被检测到 {agent_b_logic.get('n_fallacies_detected', 0)} 个明显逻辑问题。",
         ]
-        if tool_report["identified_issues"]:
-            parts.append("工具验证发现的问题包括：" + "；".join(tool_report["identified_issues"][:3]) + "。")
-        if tool_report["supporting_evidence"]:
-            parts.append("关键证据：" + "；".join(tool_report["supporting_evidence"][:3]) + "。")
+        if tool_report_b["supporting_evidence"]:
+            parts.append("支持 B 的关键证据：" + "；".join(tool_report_b["supporting_evidence"][:3]) + "。")
+        if tool_report_a["supporting_evidence"]:
+            parts.append("支持 A 的关键证据：" + "；".join(tool_report_a["supporting_evidence"][:3]) + "。")
+        if tool_report_b["identified_issues"]:
+            parts.append("B 主张的薄弱点：" + "；".join(tool_report_b["identified_issues"][:2]) + "。")
+        if tool_report_a["counter_evidence"]:
+            parts.append("A 质疑面临的反证：" + "；".join(tool_report_a["counter_evidence"][:2]) + "。")
         parts.append(f"综合工具证据与陪审团意见，最终裁定 {winner}。")
         return " ".join(parts)
 
@@ -342,3 +386,91 @@ class AgentC:
 
     def _clean_text(self, value: object) -> str:
         return value.strip() if isinstance(value, str) else ""
+
+    def _extract_b_confidence(self, debate_context) -> float:
+        claim = debate_context.metadata.get("agent_b_claim", {})
+        if isinstance(claim, dict):
+            try:
+                return self._clamp(float(claim.get("confidence", 0.0)))
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _extract_rebuttal_confidence(self, debate_context) -> float:
+        for turn in reversed(list(getattr(debate_context, "turns", []))):
+            speaker = str(turn.get("speaker", "")).lower()
+            phase = str(turn.get("phase", "")).lower()
+            if speaker == "agent_b" and phase == "rebuttal":
+                try:
+                    return self._clamp(float(turn.get("metadata", {}).get("confidence", 0.0)))
+                except Exception:
+                    return 0.0
+        return 0.0
+
+    def _anti_causal_bonus(self, level: int, text: str, scenario=None) -> float:
+        if not text:
+            return 0.0
+        lowered = text.lower()
+        if level == 1 and any(token in lowered for token in ["混杂", "未观测", "共同原因", "confound", "latent"]):
+            difficulty = float(getattr(scenario, "difficulty", 0.5)) if scenario is not None else 0.5
+            scaled = max(0.0, min(1.0, (difficulty - 0.82) / 0.13))
+            return 0.04 + 0.10 * scaled
+        if level == 2 and any(token in lowered for token in ["工具变量", "iv", "后门", "heterogeneity", "att", "atu"]):
+            return 0.08
+        if level >= 3 and any(token in lowered for token in ["反事实", "counterfactual", "scm", "结构模型", "不可识别", "函数形式", "替代模型"]):
+            return 0.10
+        return 0.03 if any(token in lowered for token in ["不稳妥", "需要验证", "尚不足"]) else 0.0
+
+    def _level_profile(self, level: int) -> dict[str, float]:
+        return {
+            1: {
+                "a_base": 0.33,
+                "b_base": 0.34,
+                "a_support_weight": 0.52,
+                "b_support_weight": 0.46,
+                "claim_weight": 0.03,
+                "rebuttal_weight": 0.04,
+                "tool_awareness_weight": 0.45,
+                "jury_high": 0.02,
+                "jury_mid": 0.01,
+                "margin": 0.05,
+            },
+            2: {
+                "a_base": 0.35,
+                "b_base": 0.34,
+                "a_support_weight": 0.50,
+                "b_support_weight": 0.48,
+                "claim_weight": 0.08,
+                "rebuttal_weight": 0.06,
+                "tool_awareness_weight": 0.70,
+                "jury_high": 0.03,
+                "jury_mid": 0.02,
+                "margin": 0.04,
+            },
+            3: {
+                "a_base": 0.38,
+                "b_base": 0.32,
+                "a_support_weight": 0.50,
+                "b_support_weight": 0.48,
+                "claim_weight": 0.07,
+                "rebuttal_weight": 0.05,
+                "tool_awareness_weight": 0.60,
+                "jury_high": 0.02,
+                "jury_mid": 0.01,
+                "margin": 0.04,
+            },
+        }.get(
+            level,
+            {
+                "a_base": 0.34,
+                "b_base": 0.34,
+                "a_support_weight": 0.50,
+                "b_support_weight": 0.48,
+                "claim_weight": 0.06,
+                "rebuttal_weight": 0.05,
+                "tool_awareness_weight": 0.60,
+                "jury_high": 0.04,
+                "jury_mid": 0.02,
+                "margin": 0.06,
+            },
+        )

@@ -24,6 +24,17 @@ from game.llm_service import LLMService
 
 
 @dataclass
+class ScientificClaim:
+    """Agent B 的初始科学假设。"""
+
+    content: str
+    causal_claim: str
+    evidence: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    tools_used: list[str] = field(default_factory=list)
+
+
+@dataclass
 class DetectionResult:
     """隐变量检测结果"""
     detected_fallacies: list[str] = field(default_factory=list)
@@ -78,23 +89,27 @@ class AgentB:
             level: Pearl因果阶梯层级
             context: 辩论上下文
         """
-        tools = await self.select_tools(level, claim)
         data = self._get_data(scenario)
         graph = self._get_graph(scenario)
         variables = self._get_variables(scenario, data)
         treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario)
-        conditioning = [variable for variable in variables if variable not in {treatment, outcome}][:2]
+        observed_controls = self._get_observed_controls(graph, data, treatment, outcome)
+        ground_truth = getattr(scenario, "ground_truth", {}) or {}
+        claim_lower = claim.lower()
 
         reasoning_chain: list[str] = []
         detected_fallacies: list[str] = []
         discovered_hidden_vars: list[str] = []
         tools_used: list[str] = []
+        defense_score = 0.38 + 0.04 * level
+        challenge_validity = 0.12 + 0.05 * max(level - 1, 0)
 
         logic_result = argument_logic_check(claim)
         if logic_result["detected_fallacies"]:
             detected_fallacies.extend(logic_result["detected_fallacies"])
             reasoning_chain.append(logic_result["recommendation"])
             tools_used.append("argument_logic_check")
+            defense_score += 0.05 * logic_result["n_fallacies_detected"]
 
         if graph is not None:
             graph_result = causal_graph_validator(graph)
@@ -108,30 +123,42 @@ class AgentB:
             reasoning_chain.append(
                 f"{treatment} 与 {outcome} 的相关系数为 {correlation['pearson_r']:.2f}，显著性 p={correlation['pearson_p']:.4f}。"
             )
+            if correlation["significant"] and abs(correlation["pearson_r"]) >= 0.15:
+                defense_score += 0.10
 
-            if conditioning:
-                ci_result = conditional_independence_test(data, treatment, outcome, conditioning)
-                partial = partial_correlation(data, treatment, outcome, conditioning)
+            if observed_controls:
+                ci_result = conditional_independence_test(data, treatment, outcome, observed_controls)
+                partial = partial_correlation(data, treatment, outcome, observed_controls)
                 tools_used.extend(["conditional_independence_test", "partial_correlation"])
                 reasoning_chain.append(
-                    f"控制 {conditioning} 后偏相关为 {partial['partial_correlation']:.2f}，p={partial['p_value']:.4f}。"
+                    f"控制 {observed_controls} 后偏相关为 {partial['partial_correlation']:.2f}，p={partial['p_value']:.4f}。"
                 )
+                if partial["significant"]:
+                    defense_score += 0.08
                 if ci_result["independent"] and correlation["significant"]:
-                    detected_fallacies.append("可能存在未控制混杂")
+                    challenge_validity += 0.12
                     hidden_variable_name = self._suggest_hidden_variable(scenario, treatment, outcome)
                     discovered_hidden_vars.append(hidden_variable_name)
                     reasoning_chain.append("总相关显著但控制候选变量后近似独立，符合混杂导致的虚假相关特征。")
 
+            if level == 1 and any(token in claim_lower for token in ["混杂", "confound", "未观测"]):
+                challenge_validity += 0.10 if getattr(scenario, "hidden_variables", []) else 0.0
+                discovered_hidden_vars.append(self._suggest_hidden_variable(scenario, treatment, outcome))
+            if level == 1 and any(token in claim_lower for token in ["选择偏差", "selection bias", "逆因果"]):
+                challenge_validity += 0.03
+
             if level >= 2:
-                adjustment_set = conditioning[:1]
+                adjustment_set = observed_controls
                 if adjustment_set:
                     backdoor = backdoor_adjustment_check(data, treatment, outcome, adjustment_set, graph=graph)
                     tools_used.append("backdoor_adjustment_check")
                     reasoning_chain.append(
                         f"后门调整后效应为 {backdoor['estimated_effect']:.2f}，相对未调整变化 {backdoor['delta_from_naive']:.2f}。"
                     )
-                    if abs(backdoor["delta_from_naive"]) > 0.2:
-                        detected_fallacies.append("遗漏后门路径")
+                    if backdoor["is_valid_adjustment"] is False:
+                        challenge_validity += 0.10
+                    elif abs(backdoor["estimated_effect"]) > 0.10:
+                        defense_score += 0.10
 
                 sensitivity = sensitivity_analysis(data, treatment, outcome)
                 tools_used.append("sensitivity_analysis")
@@ -139,23 +166,33 @@ class AgentB:
                     f"灵敏度分析显示结论稳健到 Gamma={sensitivity['robust_up_to_gamma']:.2f}。"
                 )
                 if sensitivity["is_sensitive"]:
-                    detected_fallacies.append("结论对未观测混杂敏感")
+                    challenge_validity += 0.10
+                else:
+                    defense_score += 0.06
 
-                instrument = self._find_instrument_variable(claim, variables, treatment, outcome)
-                if instrument is not None and instrument in data.columns:
-                    iv_result = iv_estimation(data, instrument, treatment, outcome, conditioning[:1])
+                instrument = ground_truth.get("instrument") or self._find_instrument_variable(claim, variables, treatment, outcome)
+                if level == 2 and instrument is not None and instrument in data.columns:
+                    iv_result = iv_estimation(data, instrument, treatment, outcome, observed_controls)
                     tools_used.append("iv_estimation")
                     reasoning_chain.append(
                         f"工具变量 {instrument} 的第一阶段 F={iv_result['first_stage_f']:.2f}，估计效应 {iv_result['causal_effect']:.2f}。"
                     )
-                    if not iv_result["is_strong_instrument"]:
-                        detected_fallacies.append("工具变量过弱或识别不足")
+                    if iv_result["is_strong_instrument"]:
+                        defense_score += 0.16
+                        if any(token in claim_lower for token in ["工具变量并不可信", "iv", "instrument", "排他性"]):
+                            detected_fallacies.append("过度质疑有效工具变量")
+                    else:
+                        challenge_validity += 0.16
 
             if level >= 3:
                 pn = probability_of_necessity(data, treatment, outcome)
                 ps = probability_of_sufficiency(data, treatment, outcome)
                 tools_used.extend(["probability_of_necessity", "probability_of_sufficiency"])
                 reasoning_chain.append(f"必要性概率约为 {pn:.2f}，充分性概率约为 {ps:.2f}。")
+                if pn + ps > 0.35:
+                    defense_score += 0.08
+                else:
+                    challenge_validity += 0.08
 
                 scm = getattr(scenario, "true_scm", None)
                 if scm is not None:
@@ -167,19 +204,25 @@ class AgentB:
                         reasoning_chain.append(
                             f"在反事实世界中，{outcome} 的预测值变为 {float(cf['counterfactual_outcome']):.2f}。"
                         )
+                        defense_score += 0.05
                     except Exception:
                         reasoning_chain.append("反事实推断因场景模型接口不足而跳过。")
+                if any(token in claim_lower for token in ["scm", "反事实", "函数形式", "不可识别", "模型敏感"]):
+                    challenge_validity += 0.10
+
+        if any(token in claim_lower for token in ["必然", "100%", "毫无疑问", "唯一解释"]):
+            detected_fallacies.append("过度确定性")
+            defense_score += 0.06
+        if any(token in claim_lower for token in ["选择偏差", "selection bias"]) and level != 1:
+            detected_fallacies.append("选择偏差论证证据不足")
+            defense_score += 0.04
+        if any(token in claim_lower for token in ["只有特定子群", "仅在某些人群", "att", "atu"]) and level == 2:
+            challenge_validity += 0.04
 
         detected_fallacies = self._deduplicate(detected_fallacies)
         discovered_hidden_vars = self._deduplicate(discovered_hidden_vars)
         tools_used = self._deduplicate(tools_used)
-        fallback_confidence = min(
-            0.95,
-            0.35
-            + 0.12 * len(detected_fallacies)
-            + 0.08 * len(discovered_hidden_vars)
-            + 0.03 * len(tools_used),
-        )
+        fallback_confidence = self._clamp(defense_score - 0.55 * challenge_validity + 0.02 * len(detected_fallacies))
 
         llm_payload = await self._llm_decide(
             claim=claim,
@@ -217,6 +260,62 @@ class AgentB:
         )
         self.detection_history.append(result)
         return result
+
+    async def propose_hypothesis(
+        self,
+        scenario: "CausalScenario",
+        level: int,
+        context: Optional["DebateContext"] = None,
+    ) -> ScientificClaim:
+        """提出面向当前层级的科学因果假设。"""
+        data = self._get_data(scenario)
+        variables = self._get_variables(scenario, data)
+        treatment, outcome = self._infer_focus_variables("", variables, scenario=scenario)
+        ground_truth = getattr(scenario, "ground_truth", {}) or {}
+        evidence: list[str] = []
+        tools_used: list[str] = []
+
+        if data is not None and treatment in data.columns and outcome in data.columns:
+            corr = compute_correlation(data, treatment, outcome)
+            evidence.append(f"{treatment} 与 {outcome} 的相关系数约为 {corr['pearson_r']:.2f}")
+            tools_used.append("compute_correlation")
+
+        if level == 1:
+            content = (
+                f"从观测数据看，{treatment} 与 {outcome} 的关联显著，"
+                f"在已观测协变量范围内仍值得优先考虑因果解释。"
+            )
+        elif level == 2:
+            instrument = ground_truth.get("instrument")
+            instrument_text = f"，并可进一步借助工具变量 {instrument} 识别" if instrument else ""
+            content = (
+                f"当前证据支持 {treatment} 对 {outcome} 存在正向干预效应，"
+                f"应优先检验后门调整与工具变量路径{instrument_text}。"
+            )
+        else:
+            mediator = ground_truth.get("mediator")
+            mediator_text = f"，尤其需要结合中介 {mediator} 与反事实推断" if mediator else ""
+            content = (
+                f"当前结构证据表明 {treatment} 很可能影响 {outcome}，"
+                f"但这一判断需要在 SCM 与反事实层面继续验证{mediator_text}。"
+            )
+
+        if "observational_difference" in ground_truth:
+            evidence.append(f"观测差异约为 {float(ground_truth['observational_difference']):.2f}")
+        if "observational_slope" in ground_truth:
+            evidence.append(f"观测斜率约为 {float(ground_truth['observational_slope']):.2f}")
+        if "instrument" in ground_truth:
+            evidence.append(f"候选工具变量为 {ground_truth['instrument']}")
+        if "mediator" in ground_truth:
+            evidence.append(f"关键中介为 {ground_truth['mediator']}")
+
+        return ScientificClaim(
+            content=content,
+            causal_claim=f"{treatment} 可能导致 {outcome}",
+            evidence=self._deduplicate(evidence),
+            confidence=0.62 + 0.05 * max(level - 1, 0),
+            tools_used=self._deduplicate(tools_used),
+        )
 
     async def _llm_decide(
         self,
@@ -319,6 +418,37 @@ class AgentB:
         if hidden:
             return hidden[0]
         return f"latent_confounder_between_{treatment}_and_{outcome}"
+
+    def _get_observed_controls(
+        self,
+        graph: Optional[nx.DiGraph],
+        data: Optional[pd.DataFrame],
+        treatment: str,
+        outcome: str,
+    ) -> list[str]:
+        if graph is None or data is None:
+            return []
+        observed = [column for column in data.columns if column not in {treatment, outcome}]
+        cut_graph = graph.copy()
+        if treatment in cut_graph:
+            cut_graph.remove_edges_from(list(cut_graph.out_edges(treatment)))
+        controls: list[str] = []
+        for node in observed:
+            if node not in graph:
+                continue
+            if node in nx.descendants(graph, treatment):
+                continue
+            try:
+                has_path_to_treatment = nx.has_path(graph, node, treatment)
+                has_backdoor_to_outcome = nx.has_path(cut_graph, node, outcome)
+            except nx.NetworkXError:
+                continue
+            if has_path_to_treatment and has_backdoor_to_outcome:
+                controls.append(node)
+        return controls
+
+    def _clamp(self, value: float) -> float:
+        return max(0.0, min(1.0, value))
 
     def _deduplicate(self, items: list[str]) -> list[str]:
         seen: list[str] = []

@@ -8,17 +8,17 @@
 models:
   agent_a:  # Traitor
     name: "qwen2.5-7b-instruct"
-    backend: "dashscope"
+    backend: "mock"
     temperature: 0.8
     max_tokens: 2048
   agent_b:  # Scientist
     name: "qwen2.5-14b-instruct"
-    backend: "dashscope"
+    backend: "mock"
     temperature: 0.3
     max_tokens: 2048
   agent_c:  # Auditor
     name: "qwen2.5-72b-instruct"
-    backend: "dashscope"
+    backend: "mock"
     temperature: 0.1
     max_tokens: 4096
   jury:

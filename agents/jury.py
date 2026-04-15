@@ -64,29 +64,50 @@ class JuryAggregator:
         """收集所有陪审员投票并聚合"""
         turns = list(getattr(debate_context, "turns", []))
         transcript = " ".join(str(turn.get("content", "")) for turn in turns).lower()
+        level = int(getattr(scenario, "causal_level", 1))
+        agent_a_text = " ".join(
+            str(turn.get("content", "")) for turn in turns if str(turn.get("speaker", "")).lower() == "agent_a"
+        ).lower()
+        agent_b_text = " ".join(
+            str(turn.get("content", "")) for turn in turns if str(turn.get("speaker", "")).lower() == "agent_b"
+        ).lower()
         votes: list[JuryVote] = []
 
-        base_score_b = 0.5
-        if any(token in transcript for token in ["confound", "混杂", "后门", "反事实", "工具变量", "iv"]):
-            base_score_b += 0.15
-        if any(token in transcript for token in ["100%", "必然", "毫无疑问", "一定导致"]):
-            base_score_b += 0.1
-        if any(token in transcript for token in ["样本偏差", "selection bias", "逆因果"]):
-            base_score_b += 0.05
-        if any(token in transcript for token in ["【场景已确认】", "已封闭", "已观测验证", "稳健显示", "f=", "调整后效应"]):
-            base_score_b -= 0.08
-        if any(token in transcript for token in ["显著相关", "可复现", "理论预期一致", "强工具"]):
-            base_score_b -= 0.05
+        base_score_a = {1: 0.47, 2: 0.47, 3: 0.53}.get(level, 0.45)
+        base_score_b = 1.0 - base_score_a
 
-        base_score_b = min(0.92, max(0.08, base_score_b))
-        base_score_a = 1.0 - base_score_b
+        if any(token in agent_a_text for token in ["混杂", "confound", "未观测", "latent"]):
+            base_score_a += 0.10 if level == 1 else 0.06
+        if any(token in agent_a_text for token in ["选择偏差", "selection bias", "逆因果", "反向因果"]):
+            base_score_a += 0.05 if level == 1 else 0.04
+        if level >= 2 and any(token in agent_a_text for token in ["工具变量", "iv", "instrument", "排他性"]):
+            base_score_a += 0.06
+        if level >= 3 and any(token in agent_a_text for token in ["反事实", "counterfactual", "scm", "函数形式", "不可识别"]):
+            base_score_a += 0.08
+
+        if any(token in agent_b_text for token in ["相关系数", "显著", "观测差异", "slope", "correlation"]):
+            base_score_b += 0.03 if level == 1 else 0.05
+        if level >= 2 and any(token in agent_b_text for token in ["后门", "backdoor", "工具变量", "iv", "gamma", "敏感性"]):
+            base_score_b += 0.07
+        if level >= 3 and any(token in agent_b_text for token in ["必要性", "充分性", "反事实", "counterfactual", "ett"]):
+            base_score_b += 0.06
+
+        if any(token in transcript for token in ["必然", "毫无疑问", "100%", "唯一解释"]):
+            if any(token in agent_a_text for token in ["必然", "毫无疑问", "100%", "唯一解释"]):
+                base_score_b += 0.05
+            if any(token in agent_b_text for token in ["必然", "毫无疑问", "100%", "唯一解释"]):
+                base_score_a += 0.05
+
+        total = max(base_score_a + base_score_b, 1e-6)
+        base_score_a = min(0.9, max(0.1, base_score_a / total))
+        base_score_b = 1.0 - base_score_a
         voting_method = self.config.get("models", {}).get("jury", {}).get("voting", "weighted")
         jury_models = self.jury_models or ["baseline_juror_1", "baseline_juror_2", "baseline_juror_3"]
 
         for index, model_name in enumerate(jury_models):
             jitter = (index - (len(jury_models) - 1) / 2) * 0.03
-            adjusted_b = min(0.95, max(0.05, base_score_b + jitter))
-            adjusted_a = 1.0 - adjusted_b
+            adjusted_a = min(0.95, max(0.05, base_score_a - jitter))
+            adjusted_b = 1.0 - adjusted_a
             gap = abs(adjusted_b - adjusted_a)
             if gap < self.draw_margin and max(adjusted_a, adjusted_b) < 0.62:
                 winner = "draw"

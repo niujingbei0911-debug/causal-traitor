@@ -59,6 +59,18 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.causal_claim)
         self.assertTrue(response.deception_strategy.startswith("L2"))
 
+    def test_agent_a_rotates_strategies_per_level(self):
+        agent = AgentA(self.config)
+        sequence = []
+        for level in [1, 2, 3, 1, 2, 3, 1, 2, 3]:
+            strategy = agent._choose_strategy(level)
+            sequence.append(strategy)
+            agent.strategy_history.append(strategy)
+
+        self.assertEqual(sequence[0::3], ["L1-S1", "L1-S3", "L1-S2"])
+        self.assertEqual(sequence[1::3], ["L2-S2", "L2-S4", "L2-S1"])
+        self.assertEqual(sequence[2::3], ["L3-S2", "L3-S3", "L3-S1"])
+
     async def test_agent_b_analyzes_claim(self):
         agent = AgentB(self.config)
         await agent.initialize()

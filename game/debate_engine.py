@@ -10,6 +10,7 @@ from agents.agent_a import AgentA
 from agents.agent_a import AgentResponse as AgentAResponse
 from agents.agent_b import AgentB
 from agents.agent_b import DetectionResult
+from agents.agent_b import ScientificClaim
 from agents.agent_c import AgentC
 from agents.agent_c import AuditVerdict
 from agents.jury import JuryAggregator
@@ -61,6 +62,32 @@ class _MockTraitorAgent:
 class _MockScientistAgent:
     async def initialize(self) -> None:
         return None
+
+    async def propose_hypothesis(
+        self,
+        scenario: CausalScenario,
+        level: int,
+        context: DebateContext | None = None,
+    ) -> ScientificClaim:
+        treatment = scenario.ground_truth.get("treatment", "X")
+        outcome = scenario.ground_truth.get("outcome", "Y")
+        instrument = scenario.ground_truth.get("instrument")
+        mediator = scenario.ground_truth.get("mediator")
+        if level == 1:
+            content = f"The observed association suggests {treatment} likely influences {outcome}, pending confounder checks."
+        elif level == 2:
+            extra = f" with potential identification through {instrument}" if instrument else ""
+            content = f"The data support a positive intervention effect of {treatment} on {outcome}{extra}."
+        else:
+            extra = f" through mediator {mediator}" if mediator else ""
+            content = f"The structural evidence suggests {treatment} affects {outcome}{extra}, subject to counterfactual validation."
+        return ScientificClaim(
+            content=content,
+            causal_claim=f"{treatment} likely causes {outcome}",
+            evidence=["observational association", "theory-consistent direction"],
+            confidence=0.62 + 0.05 * max(level - 1, 0),
+            tools_used=["compute_correlation"],
+        )
 
     async def analyze_claim(
         self,
@@ -282,9 +309,28 @@ class DebateEngine:
             # --- 连续欺骗/检测分数（取代二值 0/1）---
             jury_v = result["jury_verdict"]
             a_conf = sum(v["confidence"] for v in jury_v["votes"] if v["winner"] == "agent_a")
+            b_conf = sum(v["confidence"] for v in jury_v["votes"] if v["winner"] == "agent_b")
             total_conf = sum(v["confidence"] for v in jury_v["votes"]) or 1.0
-            continuous_deception = round(a_conf / total_conf, 4)
-            continuous_detection = round(result["agent_b_analysis"]["confidence"], 4)
+            jury_a_share = a_conf / total_conf
+            jury_b_share = b_conf / total_conf
+            audit_v = result["audit_verdict"]
+            audit_a = float(audit_v.get("argument_quality_a", 0.0))
+            audit_b = float(audit_v.get("argument_quality_b", 0.0))
+            audit_total = max(audit_a + audit_b, 1e-6)
+            audit_a_share = audit_a / audit_total
+            audit_b_share = audit_b / audit_total
+            detection_conf = float(result["agent_b_analysis"].get("confidence", 0.0))
+            continuous_deception = round(
+                max(0.0, min(1.0, 0.7 * audit_a_share + 0.3 * jury_a_share)),
+                4,
+            )
+            continuous_detection = round(
+                max(
+                    0.0,
+                    min(1.0, 0.45 * audit_b_share + 0.35 * detection_conf + 0.20 * jury_b_share),
+                ),
+                4,
+            )
 
             record = StrategyRecord(
                 round_id=round_index,
@@ -322,25 +368,29 @@ class DebateEngine:
         )
 
         context.current_phase = GamePhase.CLAIM
+        agent_b_claim = await self._invoke_agent_b_claim(scenario, context)
+        context.metadata["agent_b_claim"] = asdict(agent_b_claim)
+        self._append_turn(context, "agent_b", GamePhase.CLAIM, agent_b_claim.content, {
+            "causal_claim": agent_b_claim.causal_claim,
+            "confidence": getattr(agent_b_claim, "confidence", 0.0),
+            "tools_used": getattr(agent_b_claim, "tools_used", []),
+        })
+
+        context.current_phase = GamePhase.CHALLENGE
         agent_a_claim = await self._invoke_agent_a(scenario, context)
-        self._append_turn(context, "agent_a", GamePhase.CLAIM, agent_a_claim.content, {
+        context.metadata["agent_a_challenge"] = asdict(agent_a_claim)
+        self._append_turn(context, "agent_a", GamePhase.CHALLENGE, agent_a_claim.content, {
             "causal_claim": agent_a_claim.causal_claim,
             "strategy": agent_a_claim.deception_strategy,
             "hidden_variables": agent_a_claim.hidden_variables,
         })
 
-        context.current_phase = GamePhase.CHALLENGE
-        agent_b_result = await self._invoke_agent_b(agent_a_claim.causal_claim, scenario, context)
-        self._append_turn(context, "agent_b", GamePhase.CHALLENGE, self._format_detection(agent_b_result), {
+        context.current_phase = GamePhase.REBUTTAL
+        agent_b_result = await self._invoke_agent_b(agent_a_claim.content, scenario, context)
+        self._append_turn(context, "agent_b", GamePhase.REBUTTAL, self._format_detection(agent_b_result), {
             "tools_used": agent_b_result.tools_used,
             "confidence": agent_b_result.confidence,
             "fallacies": agent_b_result.detected_fallacies,
-        })
-
-        context.current_phase = GamePhase.REBUTTAL
-        rebuttal = await self._invoke_agent_a(scenario, context)
-        self._append_turn(context, "agent_a", GamePhase.REBUTTAL, rebuttal.content, {
-            "strategy": rebuttal.deception_strategy,
         })
 
         context.current_phase = GamePhase.JURY
@@ -371,9 +421,10 @@ class DebateEngine:
             "round_number": round_number,
             "scenario": scenario,
             "transcript": [self._turn_to_dict(turn) for turn in context.turns],
+            "agent_b_claim": asdict(agent_b_claim),
             "agent_a_claim": asdict(agent_a_claim),
             "agent_b_analysis": asdict(agent_b_result),
-            "agent_a_rebuttal": asdict(rebuttal),
+            "agent_a_rebuttal": asdict(agent_a_claim),
             "audit_verdict": asdict(audit),
             "jury_verdict": asdict(jury_verdict),
             "winner": winner,
@@ -414,6 +465,19 @@ class DebateEngine:
             return await method(scenario, scenario.causal_level, context)
         except NotImplementedError:
             return await _MockTraitorAgent().generate_deception(scenario, scenario.causal_level, context)
+
+    async def _invoke_agent_b_claim(
+        self,
+        scenario: CausalScenario,
+        context: DebateContext,
+    ) -> Any:
+        method = getattr(self.agent_b, "propose_hypothesis", None)
+        if method is None:
+            return await _MockScientistAgent().propose_hypothesis(scenario, scenario.causal_level, context)
+        try:
+            return await method(scenario, scenario.causal_level, context)
+        except NotImplementedError:
+            return await _MockScientistAgent().propose_hypothesis(scenario, scenario.causal_level, context)
 
     async def _invoke_agent_b(
         self,
@@ -478,21 +542,22 @@ class DebateEngine:
         return turn.to_dict()
 
     def _format_detection(self, result: DetectionResult) -> str:
-        issues = ", ".join(result.detected_fallacies) if result.detected_fallacies else "no major issue"
-        return f"Detected issues: {issues}. Confidence={result.confidence:.2f}."
+        parts: list[str] = []
+        if result.reasoning_chain:
+            parts.append("；".join(result.reasoning_chain[:4]))
+        if result.detected_fallacies:
+            parts.append("识别到的问题：" + "、".join(result.detected_fallacies[:3]))
+        if result.discovered_hidden_vars:
+            parts.append("怀疑隐变量：" + "、".join(result.discovered_hidden_vars[:2]))
+        parts.append(f"综合判断置信度 {result.confidence:.2f}")
+        return " ".join(parts)
 
     def _resolve_winner(self, audit: AuditVerdict, jury_verdict: JuryVerdict) -> str:
-        if jury_verdict.final_winner == "draw":
+        if audit.winner != "draw":
             return audit.winner
-        if jury_verdict.final_winner == audit.winner:
-            return audit.winner
-        if jury_verdict.agreement_rate >= 0.70:
+        if jury_verdict.final_winner != "draw" and jury_verdict.agreement_rate >= 0.67:
             return jury_verdict.final_winner
-        # 陪审团与审计员不一致且无高度共识时，更多信任审计员；
-        # 陪审团只保留少量纠偏权重。
-        if random.random() < 0.2 + jury_verdict.agreement_rate * 0.2:
-            return jury_verdict.final_winner
-        return audit.winner
+        return "draw"
 
     def _build_evolution_context(self) -> dict[str, Any] | None:
         if self.evolution_tracker is None or not self.evolution_tracker.records:
@@ -506,6 +571,17 @@ class DebateEngine:
     def _strategy_type_from_result(self, result: dict[str, Any]) -> StrategyType:
         strategy = str(result["agent_a_claim"].get("deception_strategy", "")).lower()
         mapping = {
+            "l1-s1": StrategyType.CONFOUNDING,
+            "l1-s2": StrategyType.REVERSE_CAUSE,
+            "l1-s3": StrategyType.SELECTION_BIAS,
+            "l2-s1": StrategyType.BACKDOOR_EXPLOIT,
+            "l2-s2": StrategyType.INSTRUMENT_MISUSE,
+            "l2-s3": StrategyType.NONCOMPLIANCE_EXPLOIT,
+            "l2-s4": StrategyType.MEDIATOR_HIDE,
+            "l3-s1": StrategyType.SCM_MANIPULATION,
+            "l3-s2": StrategyType.COUNTERFACTUAL_DISTORTION,
+            "l3-s3": StrategyType.NONCOMPLIANCE_EXPLOIT,
+            "l3-s4": StrategyType.CONFOUNDING,
             "confounding": StrategyType.CONFOUNDING,
             "collider": StrategyType.COLLIDER,
             "selection_bias": StrategyType.SELECTION_BIAS,

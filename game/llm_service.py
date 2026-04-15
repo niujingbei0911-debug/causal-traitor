@@ -260,9 +260,9 @@ class LLMService:
     # helpers
     # ------------------------------------------------------------------
 
-    # Hardcoded fallback key (shared dev-only DashScope account, ~10 RMB cap).
-    # Overridden by an explicit config api_key or the env vars below.
-    _DEFAULT_DASHSCOPE_API_KEY: str | None = "sk-9ce1a9d2872b4edbb6b5e5817a78d296"
+    # No hardcoded API keys. Callers should provide a valid env var or explicit
+    # config key; otherwise the service falls back to mock mode.
+    _DEFAULT_DASHSCOPE_API_KEY: str | None = None
 
     def _resolve_api_key(self) -> str | None:
         if self._explicit_api_key and _looks_like_api_key(self._explicit_api_key):
