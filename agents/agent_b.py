@@ -12,6 +12,7 @@ import networkx as nx
 import pandas as pd
 
 from agents.prompts.agent_b_prompts import AGENT_B_SYSTEM_PROMPT
+from benchmark.schema import PublicCausalInstance, require_public_instance
 from causal_tools.l1_association import conditional_independence_test, compute_correlation, partial_correlation
 from causal_tools.l2_intervention import backdoor_adjustment_check, iv_estimation, sensitivity_analysis
 from causal_tools.l3_counterfactual import (
@@ -76,7 +77,7 @@ class AgentB:
     async def analyze_claim(
         self,
         claim: str,
-        scenario: "CausalScenario",
+        scenario: PublicCausalInstance,
         level: int,
         context: Optional["DebateContext"] = None,
     ) -> DetectionResult:
@@ -89,6 +90,7 @@ class AgentB:
             level: Pearl因果阶梯层级
             context: 辩论上下文
         """
+        scenario = require_public_instance(scenario)
         data = self._get_data(scenario)
         graph = self._get_graph(scenario)
         variables = self._get_variables(scenario, data)
@@ -263,11 +265,12 @@ class AgentB:
 
     async def propose_hypothesis(
         self,
-        scenario: "CausalScenario",
+        scenario: PublicCausalInstance,
         level: int,
         context: Optional["DebateContext"] = None,
     ) -> ScientificClaim:
         """提出面向当前层级的科学因果假设。"""
+        scenario = require_public_instance(scenario)
         data = self._get_data(scenario)
         variables = self._get_variables(scenario, data)
         treatment, outcome = self._infer_focus_variables("", variables, scenario=scenario)

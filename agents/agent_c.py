@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from typing import Optional
+from typing import Any, Optional
 
 from agents.jury import JuryAggregator, JuryVerdict
 from agents.prompts.agent_c_prompts import AGENT_C_WITH_JURY_PROMPT
-from agents.tool_executor import ToolExecutor
+from agents.tool_executor import ToolExecutionResult, ToolExecutor
+from benchmark.schema import PublicCausalInstance, require_public_instance
 from causal_tools.meta_tools import argument_logic_check
 from game.llm_service import LLMService
+from verifier.pipeline import VerifierPipeline
 
 
 @dataclass
@@ -27,6 +29,14 @@ class AuditVerdict:
     identified_issues: list[str] = field(default_factory=list)
     tools_used: list[str] = field(default_factory=list)
     jury_consensus: float = 0.0
+    verdict_label: str | None = None
+    verifier_confidence: float = 0.0
+    assumption_ledger: list[dict[str, Any]] = field(default_factory=list)
+    witness: dict[str, Any] | None = None
+    support_witness: dict[str, Any] | None = None
+    countermodel_witness: dict[str, Any] | None = None
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    verifier_verdict: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentC:
@@ -46,6 +56,7 @@ class AgentC:
         self.llm_service: LLMService | None = None
         self.tool_executor = ToolExecutor(config)
         self.jury = JuryAggregator(config)
+        self.verifier_pipeline = VerifierPipeline()
         # ── 防御升级：跨轮学习状态 ──
         self.detection_history: list[dict] = []
         self.known_patterns: list[str] = []
@@ -61,6 +72,9 @@ class AgentC:
 
     def attach_llm_service(self, service: LLMService) -> None:
         self.llm_service = service
+
+    def attach_verifier_pipeline(self, pipeline: VerifierPipeline) -> None:
+        self.verifier_pipeline = pipeline
 
     # ── 防御升级：跨轮学习 ──────────────────────────────
     def upgrade_defense(self, feedback: dict) -> None:
@@ -96,7 +110,118 @@ class AgentC:
 
     async def evaluate_round(
         self,
-        scenario: "CausalScenario",
+        scenario: PublicCausalInstance,
+        debate_context: "DebateContext",
+        level: int,
+    ) -> AuditVerdict:
+        scenario = require_public_instance(scenario)
+        if self._use_verifier_first():
+            try:
+                return await self._evaluate_round_verifier_first(
+                    scenario=scenario,
+                    debate_context=debate_context,
+                    level=level,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "AgentC verifier-first evaluation failed; legacy fallback is disabled for the main benchmark path."
+                ) from exc
+        return await self._evaluate_round_legacy(
+            scenario=scenario,
+            debate_context=debate_context,
+            level=level,
+        )
+
+    async def _evaluate_round_verifier_first(
+        self,
+        scenario: PublicCausalInstance,
+        debate_context: "DebateContext",
+        level: int,
+    ) -> AuditVerdict:
+        turns = list(getattr(debate_context, "turns", []))
+        transcript = [
+            turn.to_dict() if hasattr(turn, "to_dict") else dict(turn)
+            for turn in turns
+        ]
+        transcript_text = "\n".join(
+            f"{turn.get('speaker', 'unknown')}: {turn.get('content', '')}"
+            for turn in turns
+        )
+        agent_a_text = self._collect_speaker_text(turns, {"agent_a", "a", "agent a"})
+        agent_b_text = self._collect_speaker_text(turns, {"agent_b", "b", "agent b"})
+        primary_claim = (
+            self._collect_phase_text(turns, {"agent_a", "a", "agent a"}, "challenge")
+            or agent_a_text
+            or transcript_text
+        )
+        jury_verdict = await self._resolve_jury_verdict(scenario, debate_context)
+        jury_winner, jury_consensus = self._jury_summary(jury_verdict)
+        context_flags = self._build_context_flags(
+            level=level,
+            agent_a_text=agent_a_text,
+            agent_b_text=agent_b_text,
+            transcript=transcript_text,
+        )
+        claim_report = self.tool_executor.execute_for_claim(
+            scenario=scenario,
+            claim=primary_claim,
+            level=level,
+            context={**context_flags, "claim_stance": "pro_causal"},
+        )
+        rebuttal_report = self.tool_executor.execute_for_claim(
+            scenario=scenario,
+            claim=agent_b_text or transcript_text,
+            level=level,
+            context={**context_flags, "claim_stance": "anti_causal"},
+        )
+        tool_trace = self._build_pipeline_tool_trace(claim_report, rebuttal_report)
+        verifier_verdict = self.verifier_pipeline.run(
+            primary_claim,
+            scenario=scenario,
+            transcript=transcript,
+            tool_trace=tool_trace,
+        )
+        verdict_payload = verifier_verdict.to_dict()
+        winner = self._winner_from_verdict_label(verifier_verdict.label.value)
+        argument_quality_a, argument_quality_b, causal_validity_score = self._score_verdict(
+            verifier_verdict.label.value,
+            verifier_verdict.confidence,
+        )
+        identified_issues = self._verifier_identified_issues(verifier_verdict)
+        reasoning = self._verifier_reasoning_summary(
+            verifier_verdict.reasoning_summary,
+            verifier_verdict.label.value,
+            jury_winner,
+            jury_consensus,
+        )
+        return AuditVerdict(
+            winner=winner,
+            causal_validity_score=causal_validity_score,
+            argument_quality_a=argument_quality_a,
+            argument_quality_b=argument_quality_b,
+            reasoning=reasoning,
+            identified_issues=identified_issues,
+            tools_used=self._deduplicate(
+                [
+                    trace.get("tool_name", "")
+                    for trace in tool_trace
+                    if trace.get("tool_name")
+                ]
+            ),
+            jury_consensus=jury_consensus,
+            verdict_label=verifier_verdict.label.value,
+            verifier_confidence=verifier_verdict.confidence,
+            assumption_ledger=[entry.to_dict() for entry in verifier_verdict.assumption_ledger.entries],
+            witness=verdict_payload.get("witness"),
+            support_witness=verdict_payload.get("support_witness"),
+            countermodel_witness=verdict_payload.get("countermodel_witness"),
+            tool_trace=tool_trace,
+            verifier_verdict=verdict_payload,
+        )
+
+    async def _evaluate_round_legacy(
+        self,
+        scenario: PublicCausalInstance,
         debate_context: "DebateContext",
         level: int,
     ) -> AuditVerdict:
@@ -108,6 +233,7 @@ class AgentC:
             debate_context: 完整辩论上下文
             level: Pearl因果阶梯层级
         """
+        scenario = require_public_instance(scenario)
         turns = list(getattr(debate_context, "turns", []))
         agent_a_text = self._collect_speaker_text(turns, {"agent_a", "a", "agent a"})
         agent_b_text = self._collect_speaker_text(turns, {"agent_b", "b", "agent b"})
@@ -254,6 +380,191 @@ class AgentC:
             tools_used=self._deduplicate(tool_report_a["successful_tools"] + tool_report_b["successful_tools"]),
             jury_consensus=jury_consensus,
         )
+
+    def _use_verifier_first(self) -> bool:
+        agent_config = self.config.get("agent_c", {}) or {}
+        mode = str(agent_config.get("mode", "verifier")).strip().lower()
+        return mode not in {"legacy", "debate", "classic"}
+
+    def _winner_from_verdict_label(self, verdict_label: str) -> str:
+        if verdict_label == "valid":
+            return "agent_a"
+        if verdict_label == "invalid":
+            return "agent_b"
+        return "draw"
+
+    def _score_verdict(self, verdict_label: str, confidence: float) -> tuple[float, float, float]:
+        if verdict_label == "valid":
+            argument_quality_a = self._clamp(0.62 + 0.26 * confidence)
+            argument_quality_b = self._clamp(0.38 - 0.12 * confidence)
+            causal_validity_score = self._clamp(confidence)
+        elif verdict_label == "invalid":
+            argument_quality_a = self._clamp(0.38 - 0.18 * confidence)
+            argument_quality_b = self._clamp(0.62 + 0.22 * confidence)
+            causal_validity_score = self._clamp(1.0 - confidence)
+        else:
+            argument_quality_a = self._clamp(0.5)
+            argument_quality_b = self._clamp(0.5)
+            causal_validity_score = 0.5
+        return argument_quality_a, argument_quality_b, causal_validity_score
+
+    def _verifier_identified_issues(self, verifier_verdict) -> list[str]:
+        issues: list[str] = []
+        for entry in verifier_verdict.assumption_ledger.entries:
+            if entry.status.value != "supported":
+                issues.append(f"{entry.name}:{entry.status.value}")
+        countermodel_witness = getattr(verifier_verdict, "countermodel_witness", None)
+        if countermodel_witness is not None:
+            countermodel_type = countermodel_witness.payload.get("countermodel_type")
+            if countermodel_type:
+                issues.append(str(countermodel_type))
+        return self._deduplicate(issues)
+
+    def _verifier_reasoning_summary(
+        self,
+        reasoning_summary: str,
+        verdict_label: str,
+        jury_winner: str,
+        jury_consensus: float,
+    ) -> str:
+        verdict_text = f"Verifier label={verdict_label}."
+        jury_text = f" Jury signal={jury_winner} ({jury_consensus:.2f})."
+        return f"{verdict_text} {reasoning_summary}{jury_text}".strip()
+
+    def _build_pipeline_tool_trace(
+        self,
+        claim_report: dict[str, Any],
+        rebuttal_report: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        tool_trace: list[dict[str, Any]] = []
+        tool_trace.extend(
+            self._tool_report_to_trace(
+                claim_report,
+                supports_claim=True,
+                claim_stance="pro_causal",
+            )
+        )
+        tool_trace.extend(
+            self._tool_report_to_trace(
+                rebuttal_report,
+                supports_claim=False,
+                claim_stance="anti_causal",
+            )
+        )
+        return tool_trace
+
+    def _tool_report_to_trace(
+        self,
+        report: dict[str, Any],
+        *,
+        supports_claim: bool,
+        claim_stance: str,
+    ) -> list[dict[str, Any]]:
+        trace: list[dict[str, Any]] = []
+        successful_tools = set(report.get("successful_tools", []))
+        for result in report.get("results", []):
+            if not isinstance(result, ToolExecutionResult) or not result.success:
+                continue
+            summary = self._summarize_tool_output(result)
+            supports_assumptions, contradicts_assumptions = self._extract_tool_assumptions(result)
+            trace.append(
+                {
+                    "tool_name": result.tool_name,
+                    "status": "success",
+                    "summary": summary,
+                    "supports_assumptions": supports_assumptions if supports_claim else [],
+                    "contradicts_assumptions": contradicts_assumptions if supports_claim else [],
+                    "supports_claim": (
+                        supports_claim
+                        and result.tool_name in successful_tools
+                        and not report.get("identified_issues")
+                    ),
+                    "supports_primary_claim": (
+                        supports_claim
+                        and result.tool_name in successful_tools
+                        and not report.get("identified_issues")
+                    ),
+                    "claim_stance": claim_stance,
+                    "evidence_direction": "support" if supports_claim else "counter",
+                    "error": "",
+                    "confidence": report.get("support_score", 0.0),
+                }
+            )
+
+        if report.get("supporting_evidence"):
+            trace.append(
+                {
+                    "tool_name": "tool_report_summary",
+                    "status": "success",
+                    "summary": " ".join(report["supporting_evidence"][:3]),
+                    "supports_assumptions": [],
+                    "contradicts_assumptions": [],
+                    "supports_claim": supports_claim and bool(report.get("supporting_evidence")) and not report.get("identified_issues"),
+                    "supports_primary_claim": supports_claim and bool(report.get("supporting_evidence")) and not report.get("identified_issues"),
+                    "claim_stance": claim_stance,
+                    "evidence_direction": "support" if supports_claim else "counter",
+                    "error": "",
+                    "confidence": report.get("support_score", 0.0),
+                }
+            )
+        return trace
+
+    def _summarize_tool_output(self, result: ToolExecutionResult) -> str:
+        output = result.output
+        if isinstance(output, dict):
+            if "causal_effect" in output:
+                return f"{result.tool_name} estimates causal_effect={float(output['causal_effect']):.3f}"
+            if "estimated_effect" in output:
+                return f"{result.tool_name} estimates effect={float(output['estimated_effect']):.3f}"
+            if "frontdoor_effect" in output:
+                return f"{result.tool_name} estimates frontdoor_effect={float(output['frontdoor_effect']):.3f}"
+            if "counterfactual_outcome" in output:
+                return f"{result.tool_name} predicts counterfactual_outcome={float(output['counterfactual_outcome']):.3f}"
+            if "is_valid_adjustment" in output:
+                return f"{result.tool_name} adjustment_valid={output['is_valid_adjustment']}"
+            if "is_strong_instrument" in output:
+                return f"{result.tool_name} strong_instrument={output['is_strong_instrument']}"
+        if isinstance(output, list) and output:
+            return f"{result.tool_name} returned {len(output)} alternative-model diagnostics"
+        return f"{result.tool_name} completed"
+
+    def _extract_tool_assumptions(
+        self,
+        result: ToolExecutionResult,
+    ) -> tuple[list[str], list[str]]:
+        supports: list[str] = []
+        contradicts: list[str] = []
+        output = result.output if isinstance(result.output, dict) else None
+
+        if result.tool_name in {"backdoor_adjustment", "backdoor_adjustment_check"} and output is not None:
+            if output.get("is_valid_adjustment") is True:
+                supports.extend(["valid adjustment set"])
+            elif output.get("is_valid_adjustment") is False:
+                contradicts.extend(["valid adjustment set"])
+
+        if result.tool_name == "iv_estimation" and output is not None:
+            if output.get("is_strong_instrument") is True:
+                supports.extend(["instrument relevance"])
+            elif output.get("is_strong_instrument") is False:
+                contradicts.extend(["instrument relevance"])
+
+        if result.tool_name == "sensitivity_analysis" and output is not None:
+            if output.get("is_sensitive") is False:
+                supports.extend(["no unobserved confounding"])
+            elif output.get("is_sensitive") is True:
+                contradicts.extend(["no unobserved confounding"])
+
+        if result.tool_name == "scm_identification_test" and isinstance(result.output, list):
+            indistinguishable = [
+                item for item in result.output
+                if isinstance(item, dict) and not item.get("distinguishable", True)
+            ]
+            if indistinguishable:
+                contradicts.extend(["counterfactual model uniqueness"])
+            else:
+                supports.extend(["counterfactual model uniqueness"])
+
+        return self._deduplicate(supports), self._deduplicate(contradicts)
 
     async def _resolve_jury_verdict(self, scenario, debate_context) -> JuryVerdict | dict | None:
         existing = getattr(debate_context, "jury_result", None) or getattr(debate_context, "jury_verdict", None)

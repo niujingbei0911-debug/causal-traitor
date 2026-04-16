@@ -1,368 +1,412 @@
 """
-评分器 - 综合评分与排名
+Verdict-centric scoring utilities.
 
-根据 DESIGN.md 八.2 综合评分公式实现五维加权评分:
-  deception_quality  0.25
-  detection_quality  0.25
-  causal_reasoning   0.25
-  game_quality       0.15
-  jury_quality       0.10
+The scorer no longer treats a debate-game winner as the main target. Primary
+scores are computed from verdict correctness against the frozen three-label
+verdict space. Legacy DSR / jury / evolution signals are retained only as
+appendix metrics.
 """
+
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .metrics import CausalMetrics, MetricResult
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+def _normalize_verdict_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"valid", "invalid", "unidentifiable"}:
+        return normalized
+    return None
+
+
+def _clamp_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _nested_value(mapping: Any, key: str) -> Any:
+    if isinstance(mapping, dict):
+        return mapping.get(key)
+    return None
+
+
+def _extract_predicted_label(round_data: Dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("verdict_label"),
+        round_data.get("predicted_label"),
+        _nested_value(round_data.get("verdict"), "label"),
+        _nested_value(round_data.get("verifier_verdict"), "label"),
+    ]
+    for candidate in candidates:
+        label = _normalize_verdict_label(candidate)
+        if label is not None:
+            return label
+    return None
+
+
+def _extract_gold_label(round_data: Dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("gold_label"),
+        round_data.get("expected_label"),
+        _nested_value(round_data.get("ground_truth"), "label"),
+        _nested_value(round_data.get("gold_verdict"), "label"),
+    ]
+    for candidate in candidates:
+        label = _normalize_verdict_label(candidate)
+        if label is not None:
+            return label
+    return None
+
+
+def _extract_confidence(round_data: Dict[str, Any]) -> float:
+    candidates = [
+        round_data.get("verifier_confidence"),
+        round_data.get("confidence"),
+        _nested_value(round_data.get("verdict"), "confidence"),
+        _nested_value(round_data.get("verifier_verdict"), "confidence"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        return _clamp_confidence(candidate)
+    return 0.0
+
+
+def _extract_countermodel_hit(round_data: Dict[str, Any]) -> bool:
+    if "countermodel_found" in round_data:
+        return bool(round_data.get("countermodel_found"))
+    if round_data.get("countermodel_witness"):
+        return True
+    verifier_verdict = round_data.get("verifier_verdict")
+    if isinstance(verifier_verdict, dict) and verifier_verdict.get("countermodel_witness"):
+        return True
+    return False
+
+
+def _extract_countermodel_applicable(round_data: Dict[str, Any]) -> bool:
+    if "countermodel_applicable" in round_data:
+        return bool(round_data.get("countermodel_applicable"))
+    gold_label = _extract_gold_label(round_data)
+    predicted_label = _extract_predicted_label(round_data)
+    return gold_label in {"invalid", "unidentifiable"} or predicted_label in {
+        "invalid",
+        "unidentifiable",
+    }
+
+
+def _label_distribution(labels: List[str]) -> Dict[str, int]:
+    counts = Counter(label for label in labels if label)
+    return {label: counts.get(label, 0) for label in ("valid", "invalid", "unidentifiable")}
+
 
 @dataclass
 class RoundScore:
-    """单轮评分"""
+    """Per-round verdict evaluation."""
+
     round_id: int
-    agent_a_score: float
-    agent_b_score: float
-    agent_c_score: float
-    jury_verdict: str
+    predicted_label: str | None
+    gold_label: str | None
+    verdict_correct: bool
+    confidence: float
     metric_results: List[MetricResult] = field(default_factory=list)
+    appendix: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class GameScore:
-    """整局游戏评分"""
+    """Game-level verdict evaluation summary."""
+
     game_id: str
     round_scores: List[RoundScore]
     final_scores: Dict[str, float]
     winner: str
+    metric_results: List[MetricResult] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Dimension scoring helpers (pure functions)
-# ---------------------------------------------------------------------------
-
-def _deception_quality(dsr: float, target: float = 0.4) -> float:
-    """DSR 越接近 *target* 得分越高, 范围 [0, 1]."""
-    if target <= 0:
-        return 0.0
-    return max(0.0, 1.0 - abs(dsr - target) / target)
-
-
-def _detection_quality(precision: float, recall: float) -> float:
-    """F1 分数, 范围 [0, 1]."""
-    denom = precision + recall
-    if denom <= 0:
-        return 0.0
-    return 2.0 * precision * recall / denom
-
-
-def _causal_reasoning_score(level_score: float, max_score: float = 6.0) -> float:
-    """归一化因果层级得分, 范围 [0, 1]."""
-    if max_score <= 0:
-        return 0.0
-    return min(1.0, max(0.0, level_score / max_score))
-
-
-def _game_quality(
-    arms_race_index: float,
-    nash_convergence: float,
-    strategy_diversity: float,
-) -> float:
-    """博弈质量综合分, 范围 [0, 1]."""
-    ari_part = min(1.0, max(0.0, arms_race_index)) * 0.4
-    nc_part = min(1.0, max(0.0, 1.0 - nash_convergence)) * 0.3
-    sd_part = min(1.0, max(0.0, strategy_diversity / 3.0)) * 0.3
-    return ari_part + nc_part + sd_part
-
-
-def _jury_quality(accuracy: float, consensus: float) -> float:
-    """陪审团质量, 范围 [0, 1]."""
-    return min(1.0, max(0.0, accuracy)) * 0.6 + min(1.0, max(0.0, consensus)) * 0.4
-
-
-# ---------------------------------------------------------------------------
-# Scorer
-# ---------------------------------------------------------------------------
-
 class Scorer:
     """
-    综合评分器
-    - 汇总各维度指标
-    - 计算加权综合分
-    - 生成评分报告
+    Verdict-centric scorer.
+
+    Primary score computation is based on verdict correctness, not on the
+    debate-game winner. Legacy appendix metrics are surfaced separately and do
+    not contribute to the overall score.
     """
 
     DEFAULT_WEIGHTS: Dict[str, float] = {
-        "deception_quality": 0.25,
-        "detection_quality": 0.25,
-        "causal_reasoning": 0.25,
-        "game_quality": 0.15,
-        "jury_quality": 0.10,
+        "verdict_accuracy": 0.30,
+        "macro_f1": 0.25,
+        "invalid_claim_acceptance_rate": 0.15,
+        "unidentifiable_awareness": 0.15,
+        "ece": 0.05,
+        "brier": 0.05,
+        "countermodel_coverage": 0.05,
     }
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
         self.weights = weights or dict(self.DEFAULT_WEIGHTS)
         self.metrics = CausalMetrics()
 
-    # ------------------------------------------------------------------
-    # score_round
-    # ------------------------------------------------------------------
+    def _rounds_from_game_data(self, game_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rounds = list(game_data.get("rounds", []))
+        if rounds:
+            return rounds
+
+        gold_labels = list(game_data.get("gold_labels", []))
+        predicted_labels = list(game_data.get("predicted_labels", []))
+        confidences = list(game_data.get("confidences", []))
+        countermodel_hits = list(game_data.get("countermodel_hits", []))
+        countermodel_applicable = list(game_data.get("countermodel_applicable", []))
+        count = min(len(gold_labels), len(predicted_labels))
+
+        synthetic_rounds: list[dict[str, Any]] = []
+        for index in range(count):
+            payload: dict[str, Any] = {
+                "round_id": index + 1,
+                "gold_label": gold_labels[index],
+                "verdict_label": predicted_labels[index],
+            }
+            if index < len(confidences):
+                payload["verifier_confidence"] = confidences[index]
+            if index < len(countermodel_hits):
+                payload["countermodel_found"] = countermodel_hits[index]
+            if index < len(countermodel_applicable):
+                payload["countermodel_applicable"] = countermodel_applicable[index]
+            synthetic_rounds.append(payload)
+        return synthetic_rounds
+
+    def _core_score_value(self, metric: MetricResult | None) -> float:
+        if metric is None:
+            return 0.0
+        if not metric.higher_is_better:
+            return max(0.0, min(1.0, 1.0 - metric.value))
+        return max(0.0, min(1.0, metric.value))
+
     def score_round(self, round_data: Dict[str, Any]) -> RoundScore:
-        """对单轮博弈评分.
+        """Score one round against the verdict label supervision target."""
 
-        ``round_data`` 至少应包含:
-          - round_id: int
-          - deception_succeeded: bool
-          - detection_correct: bool
-          - jury_verdict: str          ("traitor" / "scientist")
-          - causal_level: int          (1, 2, 3)
-          - tools_used: list[str]
-          - tools_effective: list[str]
-        可选:
-          - agent_a_claims: list[dict]  (用于 CSI)
-          - hidden_var_scores: list[float]
-        """
-        rid = round_data.get("round_id", 0)
-        deception_ok = round_data.get("deception_succeeded", False)
-        detection_ok = round_data.get("detection_correct", False)
-        jury_verdict = round_data.get("jury_verdict", "unknown")
-        level = round_data.get("causal_level", 1)
+        round_id = int(round_data.get("round_id", 0))
+        predicted_label = _extract_predicted_label(round_data)
+        gold_label = _extract_gold_label(round_data)
+        confidence = _extract_confidence(round_data)
+        verdict_correct = bool(predicted_label and gold_label and predicted_label == gold_label)
+        countermodel_hit = _extract_countermodel_hit(round_data)
+        countermodel_applicable = _extract_countermodel_applicable(round_data)
 
-        # --- per-round metric results ---
-        results: List[MetricResult] = []
+        metric_results: List[MetricResult] = [
+            MetricResult(
+                name="verdict_correctness",
+                value=1.0 if verdict_correct else 0.0,
+                category="verdict",
+                details={"gold_label": gold_label, "predicted_label": predicted_label},
+            ),
+            MetricResult(
+                name="countermodel_hit",
+                value=1.0 if countermodel_hit else 0.0,
+                category="verdict",
+                details={"applicable": countermodel_applicable},
+            ),
+        ]
 
-        # DSR (单轮视角: 1 or 0)
-        dsr_val = 1.0 if deception_ok else 0.0
-        results.append(MetricResult(name="DSR_round", value=dsr_val))
+        appendix: dict[str, Any] = {}
+        if "deception_succeeded" in round_data:
+            deception_value = 1.0 if round_data.get("deception_succeeded") else 0.0
+            metric_results.append(
+                MetricResult(
+                    name="DSR_round",
+                    value=deception_value,
+                    category="deception",
+                    is_appendix=True,
+                )
+            )
+            appendix["deception_succeeded"] = bool(round_data.get("deception_succeeded"))
 
-        # DAcc (单轮视角: 1 or 0)
-        dacc_val = 1.0 if detection_ok else 0.0
-        results.append(MetricResult(name="DAcc_round", value=dacc_val))
-
-        # TEff
-        tools_used = round_data.get("tools_used", [])
-        tools_eff = round_data.get("tools_effective", [])
-        teff = CausalMetrics.tool_efficiency(tools_used, tools_eff)
-        results.append(teff)
-
-        # CSI (if claims available)
-        claims = round_data.get("agent_a_claims", [])
-        if claims:
-            csi = CausalMetrics.causal_sophistication_index(claims)
-            results.append(csi)
-
-        # LTP (单轮: 根据 level 给出层级分)
-        l1 = 1.0 if level >= 1 else 0.0
-        l2 = 1.0 if level >= 2 else 0.0
-        l3 = 1.0 if level >= 3 else 0.0
-        ltp = CausalMetrics.ladder_transition_performance(l1, l2, l3)
-        results.append(ltp)
-
-        # --- agent scores ---
-        # Agent A: 欺骗成功 +1, 否则 0
-        a_score = 1.0 if deception_ok else 0.0
-        # Agent B: 检测正确 +1
-        b_score = 1.0 if detection_ok else 0.0
-        # Agent C: 工具效率 + 检测正确
-        c_score = (teff.value + dacc_val) / 2.0
+        if "jury_consensus" in round_data or "jury_verdict" in round_data:
+            jury_consensus = _clamp_confidence(round_data.get("jury_consensus", 0.0))
+            metric_results.append(
+                MetricResult(
+                    name="jury_consensus_round",
+                    value=jury_consensus,
+                    category="jury",
+                    is_appendix=True,
+                )
+            )
+            appendix["jury_consensus"] = jury_consensus
+            appendix["jury_verdict"] = round_data.get("jury_verdict")
 
         return RoundScore(
-            round_id=rid,
-            agent_a_score=a_score,
-            agent_b_score=b_score,
-            agent_c_score=c_score,
-            jury_verdict=jury_verdict,
-            metric_results=results,
+            round_id=round_id,
+            predicted_label=predicted_label,
+            gold_label=gold_label,
+            verdict_correct=verdict_correct,
+            confidence=confidence,
+            metric_results=metric_results,
+            appendix=appendix,
         )
 
-    # ------------------------------------------------------------------
-    # score_game
-    # ------------------------------------------------------------------
     def score_game(self, game_data: Dict[str, Any]) -> GameScore:
-        """对整局游戏评分.
+        """Aggregate round-level verdict evaluation into a game-level score."""
 
-        ``game_data`` 应包含:
-          - game_id: str (可选, 自动生成)
-          - rounds: list[dict]          每轮数据 (传给 score_round)
-          - y_true: list[int]           全局真实标签
-          - y_pred: list[int]           全局预测标签
-          - strategies: list[str]       Agent A 使用的策略列表
-          - arms_race_index: float      军备竞赛指数
-          - nash_convergence: float     Nash 收敛度
-          - jury_accuracy: float        陪审团准确率
-          - jury_consensus: float       陪审团共识度
-        """
-        game_id = game_data.get("game_id", uuid.uuid4().hex[:12])
-        rounds_raw: List[Dict[str, Any]] = game_data.get("rounds", [])
+        game_id = str(game_data.get("game_id", uuid.uuid4().hex[:12]))
+        rounds_raw = self._rounds_from_game_data(game_data)
+        round_scores = [self.score_round(round_data) for round_data in rounds_raw]
 
-        # 1) 逐轮评分
-        round_scores: List[RoundScore] = []
-        for rd in rounds_raw:
-            round_scores.append(self.score_round(rd))
+        gold_labels = [score.gold_label for score in round_scores if score.gold_label is not None]
+        predicted_labels = [score.predicted_label for score in round_scores if score.predicted_label is not None]
+        paired_gold_labels: list[str] = []
+        paired_predicted_labels: list[str] = []
+        confidences: list[float] = []
+        countermodel_hits: list[bool] = []
+        countermodel_applicable: list[bool] = []
 
-        # 2) 全局指标
-        total = len(rounds_raw) or 1
-        n_success = sum(1 for r in rounds_raw if r.get("deception_succeeded"))
-        dsr = n_success / total
+        for round_data, round_score in zip(rounds_raw, round_scores):
+            if round_score.gold_label is None or round_score.predicted_label is None:
+                continue
+            paired_gold_labels.append(round_score.gold_label)
+            paired_predicted_labels.append(round_score.predicted_label)
+            confidences.append(round_score.confidence)
+            countermodel_hits.append(_extract_countermodel_hit(round_data))
+            countermodel_applicable.append(_extract_countermodel_applicable(round_data))
 
-        y_true = game_data.get("y_true", [])
-        y_pred = game_data.get("y_pred", [])
-        if y_true and y_pred:
-            dacc_res = CausalMetrics.detection_accuracy(y_true, y_pred)
-            fpr_res = CausalMetrics.false_positive_rate(y_true, y_pred)
-            precision = dacc_res.value  # DAcc 作为精确率近似
-            # 计算真正的 precision / recall
-            tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
-            fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
-            fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
-            real_precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-            real_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        else:
-            dacc_res = MetricResult(name="DAcc", value=0.0)
-            fpr_res = MetricResult(name="FPR", value=0.0)
-            real_precision = 0.0
-            real_recall = 0.0
+        core_metrics = [
+            CausalMetrics.verdict_accuracy(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.verdict_macro_f1(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.invalid_claim_acceptance_rate(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.unidentifiable_awareness(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.expected_calibration_error(
+                paired_gold_labels,
+                paired_predicted_labels,
+                confidences,
+            ),
+            CausalMetrics.brier_score(
+                paired_gold_labels,
+                paired_predicted_labels,
+                confidences,
+            ),
+            CausalMetrics.countermodel_coverage(countermodel_hits, countermodel_applicable),
+        ]
 
-        strategies = game_data.get("strategies", [])
-        sds_res = CausalMetrics.strategy_diversity_score(strategies) if strategies else MetricResult(name="SDS", value=0.0)
+        appendix_metrics: list[MetricResult] = []
+        if rounds_raw and any("deception_succeeded" in round_data for round_data in rounds_raw):
+            deception_successes = sum(1 for round_data in rounds_raw if round_data.get("deception_succeeded"))
+            appendix_metrics.append(CausalMetrics.deception_success_rate(deception_successes, len(rounds_raw)))
 
-        # 因果层级得分: 从各轮 LTP 取均值 × 6 还原
-        ltp_values = []
-        for rs in round_scores:
-            for mr in rs.metric_results:
-                if mr.name == "LTP":
-                    ltp_values.append(mr.value)
-        avg_ltp = sum(ltp_values) / len(ltp_values) if ltp_values else 0.0
-        causal_level_score = avg_ltp * 6.0  # 还原到 [0, 6] 尺度
+        jury_consensus_values = [
+            _clamp_confidence(round_data.get("jury_consensus"))
+            for round_data in rounds_raw
+            if "jury_consensus" in round_data
+        ]
+        if jury_consensus_values:
+            appendix_metrics.append(
+                CausalMetrics.jury_consensus_metric(sum(jury_consensus_values) / len(jury_consensus_values))
+            )
+        if "jury_accuracy" in game_data:
+            appendix_metrics.append(CausalMetrics.jury_accuracy_metric(game_data.get("jury_accuracy", 0.0)))
 
-        ari = game_data.get("arms_race_index", 0.0)
-        nc = game_data.get("nash_convergence", 0.0)
-        sd = sds_res.value
-        jury_acc = game_data.get("jury_accuracy", 0.0)
-        jury_con = game_data.get("jury_consensus", 0.0)
+        evolution_history = list(game_data.get("evolution_history", []))
+        if evolution_history:
+            appendix_metrics.append(CausalMetrics.evolution_complexity_index(evolution_history))
 
-        # 3) 五维评分
-        dim_scores = {
-            "deception_quality": _deception_quality(dsr),
-            "detection_quality": _detection_quality(real_precision, real_recall),
-            "causal_reasoning": _causal_reasoning_score(causal_level_score),
-            "game_quality": _game_quality(ari, nc, sd),
-            "jury_quality": _jury_quality(jury_acc, jury_con),
+        all_metrics = core_metrics + appendix_metrics
+        overall = self.compute_weighted_score(all_metrics)
+
+        final_scores = {metric.name: round(metric.value, 4) for metric in core_metrics}
+        final_scores["overall"] = overall
+
+        gold_distribution = _label_distribution(paired_gold_labels)
+        predicted_distribution = _label_distribution(paired_predicted_labels)
+
+        summary = {
+            "primary_metric": "verdict_accuracy",
+            "total_rounds": len(round_scores),
+            "scored_rounds": len(paired_gold_labels),
+            "core_metrics": {metric.name: round(metric.value, 4) for metric in core_metrics},
+            "appendix_metrics": {metric.name: round(metric.value, 4) for metric in appendix_metrics},
+            "overall_breakdown": {
+                metric.name: round(self._core_score_value(metric), 4)
+                for metric in core_metrics
+            },
+            "gold_label_distribution": gold_distribution,
+            "predicted_label_distribution": predicted_distribution,
         }
-
-        overall = sum(self.weights.get(k, 0.0) * v for k, v in dim_scores.items())
-
-        # 4) 各 agent 最终分
-        a_total = sum(rs.agent_a_score for rs in round_scores)
-        b_total = sum(rs.agent_b_score for rs in round_scores)
-        c_total = sum(rs.agent_c_score for rs in round_scores)
-
-        final_scores = {
-            "agent_a": a_total / total,
-            "agent_b": b_total / total,
-            "agent_c": c_total / total,
-            "overall": round(overall, 4),
-        }
-
-        # 5) 胜者判定
-        if a_total > b_total:
-            winner = "agent_a"
-        elif b_total > a_total:
-            winner = "agent_b"
-        else:
-            winner = "draw"
 
         return GameScore(
             game_id=game_id,
             round_scores=round_scores,
             final_scores=final_scores,
-            winner=winner,
-            summary={
-                "total_rounds": total,
-                "deception_success_rate": round(dsr, 4),
-                "dimension_scores": {k: round(v, 4) for k, v in dim_scores.items()},
-                "precision": round(real_precision, 4),
-                "recall": round(real_recall, 4),
-                "strategy_diversity": round(sd, 4),
-            },
+            winner=str(game_data.get("winner", "n/a")),
+            metric_results=all_metrics,
+            summary=summary,
         )
 
-    # ------------------------------------------------------------------
-    # compute_weighted_score
-    # ------------------------------------------------------------------
     def compute_weighted_score(self, metric_results: List[MetricResult]) -> float:
-        """从一组 MetricResult 计算加权综合分.
+        """Compute the overall score from core verdict metrics only."""
 
-        将 metric name 映射到五维评分维度, 然后按权重求和.
-        """
-        lookup: Dict[str, float] = {mr.name: mr.value for mr in metric_results}
-
-        dsr = lookup.get("DSR", lookup.get("DSR_round", 0.0))
-        dacc = lookup.get("DAcc", lookup.get("DAcc_round", 0.0))
-        fpr = lookup.get("FPR", 0.0)
-        # 近似 precision = DAcc, recall = DAcc (单指标场景)
-        precision = dacc
-        recall = dacc
-
-        ltp = lookup.get("LTP", 0.0)
-        causal_level_score = ltp * 6.0
-
-        ari = lookup.get("ECI", 0.0)  # ECI 作为军备竞赛近似
-        gbi = lookup.get("GBI", 0.0)
-        sds = lookup.get("SDS", 0.0)
-        ias = lookup.get("IAS", 0.0)
-
-        dim = {
-            "deception_quality": _deception_quality(dsr),
-            "detection_quality": _detection_quality(precision, recall),
-            "causal_reasoning": _causal_reasoning_score(causal_level_score),
-            "game_quality": _game_quality(ari, gbi, sds),
-            "jury_quality": _jury_quality(dacc, 0.5),  # 默认共识度 0.5
+        core_metrics = {
+            metric.name: metric
+            for metric in metric_results
+            if not metric.is_appendix and metric.name in self.weights
         }
 
-        return sum(self.weights.get(k, 0.0) * v for k, v in dim.items())
+        total = 0.0
+        for name, weight in self.weights.items():
+            metric = core_metrics.get(name)
+            raw_value = self._core_score_value(metric)
+            total += weight * raw_value
+        return round(total, 4)
 
-    # ------------------------------------------------------------------
-    # generate_report
-    # ------------------------------------------------------------------
     def generate_report(self, game_score: GameScore) -> Dict[str, Any]:
-        """生成结构化评分报告."""
-        round_details = []
-        for rs in game_score.round_scores:
-            round_details.append({
-                "round_id": rs.round_id,
-                "agent_a_score": round(rs.agent_a_score, 4),
-                "agent_b_score": round(rs.agent_b_score, 4),
-                "agent_c_score": round(rs.agent_c_score, 4),
-                "jury_verdict": rs.jury_verdict,
-                "metrics": {
-                    mr.name: {
-                        "value": round(mr.value, 4),
-                        "details": mr.details,
-                    }
-                    for mr in rs.metric_results
-                },
-            })
+        """Generate a structured verdict-centric report."""
 
-        dim_scores = game_score.summary.get("dimension_scores", {})
+        rounds: list[dict[str, Any]] = []
+        for score in game_score.round_scores:
+            rounds.append(
+                {
+                    "round_id": score.round_id,
+                    "predicted_label": score.predicted_label,
+                    "gold_label": score.gold_label,
+                    "verdict_correct": score.verdict_correct,
+                    "confidence": round(score.confidence, 4),
+                    "metrics": {
+                        metric.name: {
+                            "value": round(metric.value, 4),
+                            "category": metric.category,
+                            "is_appendix": metric.is_appendix,
+                            "details": metric.details,
+                        }
+                        for metric in score.metric_results
+                    },
+                    "appendix": dict(score.appendix),
+                }
+            )
 
         return {
             "game_id": game_score.game_id,
             "winner": game_score.winner,
+            "primary_metric": game_score.summary.get("primary_metric", "verdict_accuracy"),
             "overall_score": game_score.final_scores.get("overall", 0.0),
-            "final_scores": game_score.final_scores,
-            "dimension_scores": dim_scores,
-            "summary": {
-                "total_rounds": game_score.summary.get("total_rounds", 0),
-                "deception_success_rate": game_score.summary.get("deception_success_rate", 0.0),
-                "precision": game_score.summary.get("precision", 0.0),
-                "recall": game_score.summary.get("recall", 0.0),
-                "strategy_diversity": game_score.summary.get("strategy_diversity", 0.0),
+            "final_scores": dict(game_score.final_scores),
+            "summary": dict(game_score.summary),
+            "metrics": {
+                metric.name: {
+                    "value": round(metric.value, 4),
+                    "category": metric.category,
+                    "is_primary": metric.is_primary,
+                    "is_appendix": metric.is_appendix,
+                    "higher_is_better": metric.higher_is_better,
+                    "details": metric.details,
+                }
+                for metric in game_score.metric_results
             },
-            "rounds": round_details,
+            "rounds": rounds,
         }

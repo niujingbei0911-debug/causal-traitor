@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from benchmark.graph_families import list_graph_families
+
 from .types import CausalScenario
 
 
@@ -36,6 +38,45 @@ class SyntheticDataset:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+SHOWCASE_FAMILY_REGISTRY: dict[str, dict[str, Any]] = {
+    "smoking_cancer": {
+        "showcase_name": "smoking",
+        "showcase_family": "showcase_smoking_family",
+        "benchmark_family": "l1_latent_confounding_family",
+        "causal_level": 1,
+    },
+    "education_income": {
+        "showcase_name": "education",
+        "showcase_family": "showcase_education_family",
+        "benchmark_family": "l2_invalid_iv_family",
+        "causal_level": 2,
+    },
+    "drug_recovery": {
+        "showcase_name": "drug",
+        "showcase_family": "showcase_drug_family",
+        "benchmark_family": "l3_counterfactual_ambiguity_family",
+        "causal_level": 3,
+    },
+}
+
+REGISTERED_BENCHMARK_FAMILIES: frozenset[str] = frozenset(list_graph_families())
+
+SHOWCASE_ID_ALIASES: dict[str, str] = {
+    "smoking": "smoking_cancer",
+    "smoking_cancer": "smoking_cancer",
+    "showcase_smoking": "smoking_cancer",
+    "showcase_smoking_family": "smoking_cancer",
+    "education": "education_income",
+    "education_income": "education_income",
+    "showcase_education": "education_income",
+    "showcase_education_family": "education_income",
+    "drug": "drug_recovery",
+    "drug_recovery": "drug_recovery",
+    "showcase_drug": "drug_recovery",
+    "showcase_drug_family": "drug_recovery",
+}
+
+
 class DataGenerator:
     """
     Generates benchmark causal scenarios with controllable difficulty.
@@ -59,11 +100,13 @@ class DataGenerator:
 
         level = causal_level or int(self.rng.choice([1, 2, 3]))
         difficulty = float(np.clip(difficulty, 0.0, 1.0))
-        scenario_name = scenario_id or {
+        default_name = {
             1: "smoking_cancer",
             2: "education_income",
             3: "drug_recovery",
         }[level]
+        scenario_name = self._resolve_showcase_scenario_id(scenario_id or default_name)
+        level = int(SHOWCASE_FAMILY_REGISTRY[scenario_name]["causal_level"])
         size = n_samples or self._resolve_sample_size(difficulty)
 
         if scenario_name == "smoking_cancer":
@@ -77,6 +120,27 @@ class DataGenerator:
 
         scenario.causal_level = level
         return scenario
+
+    def generate_public_scenario(
+        self,
+        difficulty: float,
+        causal_level: int | None = None,
+        scenario_id: str | None = None,
+        n_samples: int | None = None,
+    ):
+        """Generate one showcase scenario and immediately export its public view."""
+
+        return self.generate_scenario(
+            difficulty=difficulty,
+            causal_level=causal_level,
+            scenario_id=scenario_id,
+            n_samples=n_samples,
+        ).to_public()
+
+    def export_public_instance(self, scenario: CausalScenario):
+        """Project a gold/showcase instance into the verifier-safe public schema."""
+
+        return scenario.to_public()
 
     def generate_linear_scm(self, n_vars: int, n_samples: int) -> SyntheticDataset:
         """Generate a random linear SCM for smoke-test and fallback usage."""
@@ -335,6 +399,31 @@ class DataGenerator:
         spread = int(self.config.get("difficulty_sample_span", 500))
         return max(120, base + int(spread * difficulty))
 
+    def _resolve_showcase_scenario_id(self, scenario_id: str) -> str:
+        try:
+            return SHOWCASE_ID_ALIASES[str(scenario_id)]
+        except KeyError as exc:
+            known = ", ".join(sorted(SHOWCASE_ID_ALIASES))
+            raise ValueError(f"Unknown scenario_id: {scenario_id}. Known ids: {known}") from exc
+
+    def _showcase_metadata(self, scenario_id: str) -> dict[str, Any]:
+        info = dict(SHOWCASE_FAMILY_REGISTRY[scenario_id])
+        benchmark_family = info["benchmark_family"]
+        if benchmark_family not in REGISTERED_BENCHMARK_FAMILIES:
+            raise ValueError(
+                f"Showcase {scenario_id!r} points to unregistered benchmark_family "
+                f"{benchmark_family!r}."
+            )
+        return {
+            "scenario_family": info["showcase_family"],
+            "benchmark_family": benchmark_family,
+            "benchmark_subfamily": info["showcase_family"],
+            "family_source": "showcase",
+            "is_showcase": True,
+            "showcase_name": info["showcase_name"],
+            "showcase_story_id": scenario_id,
+        }
+
     def _difficulty_profile(self, difficulty: float) -> dict[str, float]:
         return {
             "noise_scale": 0.15 + 0.25 * difficulty,
@@ -417,7 +506,7 @@ class DataGenerator:
                     "cancer": {"intercept": -0.6, "cancer_risk": 1.0},
                 },
             },
-            metadata={"scenario_family": "l1_association"},
+            metadata=self._showcase_metadata("smoking_cancer"),
         )
 
     def _build_education_scenario(self, difficulty: float, n_samples: int) -> CausalScenario:
@@ -500,7 +589,7 @@ class DataGenerator:
                     },
                 },
             },
-            metadata={"scenario_family": "l2_intervention"},
+            metadata=self._showcase_metadata("education_income"),
         )
 
     def _build_drug_scenario(self, difficulty: float, n_samples: int) -> CausalScenario:
@@ -587,7 +676,7 @@ class DataGenerator:
                     "recovered": {"intercept": -0.2, "recovery_score": 1.0},
                 },
             },
-            metadata={"scenario_family": "l3_counterfactual"},
+            metadata=self._showcase_metadata("drug_recovery"),
         )
 
     def _smoking_do(self, full: pd.DataFrame, do_value: float) -> pd.DataFrame:

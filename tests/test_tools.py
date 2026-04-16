@@ -9,15 +9,18 @@ from causal_tools.l1_association import (
     conditional_independence_test,
     correlation_analysis,
     detect_simpson_paradox,
+    proxy_support_check,
 )
 from causal_tools.l2_intervention import (
     backdoor_adjustment_check,
     iv_estimation,
+    overlap_check,
     propensity_score_matching,
     validate_backdoor_criterion,
 )
 from causal_tools.l3_counterfactual import (
     abduction_action_prediction,
+    counterfactual_bridge_check,
     counterfactual_inference,
     ett_computation,
     probability_of_necessity,
@@ -109,6 +112,10 @@ class ToolTests(unittest.TestCase):
 
         adjusted = backdoor_adjustment_check(self.df, "X", "Y", ["U"], graph=self.graph)
         self.assertIn("estimated_effect", adjusted)
+        self.assertTrue(adjusted["supports_adjustment_set"])
+
+        overlap = overlap_check(self.df[["T", "U", "Z"]].rename(columns={"T": "X"}), "X", ["U", "Z"])
+        self.assertIn("has_overlap", overlap)
 
         iv = iv_estimation(self.df, "Z", "X", "Y", ["U"])
         self.assertIn("causal_effect", iv)
@@ -122,11 +129,15 @@ class ToolTests(unittest.TestCase):
         selected = selector.select(2, scenario_type="instrument", claim="This IV is weak", context={"has_instrument": True})
         self.assertIn("iv_estimation", selected)
         self.assertIn("backdoor_adjustment_check", select_tools(3, {"claim": "反事实", "needs_full_counterfactual": True}))
+        self.assertIn("proxy_support_check", selector.select(1, scenario_type="proxy", claim="proxy_signal helps", context={"has_proxy": True}))
 
         logic = argument_logic_check("相关就说明因果，而且这是唯一解释")
         self.assertGreaterEqual(logic["n_fallacies_detected"], 1)
         graph_report = causal_graph_validator(self.graph)
         self.assertTrue(graph_report["is_dag"])
+
+        proxy_report = proxy_support_check(self.df.rename(columns={"M": "proxy_signal"}), "X", "Y", "proxy_signal")
+        self.assertIn("supports_proxy_sufficiency", proxy_report)
 
     def test_counterfactual_suite(self):
         model = FakeSCM(effect=1.5)
@@ -150,6 +161,15 @@ class ToolTests(unittest.TestCase):
         comparison_df = pd.DataFrame({"X": [0, 1], "Y": [1.0, 2.0]})
         identifiability = scm_identification_test(comparison_df, model, [alt])
         self.assertEqual(len(identifiability), 1)
+
+        bridge = counterfactual_bridge_check(
+            self.df.rename(columns={"X": "treatment", "M": "mediator", "Y_bin": "outcome"}),
+            "treatment",
+            "mediator",
+            "outcome",
+            ["Z"],
+        )
+        self.assertIn("supports_counterfactual_model_uniqueness", bridge)
 
 
 if __name__ == "__main__":

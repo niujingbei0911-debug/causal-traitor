@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import pandas as pd
-
-
 class GamePhase(Enum):
     """Lifecycle stages for a single debate round."""
 
@@ -20,37 +17,23 @@ class GamePhase(Enum):
     JURY = "jury"
     COMPLETE = "complete"
 
+from benchmark.schema import (
+    GoldCausalInstance,
+    PublicCausalInstance,
+    VerifierScenario,
+    VerifierVerdict,
+    VerdictLabel,
+)
 
-@dataclass(slots=True)
-class CausalScenario:
-    """A single causal reasoning scenario for one round."""
-
-    scenario_id: str
-    description: str
-    true_dag: dict[str, list[str]]
-    variables: list[str]
-    hidden_variables: list[str]
-    ground_truth: dict[str, Any] = field(default_factory=dict)
-    observed_data: pd.DataFrame | None = None
-    full_data: pd.DataFrame | None = None
-    data: pd.DataFrame | None = None
-    causal_level: int = 1
-    difficulty: float = 0.5
-    difficulty_config: dict[str, Any] = field(default_factory=dict)
-    true_scm: dict[str, Any] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.observed_data is None and self.data is not None:
-            self.observed_data = self.data.copy()
-        if self.observed_data is None:
-            self.observed_data = pd.DataFrame()
-        if self.full_data is None:
-            self.full_data = self.observed_data.copy()
-        if self.data is None:
-            self.data = self.observed_data
-        if self.true_scm is None:
-            self.true_scm = {"graph": self.true_dag}
+# ``CausalScenario`` is retained only as a legacy constructor/export name for
+# the attacker-side gold view. Verifier-side runtime paths should use
+# ``VerifierScenario`` / ``PublicCausalInstance`` instead.
+# Legacy game code still imports and instantiates ``CausalScenario`` directly.
+# During the schema transition, that name continues to mean the gold view.
+# A debate/game ``winner`` is still a protocol artifact, but the paper-level
+# supervision target is ``gold_label`` / ``verdict.label`` in the frozen
+# ``valid`` / ``invalid`` / ``unidentifiable`` space.
+CausalScenario = GoldCausalInstance
 
 
 @dataclass(slots=True)
@@ -86,7 +69,7 @@ class DebateTurn:
 class DebateContext:
     """Mutable context carried across one round."""
 
-    scenario: CausalScenario
+    scenario: VerifierScenario
     round_number: int = 0
     turns: list[DebateTurn] = field(default_factory=list)
     current_phase: GamePhase = GamePhase.SETUP

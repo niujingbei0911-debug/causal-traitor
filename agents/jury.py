@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from benchmark.schema import PublicCausalInstance, require_public_instance
 from game.llm_service import LLMService
 from agents.prompts.jury_prompts import JURY_SYSTEM_PROMPT
 
@@ -221,9 +222,10 @@ class JuryAggregator:
     # ------------------------------------------------------------------
 
     async def collect_votes(
-        self, scenario: "CausalScenario", debate_context: "DebateContext"
+        self, scenario: PublicCausalInstance, debate_context: "DebateContext"
     ) -> JuryVerdict:
         """收集所有陪审员投票并聚合"""
+        scenario = require_public_instance(scenario)
         turns = list(getattr(debate_context, "turns", []))
         voting_method = self.config.get("models", {}).get("jury", {}).get("voting", "weighted")
         jury_models = self.jury_models or ["baseline_juror_1", "baseline_juror_2", "baseline_juror_3"]

@@ -1,6 +1,4 @@
-"""
-实验追踪器 - 记录实验过程，支持W&B集成
-"""
+"""Experiment tracking utilities."""
 
 from __future__ import annotations
 
@@ -13,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class ExperimentConfig:
-    """实验配置"""
+    """Configuration for one tracked run."""
 
     experiment_id: str
     name: str
@@ -24,10 +22,11 @@ class ExperimentConfig:
 
 class ExperimentTracker:
     """
-    实验追踪器
-    - 记录实验配置、指标、产物
-    - 支持本地JSON日志
-    - 可选W&B集成
+    Track experiment metrics, round logs, and artifacts.
+
+    This class intentionally stays lightweight. Statistical reporting is kept in
+    the dedicated evaluation/reporting.py module rather than being hard-wired
+    here.
     """
 
     def __init__(self, config: ExperimentConfig, log_dir: str = "logs", use_wandb: bool = False):
@@ -43,7 +42,7 @@ class ExperimentTracker:
         self._initialized = False
 
     def init(self) -> None:
-        """初始化追踪器（创建日志目录，可选初始化W&B）"""
+        """Create run directories and initialize on-disk logs."""
 
         timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
         run_name = f"{self.config.experiment_id}_{timestamp}"
@@ -61,7 +60,7 @@ class ExperimentTracker:
         self._initialized = True
 
     def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
-        """记录一组指标"""
+        """Log one metric event."""
 
         self._ensure_initialized()
         record = {
@@ -73,7 +72,7 @@ class ExperimentTracker:
         self._append_jsonl(self.metrics_path, record)
 
     def log_artifact(self, name: str, data: Any, artifact_type: str = "json") -> None:
-        """记录产物（模型、数据、图表等）"""
+        """Persist an artifact payload."""
 
         self._ensure_initialized()
         safe_name = name.replace("/", "_")
@@ -96,7 +95,7 @@ class ExperimentTracker:
         )
 
     def log_round(self, round_id: int, round_data: Dict[str, Any]) -> None:
-        """记录单轮博弈数据"""
+        """Log one round payload."""
 
         self._ensure_initialized()
         record = {
@@ -107,7 +106,7 @@ class ExperimentTracker:
         self._append_jsonl(self.rounds_path, record)
 
     def save_checkpoint(self, game_state: Dict[str, Any]) -> str:
-        """保存游戏状态检查点，返回路径"""
+        """Persist a checkpoint and return its path."""
 
         self._ensure_initialized()
         checkpoint_dir = self.run_dir / "checkpoints"
@@ -120,13 +119,13 @@ class ExperimentTracker:
         return str(target)
 
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
-        """加载检查点"""
+        """Load a saved checkpoint."""
 
         path = Path(checkpoint_path)
         return json.loads(path.read_text(encoding="utf-8"))
 
     def finish(self) -> Dict[str, Any]:
-        """结束追踪，生成摘要"""
+        """Finalize the run and emit a summary."""
 
         self._ensure_initialized()
         end_time = datetime.now()
@@ -166,7 +165,7 @@ class ExperimentTracker:
         if isinstance(value, (list, tuple)):
             return [self._json_ready(item) for item in value]
         try:
-            import pandas as pd  # local import to avoid hard dependency at import time
+            import pandas as pd
 
             if isinstance(value, pd.DataFrame):
                 return {

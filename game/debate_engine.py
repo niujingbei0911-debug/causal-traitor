@@ -16,6 +16,8 @@ from agents.agent_c import AuditVerdict
 from agents.jury import JuryAggregator
 from agents.jury import JuryVerdict, JuryVote
 
+from benchmark.schema import ensure_public_instance
+
 from .data_generator import DataGenerator
 from .difficulty import DifficultyController
 from .evolution import EvolutionTracker, StrategyRecord, StrategyType
@@ -69,10 +71,12 @@ class _MockScientistAgent:
         level: int,
         context: DebateContext | None = None,
     ) -> ScientificClaim:
-        treatment = scenario.ground_truth.get("treatment", "X")
-        outcome = scenario.ground_truth.get("outcome", "Y")
-        instrument = scenario.ground_truth.get("instrument")
-        mediator = scenario.ground_truth.get("mediator")
+        ground_truth = getattr(scenario, "ground_truth", {}) or {}
+        variables = list(getattr(scenario, "variables", []))
+        treatment = ground_truth.get("treatment") or (variables[0] if variables else "X")
+        outcome = ground_truth.get("outcome") or (variables[-1] if variables else "Y")
+        instrument = ground_truth.get("instrument")
+        mediator = ground_truth.get("mediator")
         if level == 1:
             content = f"The observed association suggests {treatment} likely influences {outcome}, pending confounder checks."
         elif level == 2:
@@ -96,16 +100,18 @@ class _MockScientistAgent:
         level: int,
         context: DebateContext | None = None,
     ) -> DetectionResult:
-        treatment = scenario.ground_truth.get("treatment", "")
-        outcome = scenario.ground_truth.get("outcome", "")
+        ground_truth = getattr(scenario, "ground_truth", {}) or {}
+        treatment = ground_truth.get("treatment", "")
+        outcome = ground_truth.get("outcome", "")
         fallacies = []
         hidden = []
         reasoning = []
         if treatment and outcome and treatment in claim and outcome in claim:
             fallacies.append("causal_overclaim")
             reasoning.append("Observed data alone do not identify the full causal effect.")
-        if scenario.hidden_variables:
-            hidden.append(scenario.hidden_variables[0])
+        hidden_variables = list(getattr(scenario, "hidden_variables", []))
+        if hidden_variables:
+            hidden.append(hidden_variables[0])
             fallacies.append("hidden_confounder_risk")
             reasoning.append("A latent variable plausibly explains part of the association.")
         tools = {
@@ -372,15 +378,16 @@ class DebateEngine:
     ) -> dict[str, Any]:
         """Run one complete debate round."""
 
+        verifier_scenario = ensure_public_instance(scenario)
         context = DebateContext(
-            scenario=scenario,
+            scenario=verifier_scenario,
             round_number=round_number,
             current_phase=GamePhase.SETUP,
             evolution_context=evolution_context,
         )
 
         context.current_phase = GamePhase.CLAIM
-        agent_b_claim = await self._invoke_agent_b_claim(scenario, context)
+        agent_b_claim = await self._invoke_agent_b_claim(verifier_scenario, context)
         context.metadata["agent_b_claim"] = asdict(agent_b_claim)
         self._append_turn(context, "agent_b", GamePhase.CLAIM, agent_b_claim.content, {
             "causal_claim": agent_b_claim.causal_claim,
@@ -390,15 +397,20 @@ class DebateEngine:
 
         context.current_phase = GamePhase.CHALLENGE
         agent_a_claim = await self._invoke_agent_a(scenario, context)
-        context.metadata["agent_a_challenge"] = asdict(agent_a_claim)
+        context.metadata["agent_a_challenge"] = {
+            "content": agent_a_claim.content,
+            "causal_claim": agent_a_claim.causal_claim,
+            "evidence": list(getattr(agent_a_claim, "evidence", [])),
+            "tools_used": list(getattr(agent_a_claim, "tools_used", [])),
+            "deception_strategy": agent_a_claim.deception_strategy,
+        }
         self._append_turn(context, "agent_a", GamePhase.CHALLENGE, agent_a_claim.content, {
             "causal_claim": agent_a_claim.causal_claim,
             "strategy": agent_a_claim.deception_strategy,
-            "hidden_variables": agent_a_claim.hidden_variables,
         })
 
         context.current_phase = GamePhase.REBUTTAL
-        agent_b_result = await self._invoke_agent_b(agent_a_claim.content, scenario, context)
+        agent_b_result = await self._invoke_agent_b(agent_a_claim.content, verifier_scenario, context)
         self._append_turn(context, "agent_b", GamePhase.REBUTTAL, self._format_detection(agent_b_result), {
             "tools_used": agent_b_result.tools_used,
             "confidence": agent_b_result.confidence,
@@ -410,11 +422,10 @@ class DebateEngine:
         agent_a_rebuttal = await self._invoke_agent_a(scenario, context)
         self._append_turn(context, "agent_a", GamePhase.REBUTTAL, agent_a_rebuttal.content, {
             "strategy": agent_a_rebuttal.deception_strategy,
-            "hidden_variables": agent_a_rebuttal.hidden_variables,
         })
 
         context.current_phase = GamePhase.JURY
-        jury_verdict = await self._invoke_jury(scenario, context)
+        jury_verdict = await self._invoke_jury(verifier_scenario, context)
         context.jury_verdict = asdict(jury_verdict)
         context.jury_result = context.jury_verdict
         self._append_turn(
@@ -426,9 +437,10 @@ class DebateEngine:
         )
 
         context.current_phase = GamePhase.AUDIT
-        audit = await self._invoke_agent_c(scenario, context)
+        audit = await self._invoke_agent_c(verifier_scenario, context)
         self._append_turn(context, "agent_c", GamePhase.AUDIT, audit.reasoning, {
             "winner": audit.winner,
+            "verdict_label": getattr(audit, "verdict_label", None),
             "causal_validity_score": audit.causal_validity_score,
             "identified_issues": audit.identified_issues,
             "tools_used": getattr(audit, "tools_used", []),
@@ -439,7 +451,7 @@ class DebateEngine:
         winner = self._resolve_winner(audit, jury_verdict)
 
         # ── 进化反馈：通知 Agent A 和 Agent C 本轮结果 ──
-        deception_success = winner == "agent_a"
+        deception_success = self._resolve_deception_success(audit, winner)
         strategy_used = getattr(agent_a_claim, "deception_strategy", "unknown")
 
         # Agent A: 被识破时标记策略为 avoid
@@ -471,15 +483,19 @@ class DebateEngine:
         return {
             "round_number": round_number,
             "scenario": scenario,
+            "public_scenario": verifier_scenario,
             "transcript": [self._turn_to_dict(turn) for turn in context.turns],
             "agent_b_claim": asdict(agent_b_claim),
-            "agent_a_claim": asdict(agent_a_claim),
+            "agent_a_claim": self._serialize_agent_a_response(agent_a_claim),
             "agent_b_analysis": asdict(agent_b_result),
-            "agent_a_rebuttal": asdict(agent_a_rebuttal),
+            "agent_a_rebuttal": self._serialize_agent_a_response(agent_a_rebuttal),
             "audit_verdict": asdict(audit),
             "jury_verdict": asdict(jury_verdict),
             "winner": winner,
-            "deception_success": winner == "agent_a",
+            "verdict_label": getattr(audit, "verdict_label", None),
+            "verifier_confidence": getattr(audit, "verifier_confidence", 0.0),
+            "deception_success": deception_success,
+            "deception_succeeded": deception_success,
             "difficulty": scenario.difficulty,
         }
 
@@ -592,6 +608,11 @@ class DebateEngine:
     def _turn_to_dict(self, turn: DebateTurn) -> dict[str, Any]:
         return turn.to_dict()
 
+    def _serialize_agent_a_response(self, response: AgentAResponse) -> dict[str, Any]:
+        serialized = asdict(response)
+        serialized.pop("hidden_variables", None)
+        return serialized
+
     def _format_detection(self, result: DetectionResult) -> str:
         parts: list[str] = []
         if result.reasoning_chain:
@@ -604,11 +625,24 @@ class DebateEngine:
         return " ".join(parts)
 
     def _resolve_winner(self, audit: AuditVerdict, jury_verdict: JuryVerdict) -> str:
+        verdict_label = getattr(audit, "verdict_label", None)
+        if verdict_label == "valid":
+            return "agent_a"
+        if verdict_label == "invalid":
+            return "agent_b"
+        if verdict_label == "unidentifiable":
+            return "draw"
         if audit.winner != "draw":
             return audit.winner
         if jury_verdict.final_winner != "draw" and jury_verdict.agreement_rate >= 0.67:
             return jury_verdict.final_winner
         return "draw"
+
+    def _resolve_deception_success(self, audit: AuditVerdict, winner: str) -> bool:
+        verdict_label = getattr(audit, "verdict_label", None)
+        if verdict_label is not None:
+            return verdict_label == "valid"
+        return winner == "agent_a"
 
     def _build_evolution_context(self) -> dict[str, Any] | None:
         if self.evolution_tracker is None or not self.evolution_tracker.records:

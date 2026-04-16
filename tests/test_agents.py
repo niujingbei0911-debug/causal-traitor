@@ -6,7 +6,10 @@ from agents.agent_a import AgentA
 from agents.agent_b import AgentB
 from agents.agent_c import AgentC
 from agents.jury import JuryAggregator
+from benchmark.schema import VerdictLabel
 from game.debate_engine import CausalScenario, DebateContext
+from verifier.assumption_ledger import AssumptionLedger
+from verifier.decision import VerifierDecision
 
 
 class FakeStructuredLLMService:
@@ -19,6 +22,28 @@ class FakeStructuredLLMService:
 
     async def generate_json(self, *args, **kwargs):
         return None, self.payload
+
+
+class FakeVerifierPipeline:
+    def __init__(self, verdict: VerifierDecision):
+        self.verdict = verdict
+        self.calls: list[dict] = []
+
+    def run(self, claim_text, *, scenario=None, transcript=None, tool_trace=None):
+        self.calls.append(
+            {
+                "claim_text": claim_text,
+                "scenario": scenario,
+                "transcript": transcript,
+                "tool_trace": tool_trace,
+            }
+        )
+        return self.verdict
+
+
+class ExplodingVerifierPipeline:
+    def run(self, *args, **kwargs):
+        raise RuntimeError("boom")
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
@@ -50,6 +75,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             causal_level=2,
             difficulty=0.5,
         )
+        self.public_scenario = self.scenario.to_public()
 
     async def test_agent_a_generates_deception(self):
         agent = AgentA(self.config)
@@ -76,7 +102,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         await agent.initialize()
         result = await agent.analyze_claim(
             claim="X 对 Y 的工具变量效应已经被 Z 证明，无需控制其他因素。",
-            scenario=self.scenario,
+            scenario=self.public_scenario,
             level=2,
         )
         self.assertGreater(result.confidence, 0.0)
@@ -87,13 +113,13 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         jury = JuryAggregator(self.config)
         await jury.initialize()
         context = DebateContext(
-            scenario=self.scenario,
+            scenario=self.public_scenario,
             turns=[
                 {"speaker": "agent_a", "content": "X 必然导致 Y。"},
                 {"speaker": "agent_b", "content": "我检查了混杂和工具变量强度，结论并不稳固。"},
             ],
         )
-        verdict = await jury.collect_votes(self.scenario, context)
+        verdict = await jury.collect_votes(self.public_scenario, context)
         self.assertEqual(len(verdict.votes), 3)
         self.assertIn(verdict.final_winner, {"agent_a", "agent_b", "draw"})
 
@@ -101,17 +127,155 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         agent = AgentC(self.config)
         await agent.initialize()
         context = DebateContext(
-            scenario=self.scenario,
+            scenario=self.public_scenario,
             turns=[
                 {"speaker": "agent_a", "content": "X 必然导致 Y，无需控制其他因素，相关性已经证明因果。"},
                 {"speaker": "agent_b", "content": "这个结论忽略了混杂，需要做后门调整并检查工具变量 Z 的强度。"},
             ],
         )
-        verdict = await agent.evaluate_round(self.scenario, context, level=2)
+        verdict = await agent.evaluate_round(self.public_scenario, context, level=2)
         self.assertIn(verdict.winner, {"agent_a", "agent_b", "draw"})
         self.assertTrue(verdict.reasoning)
         self.assertTrue(verdict.tools_used)
         self.assertGreaterEqual(verdict.jury_consensus, 0.0)
+        self.assertIn(verdict.verdict_label, {"valid", "invalid", "unidentifiable"})
+        self.assertTrue(verdict.verifier_verdict)
+        self.assertIsInstance(verdict.assumption_ledger, list)
+        self.assertIsInstance(verdict.tool_trace, list)
+        self.assertTrue(verdict.tool_trace)
+        self.assertTrue(
+            {
+                "tool_name",
+                "status",
+                "summary",
+                "supports_claim",
+                "evidence_direction",
+                "error",
+                "supports_assumptions",
+                "contradicts_assumptions",
+            }
+            <= set(verdict.tool_trace[0])
+        )
+
+    async def test_agent_c_default_path_calls_verifier_pipeline(self):
+        agent = AgentC(self.config)
+        fake_pipeline = FakeVerifierPipeline(
+            VerifierDecision(
+                label=VerdictLabel.VALID,
+                confidence=0.83,
+                assumption_ledger=AssumptionLedger([]),
+                tool_trace=[{"tool_name": "mock_tool", "supports_claim": True}],
+                reasoning_summary="Verifier pipeline accepted the claim.",
+            )
+        )
+        agent.attach_verifier_pipeline(fake_pipeline)
+        await agent.initialize()
+        context = DebateContext(
+            scenario=self.public_scenario,
+            turns=[
+                {"speaker": "agent_a", "phase": "challenge", "content": "X causes Y."},
+                {"speaker": "agent_b", "phase": "rebuttal", "content": "Check confounding first."},
+            ],
+        )
+
+        verdict = await agent.evaluate_round(self.public_scenario, context, level=2)
+
+        self.assertEqual(len(fake_pipeline.calls), 1)
+        self.assertEqual(verdict.verdict_label, "valid")
+        self.assertEqual(verdict.winner, "agent_a")
+        self.assertAlmostEqual(verdict.verifier_confidence, 0.83, places=3)
+        self.assertTrue(verdict.verifier_verdict)
+        self.assertIs(fake_pipeline.calls[0]["scenario"], self.public_scenario)
+
+    async def test_agent_c_verifier_first_normalizes_rebuttal_trace_before_pipeline(self):
+        agent = AgentC(self.config)
+        fake_pipeline = FakeVerifierPipeline(
+            VerifierDecision(
+                label=VerdictLabel.UNIDENTIFIABLE,
+                confidence=0.61,
+                assumption_ledger=AssumptionLedger([]),
+                tool_trace=[],
+                reasoning_summary="Verifier sees mixed evidence.",
+            )
+        )
+        agent.attach_verifier_pipeline(fake_pipeline)
+        await agent.initialize()
+        reports = iter(
+            [
+                {
+                    "results": [],
+                    "successful_tools": ["claim_tool"],
+                    "supporting_evidence": ["claim support"],
+                    "identified_issues": [],
+                    "support_score": 0.8,
+                },
+                {
+                    "results": [],
+                    "successful_tools": ["rebuttal_tool"],
+                    "supporting_evidence": ["rebuttal support"],
+                    "identified_issues": [],
+                    "support_score": 0.9,
+                },
+            ]
+        )
+        agent.tool_executor.execute_for_claim = lambda **kwargs: next(reports)
+        context = DebateContext(
+            scenario=self.public_scenario,
+            turns=[
+                {"speaker": "agent_a", "phase": "challenge", "content": "X causes Y."},
+                {"speaker": "agent_b", "phase": "rebuttal", "content": "The evidence undermines that claim."},
+            ],
+        )
+
+        await agent.evaluate_round(self.public_scenario, context, level=2)
+
+        forwarded_trace = fake_pipeline.calls[0]["tool_trace"]
+        self.assertEqual(len(forwarded_trace), 2)
+        self.assertTrue(forwarded_trace[0]["supports_primary_claim"])
+        self.assertEqual(forwarded_trace[0]["claim_stance"], "pro_causal")
+        self.assertFalse(forwarded_trace[1]["supports_primary_claim"])
+        self.assertEqual(forwarded_trace[1]["claim_stance"], "anti_causal")
+
+    async def test_agent_c_maps_unidentifiable_verdict_to_draw(self):
+        agent = AgentC(self.config)
+        fake_pipeline = FakeVerifierPipeline(
+            VerifierDecision(
+                label=VerdictLabel.UNIDENTIFIABLE,
+                confidence=0.74,
+                assumption_ledger=AssumptionLedger([]),
+                tool_trace=[],
+                reasoning_summary="Verifier abstains because multiple compatible models remain.",
+            )
+        )
+        agent.attach_verifier_pipeline(fake_pipeline)
+        await agent.initialize()
+        context = DebateContext(
+            scenario=self.public_scenario,
+            turns=[
+                {"speaker": "agent_a", "phase": "challenge", "content": "X causes Y for everyone."},
+                {"speaker": "agent_b", "phase": "rebuttal", "content": "The data do not uniquely identify that claim."},
+            ],
+        )
+
+        verdict = await agent.evaluate_round(self.public_scenario, context, level=2)
+
+        self.assertEqual(verdict.verdict_label, "unidentifiable")
+        self.assertEqual(verdict.winner, "draw")
+
+    async def test_agent_c_verifier_first_does_not_silently_fallback_to_legacy(self):
+        agent = AgentC(self.config)
+        agent.attach_verifier_pipeline(ExplodingVerifierPipeline())
+        await agent.initialize()
+        context = DebateContext(
+            scenario=self.public_scenario,
+            turns=[
+                {"speaker": "agent_a", "phase": "challenge", "content": "X causes Y."},
+                {"speaker": "agent_b", "phase": "rebuttal", "content": "Not enough evidence."},
+            ],
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "legacy fallback is disabled"):
+            await agent.evaluate_round(self.public_scenario, context, level=2)
 
     async def test_agent_a_uses_structured_llm_decision(self):
         agent = AgentA(self.config)
@@ -145,7 +309,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await agent.analyze_claim(
             claim="X 对 Y 的工具变量效应已经被 Z 证明，无需控制其他因素。",
-            scenario=self.scenario,
+            scenario=self.public_scenario,
             level=2,
         )
         self.assertIn("llm_fallacy", result.detected_fallacies)
@@ -154,7 +318,8 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("LLM says the claim is flawed.", result.reasoning_chain)
 
     async def test_agent_c_uses_structured_llm_verdict(self):
-        agent = AgentC(self.config)
+        legacy_config = {**self.config, "agent_c": {"mode": "legacy"}}
+        agent = AgentC(legacy_config)
         agent.attach_llm_service(
             FakeStructuredLLMService(
                 {
@@ -169,16 +334,17 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         )
         await agent.initialize()
         context = DebateContext(
-            scenario=self.scenario,
+            scenario=self.public_scenario,
             turns=[
                 {"speaker": "agent_a", "content": "X 必然导致 Y。"},
                 {"speaker": "agent_b", "content": "这个结论忽略了混杂，需要做后门调整。"},
             ],
         )
-        verdict = await agent.evaluate_round(self.scenario, context, level=2)
+        verdict = await agent.evaluate_round(self.public_scenario, context, level=2)
         self.assertEqual(verdict.winner, "agent_a")
         self.assertIn("llm_issue", verdict.identified_issues)
         self.assertEqual(verdict.reasoning, "LLM chooses agent_a after weighing the evidence.")
+        self.assertIsNone(verdict.verdict_label)
 
 
 if __name__ == "__main__":

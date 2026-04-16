@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 from dataclasses import dataclass, field
 from types import CodeType
 from typing import Any
@@ -13,7 +14,9 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from benchmark.schema import PublicCausalInstance, require_public_instance
 from causal_tools.meta_tools import ToolSelector
+from verifier.claim_parser import parse_claim
 
 
 @dataclass
@@ -25,6 +28,43 @@ class ToolExecutionResult:
     output: Any = None
     error: str = ""
     kwargs: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "success": self.success,
+            "output": self.output,
+            "error": self.error,
+            "kwargs": dict(self.kwargs),
+        }
+
+
+@dataclass
+class ToolTraceEntry:
+    tool_name: str
+    status: str
+    summary: str
+    supports_claim: bool = False
+    supports_primary_claim: bool = False
+    claim_stance: str = "pro_causal"
+    evidence_direction: str = "neutral"
+    error: str = ""
+    supports_assumptions: list[str] = field(default_factory=list)
+    contradicts_assumptions: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "status": self.status,
+            "summary": self.summary,
+            "supports_claim": self.supports_claim,
+            "supports_primary_claim": self.supports_primary_claim,
+            "claim_stance": self.claim_stance,
+            "evidence_direction": self.evidence_direction,
+            "error": self.error,
+            "supports_assumptions": list(self.supports_assumptions),
+            "contradicts_assumptions": list(self.contradicts_assumptions),
+        }
 
 
 class SafeCodeValidator(ast.NodeVisitor):
@@ -180,12 +220,13 @@ class ToolExecutor:
 
     def execute_for_claim(
         self,
-        scenario,
+        scenario: PublicCausalInstance,
         claim: str,
         level: int,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = self._merge_context(context, claim)
+        scenario = require_public_instance(scenario)
+        context = self._merge_context(context, claim, scenario=scenario)
         selected_tools = self.select_tools(level, claim, context)
         results: list[ToolExecutionResult] = []
 
@@ -209,16 +250,74 @@ class ToolExecutor:
             stance,
             scenario=scenario,
         )
+        tool_trace = self._build_tool_trace(results, claim=claim, stance=stance)
         return {
             "selected_tools": selected_tools,
             "results": results,
+            "tool_trace": tool_trace,
             "claim_stance": stance,
             "identified_issues": issues,
             "supporting_evidence": evidence,
             "counter_evidence": counter_evidence,
+            "evidence_component": {
+                "heuristic_support": support_score,
+                "supporting_evidence": list(evidence),
+                "counter_evidence": list(counter_evidence),
+                "identified_issues": list(issues),
+                "support_score_role": "legacy_evidence_component",
+            },
             "support_score": support_score,
             "successful_tools": [item.tool_name for item in results if item.success],
         }
+
+    def _build_tool_trace(
+        self,
+        results: list[ToolExecutionResult],
+        *,
+        claim: str,
+        stance: str,
+    ) -> list[dict[str, Any]]:
+        trace: list[dict[str, Any]] = []
+        for result in results:
+            supports_assumptions, contradicts_assumptions = self._extract_tool_assumptions(result)
+            status = "success" if result.success else "skipped"
+            if result.error and result.kwargs:
+                status = "error"
+
+            if result.success:
+                if contradicts_assumptions:
+                    evidence_direction = "counter"
+                elif supports_assumptions:
+                    evidence_direction = "support"
+                else:
+                    evidence_direction = "neutral"
+            else:
+                evidence_direction = "neutral"
+
+            supports_claim = False
+            supports_primary_claim = False
+            if result.success:
+                if stance == "pro_causal":
+                    supports_claim = evidence_direction != "counter"
+                else:
+                    supports_claim = evidence_direction == "counter"
+                supports_primary_claim = evidence_direction == "support"
+
+            trace.append(
+                ToolTraceEntry(
+                    tool_name=result.tool_name,
+                    status=status,
+                    summary=self._summarize_tool_output(result),
+                    supports_claim=supports_claim,
+                    supports_primary_claim=supports_primary_claim,
+                    claim_stance=str(stance),
+                    evidence_direction=evidence_direction,
+                    error=result.error,
+                    supports_assumptions=supports_assumptions,
+                    contradicts_assumptions=contradicts_assumptions,
+                ).to_dict()
+            )
+        return trace
 
     def _build_tool_kwargs(
         self,
@@ -228,20 +327,20 @@ class ToolExecutor:
         context: dict[str, Any],
     ) -> dict[str, Any] | None:
         data = self._get_data(scenario)
-        graph = self._get_graph(scenario)
+        graph = self._get_graph(context)
         variables = self._get_variables(scenario, data)
-        ground_truth = getattr(scenario, "ground_truth", {}) or {}
-        treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario)
-        conditioning = context.get("adjustment_set") or self._get_observed_controls(graph, data, treatment, outcome)
-        instrument = context.get("instrument") or ground_truth.get("instrument") or self._guess_instrument(graph, data, variables, treatment, outcome)
-        mediator = context.get("mediator") or ground_truth.get("mediator") or self._guess_mediator(graph, data, variables, treatment, outcome)
+        treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario, context=context)
+        conditioning = list(context.get("adjustment_set") or self._get_observed_controls(graph, data, treatment, outcome))
+        instrument = context.get("instrument") or self._guess_instrument(graph, data, variables, treatment, outcome)
+        mediator = context.get("mediator") or self._guess_mediator(graph, data, variables, treatment, outcome)
+        proxy = context.get("proxy")
         evidence = context.get("evidence")
         if evidence is None and data is not None and not data.empty:
             evidence = data.iloc[0].to_dict()
         intervention = context.get("intervention")
         if intervention is None and evidence is not None:
             intervention = {treatment: self._flip_value(evidence.get(treatment, 0))}
-        scm = self._get_scm(scenario, graph)
+        scm = self._get_scm(context)
 
         if tool_name in {"correlation_analysis", "compute_correlation"}:
             return {"data": data, "x": treatment, "y": outcome} if data is not None else None
@@ -254,6 +353,15 @@ class ToolExecutor:
 
         if tool_name == "partial_correlation":
             return {"data": data, "x": treatment, "y": outcome, "controls": conditioning[:1]} if data is not None else None
+
+        if tool_name == "proxy_support_check":
+            return {
+                "data": data,
+                "treatment": treatment,
+                "outcome": outcome,
+                "proxy": proxy,
+                "controls": conditioning[:1],
+            } if data is not None and proxy is not None else None
 
         if tool_name == "backdoor_adjustment":
             return {"data": data, "graph": graph, "treatment": treatment, "outcome": outcome} if data is not None and graph is not None else None
@@ -305,6 +413,13 @@ class ToolExecutor:
         if tool_name == "sensitivity_analysis":
             return {"data": data, "treatment": treatment, "outcome": outcome} if data is not None else None
 
+        if tool_name == "overlap_check":
+            return {
+                "data": data,
+                "treatment": treatment,
+                "covariates": conditioning[:2] or [column for column in variables if column not in {treatment, outcome}][:2],
+            } if data is not None else None
+
         if tool_name == "counterfactual_inference":
             return {
                 "model": scm,
@@ -338,6 +453,17 @@ class ToolExecutor:
                 "hypothetical_action": intervention,
             } if scm is not None and evidence is not None and intervention is not None else None
 
+        if tool_name == "counterfactual_bridge_check":
+            return {
+                "data": data,
+                "treatment": treatment,
+                "mediator": mediator,
+                "outcome": outcome,
+                "covariates": conditioning[:2] or [
+                    column for column in variables if column not in {treatment, outcome, mediator}
+                ][:2],
+            } if data is not None and mediator is not None else None
+
         if tool_name == "probability_of_necessity":
             return {"data": data[[treatment, outcome]].copy(), "treatment": treatment, "outcome": outcome} if data is not None else None
 
@@ -354,6 +480,105 @@ class ToolExecutor:
             return {"graph": graph} if graph is not None else None
 
         return None
+
+    def _summarize_tool_output(self, result: ToolExecutionResult) -> str:
+        if not result.success:
+            return result.error or f"{result.tool_name} was skipped because the public context was insufficient."
+
+        output = result.output
+        if isinstance(output, dict):
+            if "causal_effect" in output:
+                return f"{result.tool_name} estimates causal_effect={float(output['causal_effect']):.3f}"
+            if "estimated_effect" in output:
+                return f"{result.tool_name} estimates effect={float(output['estimated_effect']):.3f}"
+            if "frontdoor_effect" in output:
+                return f"{result.tool_name} estimates frontdoor_effect={float(output['frontdoor_effect']):.3f}"
+            if "counterfactual_outcome" in output:
+                return f"{result.tool_name} predicts counterfactual_outcome={float(output['counterfactual_outcome']):.3f}"
+            if "is_valid_adjustment" in output:
+                return f"{result.tool_name} adjustment_valid={output['is_valid_adjustment']}"
+            if "supports_adjustment_set" in output:
+                return f"{result.tool_name} adjustment_support={output['supports_adjustment_set']}"
+            if "is_strong_instrument" in output:
+                return f"{result.tool_name} strong_instrument={output['is_strong_instrument']}"
+            if "has_overlap" in output:
+                return f"{result.tool_name} overlap={output['has_overlap']}"
+            if "supports_proxy_sufficiency" in output:
+                return f"{result.tool_name} proxy_support={output['supports_proxy_sufficiency']}"
+            if "supports_counterfactual_model_uniqueness" in output:
+                return (
+                    f"{result.tool_name} counterfactual_bridge="
+                    f"{output['supports_counterfactual_model_uniqueness']}"
+                )
+            if "significant" in output:
+                return f"{result.tool_name} significant={output['significant']}"
+        if isinstance(output, list):
+            return f"{result.tool_name} returned {len(output)} records"
+        return f"{result.tool_name} completed"
+
+    def _extract_tool_assumptions(
+        self,
+        result: ToolExecutionResult,
+    ) -> tuple[list[str], list[str]]:
+        supports: list[str] = []
+        contradicts: list[str] = []
+        output = result.output if isinstance(result.output, dict) else None
+
+        if result.tool_name in {"backdoor_adjustment", "backdoor_adjustment_check"} and output is not None:
+            if output.get("is_valid_adjustment") is True:
+                supports.append("valid adjustment set")
+            elif output.get("is_valid_adjustment") is False:
+                contradicts.append("valid adjustment set")
+            elif output.get("supports_adjustment_set") is True:
+                supports.append("valid adjustment set")
+            elif output.get("supports_adjustment_set") is False and output.get("adjustment_set"):
+                contradicts.append("valid adjustment set")
+
+        if result.tool_name == "iv_estimation" and output is not None:
+            if output.get("is_strong_instrument") is True:
+                supports.append("instrument relevance")
+            elif output.get("is_strong_instrument") is False:
+                contradicts.append("instrument relevance")
+
+        if result.tool_name == "sensitivity_analysis" and output is not None:
+            effect = output.get("effect")
+            effect_is_finite = effect is not None and np.isfinite(effect)
+            if output.get("is_sensitive") is False and effect_is_finite:
+                supports.append("no unobserved confounding")
+
+        if result.tool_name == "overlap_check" and output is not None:
+            if output.get("has_overlap") is True:
+                supports.append("positivity")
+            elif output.get("has_overlap") is False:
+                contradicts.append("positivity")
+
+        if result.tool_name == "proxy_support_check" and output is not None:
+            if output.get("supports_proxy_sufficiency") is True:
+                supports.append("proxy sufficiency")
+            elif output.get("supports_proxy_sufficiency") is False:
+                contradicts.append("proxy sufficiency")
+
+        if result.tool_name == "counterfactual_bridge_check" and output is not None:
+            if output.get("supports_stable_mediation") is True:
+                supports.append("stable mediation structure")
+
+            if output.get("supports_cross_world_consistency") is True:
+                supports.append("cross-world consistency")
+
+            if output.get("supports_counterfactual_model_uniqueness") is True:
+                supports.append("counterfactual model uniqueness")
+
+        if result.tool_name == "scm_identification_test" and isinstance(result.output, list):
+            indistinguishable = [
+                item for item in result.output
+                if isinstance(item, dict) and not item.get("distinguishable", True)
+            ]
+            if indistinguishable:
+                contradicts.append("counterfactual model uniqueness")
+            else:
+                supports.append("counterfactual model uniqueness")
+
+        return self._deduplicate(supports), self._deduplicate(contradicts)
 
     def _summarize_results(
         self,
@@ -571,6 +796,13 @@ class ToolExecutor:
                 dedup_counter.append(item)
         return dedup_issues, dedup_evidence, dedup_counter, max(0.0, min(1.0, support_score))
 
+    def _deduplicate(self, items: list[str]) -> list[str]:
+        result: list[str] = []
+        for item in items:
+            if item and item not in result:
+                result.append(item)
+        return result
+
     def _get_data(self, scenario) -> pd.DataFrame | None:
         if hasattr(scenario, "data") and isinstance(scenario.data, pd.DataFrame):
             return scenario.data
@@ -578,8 +810,8 @@ class ToolExecutor:
             return scenario.observed_data
         return None
 
-    def _get_graph(self, scenario) -> nx.DiGraph | None:
-        graph = getattr(scenario, "true_dag", None)
+    def _get_graph(self, context: dict[str, Any]) -> nx.DiGraph | None:
+        graph = context.get("public_graph")
         if isinstance(graph, nx.DiGraph):
             return graph.copy()
         if isinstance(graph, dict):
@@ -588,32 +820,10 @@ class ToolExecutor:
                 for target in targets:
                     dag.add_edge(source, target)
             return dag
-        scm = getattr(scenario, "true_scm", None)
-        if isinstance(scm, dict):
-            graph_value = scm.get("graph")
-            if isinstance(graph_value, nx.DiGraph):
-                return graph_value.copy()
-            if isinstance(graph_value, dict):
-                dag = nx.DiGraph()
-                for source, targets in graph_value.items():
-                    for target in targets:
-                        dag.add_edge(source, target)
-                return dag
         return None
 
-    def _get_scm(self, scenario, graph: nx.DiGraph | None):
-        scm = getattr(scenario, "true_scm", None)
-        if scm is not None:
-            return scm
-        if graph is not None:
-            coefficients: dict[str, dict[str, float]] = {}
-            for node in graph.nodes:
-                parents = list(graph.predecessors(node))
-                coefficients[node] = {"intercept": 0.0}
-                for parent in parents:
-                    coefficients[node][parent] = 1.0 / max(1, len(parents))
-            return {"graph": graph.copy(), "coefficients": coefficients}
-        return None
+    def _get_scm(self, context: dict[str, Any]):
+        return context.get("public_scm")
 
     def _get_variables(self, scenario, data: pd.DataFrame | None) -> list[str]:
         variables = list(getattr(scenario, "variables", []))
@@ -623,12 +833,19 @@ class ToolExecutor:
             raise ValueError("场景缺少变量信息")
         return variables
 
-    def _infer_focus_variables(self, claim: str, variables: list[str], scenario=None) -> tuple[str, str]:
-        ground_truth = getattr(scenario, "ground_truth", {}) or {}
-        treatment = ground_truth.get("treatment")
-        outcome = ground_truth.get("outcome")
-        if treatment in variables and outcome in variables:
-            return str(treatment), str(outcome)
+    def _infer_focus_variables(
+        self,
+        claim: str,
+        variables: list[str],
+        scenario=None,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[str, str]:
+        if context is not None:
+            treatment = str(context.get("treatment", "")).strip()
+            outcome = str(context.get("outcome", "")).strip()
+            if treatment in variables and outcome in variables and treatment != outcome:
+                return treatment, outcome
+
         claim_lower = claim.lower()
         matched = [
             (claim_lower.find(variable.lower()), variable)
@@ -643,6 +860,128 @@ class ToolExecutor:
         if "X" in variables and "Y" in variables:
             return "X", "Y"
         return variables[0], variables[-1]
+
+    def _parse_claim(self, claim: str):
+        try:
+            return parse_claim(claim)
+        except Exception:
+            return None
+
+    def _extract_named_variable(
+        self,
+        claim: str,
+        variables: list[str],
+        *,
+        patterns: tuple[str, ...],
+    ) -> str | None:
+        for pattern in patterns:
+            match = re.search(pattern, claim, flags=re.IGNORECASE)
+            if not match:
+                continue
+            candidate = str(match.group("name")).strip()
+            if candidate in variables:
+                return candidate
+        return None
+
+    def _role_token_match(
+        self,
+        variables: list[str],
+        claim: str,
+        *,
+        tokens: tuple[str, ...],
+    ) -> str | None:
+        claim_lower = claim.lower()
+        for variable in variables:
+            lowered = variable.lower()
+            if lowered not in claim_lower:
+                continue
+            if any(token in lowered for token in tokens):
+                return variable
+        return None
+
+    def _infer_claim_hints(
+        self,
+        claim: str,
+        variables: list[str],
+        parsed_claim,
+    ) -> dict[str, Any]:
+        hints: dict[str, Any] = {}
+        if parsed_claim is not None:
+            if parsed_claim.treatment in variables:
+                hints["treatment"] = parsed_claim.treatment
+            if parsed_claim.outcome in variables:
+                hints["outcome"] = parsed_claim.outcome
+
+        treatment = hints.get("treatment", "")
+        outcome = hints.get("outcome", "")
+        remaining = [variable for variable in variables if variable not in {treatment, outcome}]
+
+        bridge = self._extract_named_variable(
+            claim,
+            remaining,
+            patterns=(
+                r"\bafter controlling for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as the adjustment set\b",
+                r"\busing proxy (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\bwith (?P<name>[A-Za-z][A-Za-z0-9_]*) (?:available|observed|measured)\b",
+                r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+            ),
+        )
+        explicit_instrument = self._extract_named_variable(
+            claim,
+            remaining,
+            patterns=(r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as an instrument\b",),
+        )
+        if explicit_instrument is not None:
+            hints["instrument"] = explicit_instrument
+
+        proxy = self._extract_named_variable(
+            claim,
+            remaining,
+            patterns=(r"\bproxy (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",),
+        ) or self._role_token_match(
+            remaining,
+            claim,
+            tokens=("proxy", "surrogate", "screening", "sensor", "archive"),
+        )
+        if proxy is not None:
+            hints["proxy"] = proxy
+            hints["proxy_variables"] = [proxy]
+
+        mediator = self._role_token_match(
+            remaining,
+            claim,
+            tokens=("mediator", "biomarker", "uptake", "engagement", "intermediate", "dosage", "mechanism"),
+        )
+        if mediator is not None:
+            hints["mediator"] = mediator
+
+        selection = self._role_token_match(
+            remaining,
+            claim,
+            tokens=("selection", "screen", "record", "clinic", "audit", "portal"),
+        )
+        if selection is not None:
+            hints["selection"] = selection
+            hints["selection_variables"] = [selection]
+
+        query_type = getattr(parsed_claim, "query_type", None)
+        if bridge is not None and bridge not in {treatment, outcome}:
+            if explicit_instrument is None and query_type is not None and str(query_type.value) == "counterfactual":
+                hints.setdefault("mediator", bridge)
+            elif explicit_instrument is None and proxy is None and selection is None:
+                hints.setdefault("adjustment_set", [bridge])
+
+        if explicit_instrument is not None:
+            hints["has_instrument"] = True
+        if "mediator" in hints:
+            hints["has_mediator"] = True
+        if "proxy" in hints:
+            hints["has_proxy"] = True
+        if "selection" in hints:
+            hints["has_selection"] = True
+
+        return hints
 
     def _guess_instrument(
         self,
@@ -777,16 +1116,45 @@ class ToolExecutor:
             return "anti_causal"
         return "pro_causal"
 
-    def _merge_context(self, context: dict[str, Any] | None, claim: str) -> dict[str, Any]:
+    def _merge_context(
+        self,
+        context: dict[str, Any] | None,
+        claim: str,
+        *,
+        scenario: PublicCausalInstance | None = None,
+    ) -> dict[str, Any]:
         merged = dict(context or {})
         lowered = claim.lower()
+        data = self._get_data(scenario) if scenario is not None else None
+        variables = self._get_variables(scenario, data) if scenario is not None else []
+        parsed_claim = merged.get("_parsed_claim") or self._parse_claim(claim)
+        if parsed_claim is not None:
+            merged["_parsed_claim"] = parsed_claim
+        if variables:
+            for key, value in self._infer_claim_hints(claim, variables, parsed_claim).items():
+                merged.setdefault(key, value)
+        if parsed_claim is not None:
+            if getattr(parsed_claim, "treatment", ""):
+                merged.setdefault("treatment", parsed_claim.treatment)
+            if getattr(parsed_claim, "outcome", ""):
+                merged.setdefault("outcome", parsed_claim.outcome)
+        merged["has_public_graph"] = bool(self._get_graph(merged))
+        merged["has_public_scm"] = self._get_scm(merged) is not None
         merged.setdefault(
             "has_instrument",
-            any(token in lowered for token in ["iv", "instrument", "工具变量", "出生季度"]),
+            bool(merged.get("instrument")) or any(token in lowered for token in ["iv", "instrument", "工具变量", "出生季度"]),
         )
         merged.setdefault(
             "has_mediator",
-            any(token in lowered for token in ["mediator", "中介", "frontdoor", "前门"]),
+            bool(merged.get("mediator")) or any(token in lowered for token in ["mediator", "中介", "frontdoor", "前门"]),
+        )
+        merged.setdefault(
+            "has_proxy",
+            bool(merged.get("proxy")) or any(token in lowered for token in ["proxy", "surrogate", "代理"]),
+        )
+        merged.setdefault(
+            "has_selection",
+            bool(merged.get("selection")) or any(token in lowered for token in ["selection", "collider", "选择偏差"]),
         )
         merged.setdefault(
             "needs_full_counterfactual",
@@ -796,6 +1164,8 @@ class ToolExecutor:
             merged.setdefault("scenario_type", "instrument")
         elif merged["has_mediator"]:
             merged.setdefault("scenario_type", "mediator")
+        elif merged["has_proxy"]:
+            merged.setdefault("scenario_type", "proxy")
         else:
             merged.setdefault("scenario_type", "default")
         merged.setdefault("claim_stance", self._infer_claim_stance(claim))

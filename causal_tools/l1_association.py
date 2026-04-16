@@ -206,3 +206,42 @@ def partial_correlation(
         "significant": result["p_value"] < 0.05,
         "n_samples": result["n_samples"],
     }
+
+
+def proxy_support_check(
+    data: pd.DataFrame,
+    treatment: str,
+    outcome: str,
+    proxy: str,
+    controls: list[str] | None = None,
+) -> dict:
+    """Check whether an observed proxy carries useful information for the target relation."""
+
+    controls = controls or []
+    proxy_treatment = compute_correlation(data, proxy, treatment)
+    proxy_outcome = compute_correlation(data, proxy, outcome)
+    conditioning_set = [proxy, *controls]
+    partial = conditional_independence_test(data, treatment, outcome, conditioning_set)
+    proxy_alignment = 0.5 * abs(proxy_treatment["pearson_r"]) + 0.5 * abs(proxy_outcome["pearson_r"])
+    supports_proxy = (
+        proxy_treatment["significant"]
+        and (
+            proxy_outcome["significant"]
+            or proxy_alignment >= 0.12
+            or partial["p_value"] < 0.05
+        )
+    )
+
+    return {
+        "proxy": proxy,
+        "treatment": treatment,
+        "outcome": outcome,
+        "controls": list(controls),
+        "proxy_alignment": float(proxy_alignment),
+        "proxy_treatment_significant": bool(proxy_treatment["significant"]),
+        "proxy_outcome_significant": bool(proxy_outcome["significant"]),
+        "conditioned_association": float(partial["statistic"]),
+        "conditioned_p_value": float(partial["p_value"]),
+        "supports_proxy_sufficiency": bool(supports_proxy),
+        "n_samples": int(min(proxy_treatment["n_samples"], proxy_outcome["n_samples"])),
+    }

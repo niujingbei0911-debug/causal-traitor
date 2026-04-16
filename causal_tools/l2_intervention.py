@@ -105,6 +105,46 @@ def _safe_mean(series: pd.Series) -> float:
     return float(pd.to_numeric(series, errors="coerce").dropna().mean())
 
 
+def _association_signal(data: pd.DataFrame, left: str, right: str) -> tuple[float, float]:
+    frame = data.loc[:, [left, right]].dropna().copy()
+    if frame.empty or len(frame) < 8:
+        return 0.0, 1.0
+
+    left_series = pd.to_numeric(frame[left], errors="coerce")
+    right_series = pd.to_numeric(frame[right], errors="coerce")
+    valid = left_series.notna() & right_series.notna()
+    left_series = left_series.loc[valid]
+    right_series = right_series.loc[valid]
+    if len(left_series) < 8:
+        return 0.0, 1.0
+
+    left_binary = set(left_series.unique()) <= {0, 1}
+    right_binary = set(right_series.unique()) <= {0, 1}
+
+    if left_binary and len(left_series.unique()) == 2:
+        group_one = right_series.loc[left_series == 1]
+        group_zero = right_series.loc[left_series == 0]
+        if len(group_one) < 3 or len(group_zero) < 3:
+            return 0.0, 1.0
+        statistic = float(group_one.mean() - group_zero.mean())
+        _, p_value = stats.ttest_ind(group_one, group_zero, equal_var=False, nan_policy="omit")
+        return statistic, float(1.0 if np.isnan(p_value) else p_value)
+
+    if right_binary and len(right_series.unique()) == 2:
+        group_one = left_series.loc[right_series == 1]
+        group_zero = left_series.loc[right_series == 0]
+        if len(group_one) < 3 or len(group_zero) < 3:
+            return 0.0, 1.0
+        statistic = float(group_one.mean() - group_zero.mean())
+        _, p_value = stats.ttest_ind(group_one, group_zero, equal_var=False, nan_policy="omit")
+        return statistic, float(1.0 if np.isnan(p_value) else p_value)
+
+    if left_series.nunique() < 2 or right_series.nunique() < 2:
+        return 0.0, 1.0
+    statistic, p_value = stats.pearsonr(left_series, right_series)
+    return float(statistic), float(p_value)
+
+
 def backdoor_adjustment(
     data: pd.DataFrame, graph: nx.DiGraph, treatment: str, outcome: str
 ) -> dict:
@@ -136,6 +176,28 @@ def backdoor_adjustment_check(
         if graph is not None
         else None
     )
+    diagnostics = []
+    supports_adjustment_set = bool(adjustment_set)
+    for candidate in adjustment_set:
+        treatment_assoc, treatment_p = _association_signal(data, candidate, treatment)
+        outcome_assoc, outcome_p = _association_signal(data, candidate, outcome)
+        conditional_effect = _linear_effect(data, candidate, outcome, [treatment])
+        candidate_support = treatment_p < 0.05 and conditional_effect["p_value"] < 0.05
+        diagnostics.append(
+            {
+                "variable": candidate,
+                "association_with_treatment": float(treatment_assoc),
+                "association_with_treatment_p_value": float(treatment_p),
+                "association_with_outcome": float(outcome_assoc),
+                "association_with_outcome_p_value": float(outcome_p),
+                "conditional_outcome_effect": float(conditional_effect["causal_effect"]),
+                "conditional_outcome_p_value": float(conditional_effect["p_value"]),
+                "acts_like_confounder": bool(candidate_support),
+            }
+        )
+        supports_adjustment_set &= candidate_support
+    estimate["adjustment_diagnostics"] = diagnostics
+    estimate["supports_adjustment_set"] = bool(adjustment_set) and bool(supports_adjustment_set)
     return estimate
 
 
@@ -300,6 +362,65 @@ def sensitivity_analysis(
         "interpretation": (
             "结果对未观测混杂较敏感" if robust_gamma < 1.5 else "结果对中等强度未观测混杂较稳健"
         ),
+    }
+
+
+def overlap_check(
+    data: pd.DataFrame,
+    treatment: str,
+    covariates: list[str] | None = None,
+) -> dict:
+    """Simple overlap / positivity diagnostic for binary treatments."""
+
+    covariates = covariates or []
+    frame = data.loc[:, [treatment, *covariates]].dropna().copy()
+    if frame.empty:
+        raise ValueError("没有足够的数据用于positivity检查")
+
+    treatment_series = pd.to_numeric(frame[treatment], errors="coerce")
+    valid_mask = treatment_series.notna()
+    frame = frame.loc[valid_mask]
+    treatment_series = treatment_series.loc[valid_mask]
+    if frame.empty:
+        raise ValueError("处理变量无法数值化")
+
+    observed_values = set(float(value) for value in treatment_series.unique())
+    if not observed_values <= {0.0, 1.0}:
+        lower = float(treatment_series.quantile(0.1))
+        upper = float(treatment_series.quantile(0.9))
+        has_overlap = upper > lower
+        return {
+            "has_overlap": bool(has_overlap),
+            "treated_rate": float((treatment_series > treatment_series.median()).mean()),
+            "min_propensity": lower,
+            "max_propensity": upper,
+            "n_samples": int(len(frame)),
+            "method": "continuous_quantile_overlap",
+        }
+
+    treated_rate = float((treatment_series >= 0.5).mean())
+    min_propensity = treated_rate
+    max_propensity = treated_rate
+    method = "marginal_overlap"
+
+    if covariates:
+        covariate_matrix = _build_design_matrix(frame, covariates)
+        if not covariate_matrix.empty and treatment_series.nunique() == 2:
+            model = LogisticRegression(max_iter=1000)
+            model.fit(covariate_matrix, treatment_series.astype(int))
+            propensities = model.predict_proba(covariate_matrix)[:, 1]
+            min_propensity = float(np.quantile(propensities, 0.05))
+            max_propensity = float(np.quantile(propensities, 0.95))
+            method = "propensity_model"
+
+    has_overlap = min_propensity >= 0.05 and max_propensity <= 0.95
+    return {
+        "has_overlap": bool(has_overlap),
+        "treated_rate": treated_rate,
+        "min_propensity": float(min_propensity),
+        "max_propensity": float(max_propensity),
+        "n_samples": int(len(frame)),
+        "method": method,
     }
 
 

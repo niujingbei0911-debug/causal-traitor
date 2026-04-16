@@ -49,7 +49,6 @@ async def run_experiment(
             tracker.log_round(round_index + (level - 1) * rounds_per_level, result)
             level_results.append(
                 {
-                    "winner": result["winner"],
                     "deception_success": result["deception_success"],
                     "causal_validity_score": result["audit_verdict"]["causal_validity_score"],
                     "jury_winner": result["jury_verdict"]["final_winner"],
@@ -58,14 +57,12 @@ async def run_experiment(
         summary["levels"][f"L{level}"] = {
             "rounds": rounds_per_level,
             "deception_success_rate": sum(r["deception_success"] for r in level_results) / rounds_per_level,
-            "detection_accuracy_proxy": sum(r["winner"] == "agent_b" for r in level_results) / rounds_per_level,
             "causal_validity_mean": sum(r["causal_validity_score"] for r in level_results) / rounds_per_level,
             "results": level_results,
         }
         tracker.log_metrics(
             {
                 f"L{level}_deception_success_rate": summary["levels"][f"L{level}"]["deception_success_rate"],
-                f"L{level}_detection_accuracy_proxy": summary["levels"][f"L{level}"]["detection_accuracy_proxy"],
                 f"L{level}_causal_validity_mean": summary["levels"][f"L{level}"]["causal_validity_mean"],
             },
             step=level,
@@ -90,7 +87,6 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
                 "level",
                 "rounds",
                 "deception_success_rate",
-                "detection_accuracy_proxy",
                 "causal_validity_mean",
             ]
         )
@@ -100,18 +96,16 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
                     level_key,
                     level_summary.get("rounds", 0),
                     f"{level_summary.get('deception_success_rate', 0.0):.4f}",
-                    f"{level_summary.get('detection_accuracy_proxy', 0.0):.4f}",
                     f"{level_summary.get('causal_validity_mean', 0.0):.4f}",
                 ]
             )
     lines = ["# Experiment 1 — Pearl Ladder Benchmark", ""]
-    lines.append("| Level | Rounds | DSR | DAcc (proxy) | CLS mean |")
-    lines.append("| --- | --- | --- | --- | --- |")
+    lines.append("| Level | Rounds | DSR | CLS mean |")
+    lines.append("| --- | --- | --- | --- |")
     for level_key, level_summary in summary.get("levels", {}).items():
         lines.append(
             f"| {level_key} | {level_summary.get('rounds', 0)} | "
             f"{level_summary.get('deception_success_rate', 0.0):.3f} | "
-            f"{level_summary.get('detection_accuracy_proxy', 0.0):.3f} | "
             f"{level_summary.get('causal_validity_mean', 0.0):.3f} |"
         )
     tracking = summary.get("tracking", {})

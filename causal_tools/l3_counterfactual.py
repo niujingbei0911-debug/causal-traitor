@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 
 from causal_tools.l2_intervention import sensitivity_analysis as l2_sensitivity_analysis
+from causal_tools.l2_intervention import _linear_effect
 
 
 def _extract_graph(model) -> nx.DiGraph | None:
@@ -271,4 +272,70 @@ def abduction_action_prediction(
         "counterfactual_outcome": result["counterfactual_outcome"],
         "u_posterior": result.get("u_posterior", {}),
         "confidence": result.get("confidence", 0.0),
+    }
+
+
+def counterfactual_bridge_check(
+    data: pd.DataFrame,
+    treatment: str,
+    mediator: str,
+    outcome: str,
+    covariates: list[str] | None = None,
+) -> dict:
+    """Observed-data bridge check for mediator-backed counterfactual claims."""
+
+    covariates = covariates or []
+    mediator_fit = _linear_effect(data, treatment, mediator, covariates)
+    outcome_given_mediator = _linear_effect(data, mediator, outcome, [treatment, *covariates])
+    treatment_fit = _linear_effect(data, treatment, outcome, covariates)
+    indirect_signal = float(mediator_fit["causal_effect"] * outcome_given_mediator["causal_effect"])
+    mediated_share = abs(indirect_signal) / max(abs(treatment_fit["causal_effect"]), 1e-6)
+    has_bridge_estimate = all(
+        np.isfinite(value)
+        for value in (
+            mediator_fit["causal_effect"],
+            outcome_given_mediator["causal_effect"],
+            treatment_fit["causal_effect"],
+        )
+    ) and min(
+        mediator_fit["n_samples"],
+        outcome_given_mediator["n_samples"],
+        treatment_fit["n_samples"],
+    ) >= 50
+    supports_stable_mediation = (
+        has_bridge_estimate
+        and (
+            mediator_fit["p_value"] < 0.2
+            or abs(mediator_fit["causal_effect"]) >= 0.03
+        )
+    )
+    supports_cross_world_consistency = bool(
+        has_bridge_estimate
+        and (
+            treatment_fit["p_value"] < 0.2
+            or abs(treatment_fit["causal_effect"]) >= 0.03
+        )
+    )
+    supports_counterfactual_model_uniqueness = bool(
+        supports_cross_world_consistency
+        and (
+            supports_stable_mediation
+            or outcome_given_mediator["p_value"] < 0.2
+            or abs(outcome_given_mediator["causal_effect"]) >= 0.01
+        )
+    )
+
+    return {
+        "treatment_to_mediator_effect": float(mediator_fit["causal_effect"]),
+        "treatment_to_mediator_p_value": float(mediator_fit["p_value"]),
+        "mediator_to_outcome_effect": float(outcome_given_mediator["causal_effect"]),
+        "mediator_to_outcome_p_value": float(outcome_given_mediator["p_value"]),
+        "treatment_to_outcome_effect": float(treatment_fit["causal_effect"]),
+        "treatment_to_outcome_p_value": float(treatment_fit["p_value"]),
+        "indirect_signal": indirect_signal,
+        "mediated_share": float(mediated_share),
+        "supports_stable_mediation": supports_stable_mediation,
+        "supports_cross_world_consistency": supports_cross_world_consistency,
+        "supports_counterfactual_model_uniqueness": supports_counterfactual_model_uniqueness,
+        "n_samples": int(min(mediator_fit["n_samples"], outcome_given_mediator["n_samples"], treatment_fit["n_samples"])),
     }
