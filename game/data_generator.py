@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,28 @@ from .types import CausalScenario
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-values))
+
+
+def _public_scenario_id(raw_scenario_id: str) -> str:
+    digest = hashlib.sha256(str(raw_scenario_id).encode("utf-8")).hexdigest()[:12]
+    return f"public_case_{digest}"
+
+
+def _public_description(
+    *,
+    observed_variables: list[str],
+    treatment: str,
+    outcome: str,
+    causal_level: str,
+) -> str:
+    visible = list(observed_variables[:4])
+    variable_text = ", ".join(visible)
+    if len(observed_variables) > len(visible):
+        variable_text = f"{variable_text}, ..."
+    return (
+        f"Observed {causal_level} showcase case over {variable_text}. "
+        f"Evaluate claims about {treatment} and {outcome} using only the public evidence in this view."
+    )
 
 
 @dataclass(slots=True)
@@ -406,7 +429,14 @@ class DataGenerator:
             known = ", ".join(sorted(SHOWCASE_ID_ALIASES))
             raise ValueError(f"Unknown scenario_id: {scenario_id}. Known ids: {known}") from exc
 
-    def _showcase_metadata(self, scenario_id: str) -> dict[str, Any]:
+    def _showcase_metadata(
+        self,
+        scenario_id: str,
+        *,
+        observed_variables: list[str] | None = None,
+        treatment: str | None = None,
+        outcome: str | None = None,
+    ) -> dict[str, Any]:
         info = dict(SHOWCASE_FAMILY_REGISTRY[scenario_id])
         benchmark_family = info["benchmark_family"]
         if benchmark_family not in REGISTERED_BENCHMARK_FAMILIES:
@@ -414,7 +444,7 @@ class DataGenerator:
                 f"Showcase {scenario_id!r} points to unregistered benchmark_family "
                 f"{benchmark_family!r}."
             )
-        return {
+        metadata = {
             "scenario_family": info["showcase_family"],
             "benchmark_family": benchmark_family,
             "benchmark_subfamily": info["showcase_family"],
@@ -423,6 +453,19 @@ class DataGenerator:
             "showcase_name": info["showcase_name"],
             "showcase_story_id": scenario_id,
         }
+        if observed_variables and treatment and outcome:
+            metadata.update(
+                {
+                    "public_scenario_id": _public_scenario_id(f"showcase:{scenario_id}"),
+                    "public_description": _public_description(
+                        observed_variables=list(observed_variables),
+                        treatment=str(treatment),
+                        outcome=str(outcome),
+                        causal_level=f"L{int(info['causal_level'])}",
+                    ),
+                }
+            )
+        return metadata
 
     def _difficulty_profile(self, difficulty: float) -> dict[str, float]:
         return {
@@ -506,7 +549,12 @@ class DataGenerator:
                     "cancer": {"intercept": -0.6, "cancer_risk": 1.0},
                 },
             },
-            metadata=self._showcase_metadata("smoking_cancer"),
+            metadata=self._showcase_metadata(
+                "smoking_cancer",
+                observed_variables=list(observed.columns),
+                treatment="smoking",
+                outcome="cancer",
+            ),
         )
 
     def _build_education_scenario(self, difficulty: float, n_samples: int) -> CausalScenario:
@@ -589,7 +637,12 @@ class DataGenerator:
                     },
                 },
             },
-            metadata=self._showcase_metadata("education_income"),
+            metadata=self._showcase_metadata(
+                "education_income",
+                observed_variables=list(observed.columns),
+                treatment="education_years",
+                outcome="income",
+            ),
         )
 
     def _build_drug_scenario(self, difficulty: float, n_samples: int) -> CausalScenario:
@@ -676,7 +729,12 @@ class DataGenerator:
                     "recovered": {"intercept": -0.2, "recovery_score": 1.0},
                 },
             },
-            metadata=self._showcase_metadata("drug_recovery"),
+            metadata=self._showcase_metadata(
+                "drug_recovery",
+                observed_variables=list(observed.columns),
+                treatment="drug_taken",
+                outcome="recovered",
+            ),
         )
 
     def _smoking_do(self, full: pd.DataFrame, do_value: float) -> pd.DataFrame:

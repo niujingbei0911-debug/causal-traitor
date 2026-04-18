@@ -111,6 +111,18 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.tools_used)
         self.assertTrue(result.reasoning_chain)
 
+    async def test_agent_b_propose_hypothesis_uses_public_description_focus_pair(self):
+        agent = AgentB(self.config)
+        self.public_scenario.description = (
+            "Observed L2 benchmark case over Z, X, Y. "
+            "Evaluate claims about X and Y using only the public evidence in this view."
+        )
+
+        claim = await agent.propose_hypothesis(self.public_scenario, level=2)
+
+        self.assertEqual(claim.causal_claim, "X 可能导致 Y")
+        self.assertIn("候选工具变量为 Z", claim.evidence)
+
     async def test_jury_collects_votes(self):
         jury = JuryAggregator(self.config)
         await jury.initialize()

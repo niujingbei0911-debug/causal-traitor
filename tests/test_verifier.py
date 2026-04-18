@@ -825,6 +825,29 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(result.tool_trace)
         self.assertEqual(len(tool_runner.calls), 1)
 
+    def test_pipeline_accepts_tool_executor_execute_for_claim_entrypoint(self) -> None:
+        scenario = _build_public_intervention_scenario()
+        with patch("verifier.pipeline.search_countermodels") as mocked_search:
+            mocked_search.return_value = CountermodelSearchResult(found_countermodel=False, candidates=[])
+            pipeline = VerifierPipeline(tool_runner=ToolExecutor({}))
+            result = pipeline.run(
+                "After controlling for proxy_signal, the causal effect of exposure on recovery is identified.",
+                scenario=scenario,
+                tool_context={
+                    "treatment": "exposure",
+                    "outcome": "recovery",
+                    "proxy_variables": list(scenario.proxy_variables),
+                    "selection_variables": list(scenario.selection_variables),
+                    "selection_mechanism": scenario.selection_mechanism,
+                    "claim_stance": "pro_causal",
+                },
+            )
+
+        self.assertIsInstance(result, VerifierDecision)
+        self.assertTrue(result.metadata["support_stage_entered"])
+        self.assertTrue(result.tool_trace)
+        self.assertTrue(any(entry["tool_name"] == "proxy_support_check" for entry in result.tool_trace))
+
     def test_pipeline_handles_truthful_valid_benchmark_samples_with_supporting_tools(self) -> None:
         generator = BenchmarkGenerator(seed=28)
         cases = (

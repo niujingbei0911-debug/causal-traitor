@@ -6,6 +6,7 @@ Agent B - 科学家（Scientist）
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Optional
 
 import networkx as nx
@@ -15,12 +16,8 @@ from agents.prompts.agent_b_prompts import AGENT_B_SYSTEM_PROMPT
 from benchmark.schema import PublicCausalInstance, require_public_instance
 from causal_tools.l1_association import conditional_independence_test, compute_correlation, partial_correlation
 from causal_tools.l2_intervention import backdoor_adjustment_check, iv_estimation, sensitivity_analysis
-from causal_tools.l3_counterfactual import (
-    counterfactual_inference,
-    probability_of_necessity,
-    probability_of_sufficiency,
-)
-from causal_tools.meta_tools import ToolSelector, argument_logic_check, causal_graph_validator
+from causal_tools.l3_counterfactual import probability_of_necessity, probability_of_sufficiency
+from causal_tools.meta_tools import ToolSelector, argument_logic_check
 from game.llm_service import LLMService
 
 
@@ -96,7 +93,6 @@ class AgentB:
         variables = self._get_variables(scenario, data)
         treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario)
         observed_controls = self._get_observed_controls(graph, data, treatment, outcome)
-        ground_truth = getattr(scenario, "ground_truth", {}) or {}
         claim_lower = claim.lower()
 
         reasoning_chain: list[str] = []
@@ -112,12 +108,6 @@ class AgentB:
             reasoning_chain.append(logic_result["recommendation"])
             tools_used.append("argument_logic_check")
             defense_score += 0.05 * logic_result["n_fallacies_detected"]
-
-        if graph is not None:
-            graph_result = causal_graph_validator(graph)
-            tools_used.append("causal_graph_validator")
-            if graph_result["confounder_candidates"]:
-                reasoning_chain.append("因果图中存在共享父节点，说明需要重点排查混杂路径。")
 
         if data is not None and treatment in data.columns and outcome in data.columns:
             correlation = compute_correlation(data, treatment, outcome)
@@ -139,13 +129,13 @@ class AgentB:
                     defense_score += 0.08
                 if ci_result["independent"] and correlation["significant"]:
                     challenge_validity += 0.12
-                    hidden_variable_name = self._suggest_hidden_variable(scenario, treatment, outcome)
+                    hidden_variable_name = self._suggest_hidden_variable(treatment, outcome)
                     discovered_hidden_vars.append(hidden_variable_name)
                     reasoning_chain.append("总相关显著但控制候选变量后近似独立，符合混杂导致的虚假相关特征。")
 
             if level == 1 and any(token in claim_lower for token in ["混杂", "confound", "未观测"]):
-                challenge_validity += 0.10 if getattr(scenario, "hidden_variables", []) else 0.0
-                discovered_hidden_vars.append(self._suggest_hidden_variable(scenario, treatment, outcome))
+                challenge_validity += 0.06
+                discovered_hidden_vars.append(self._suggest_hidden_variable(treatment, outcome))
             if level == 1 and any(token in claim_lower for token in ["选择偏差", "selection bias", "逆因果"]):
                 challenge_validity += 0.03
 
@@ -172,7 +162,12 @@ class AgentB:
                 else:
                     defense_score += 0.06
 
-                instrument = ground_truth.get("instrument") or self._find_instrument_variable(claim, variables, treatment, outcome)
+                instrument = self._find_instrument_variable(
+                    f"{claim} {getattr(scenario, 'description', '')}",
+                    variables,
+                    treatment,
+                    outcome,
+                )
                 if level == 2 and instrument is not None and instrument in data.columns:
                     iv_result = iv_estimation(data, instrument, treatment, outcome, observed_controls)
                     tools_used.append("iv_estimation")
@@ -196,21 +191,9 @@ class AgentB:
                 else:
                     challenge_validity += 0.08
 
-                scm = getattr(scenario, "true_scm", None)
-                if scm is not None:
-                    try:
-                        evidence = data.iloc[0].to_dict()
-                        intervention = {treatment: 1 - int(round(float(evidence[treatment])))}
-                        cf = counterfactual_inference(scm, evidence, intervention, outcome)
-                        tools_used.append("counterfactual_inference")
-                        reasoning_chain.append(
-                            f"在反事实世界中，{outcome} 的预测值变为 {float(cf['counterfactual_outcome']):.2f}。"
-                        )
-                        defense_score += 0.05
-                    except Exception:
-                        reasoning_chain.append("反事实推断因场景模型接口不足而跳过。")
                 if any(token in claim_lower for token in ["scm", "反事实", "函数形式", "不可识别", "模型敏感"]):
                     challenge_validity += 0.10
+                    reasoning_chain.append("公开视图不包含 SCM 参数，反事实唯一性仍依赖额外结构假设。")
 
         if any(token in claim_lower for token in ["必然", "100%", "毫无疑问", "唯一解释"]):
             detected_fallacies.append("过度确定性")
@@ -274,13 +257,14 @@ class AgentB:
         data = self._get_data(scenario)
         variables = self._get_variables(scenario, data)
         treatment, outcome = self._infer_focus_variables("", variables, scenario=scenario)
-        ground_truth = getattr(scenario, "ground_truth", {}) or {}
         evidence: list[str] = []
         tools_used: list[str] = []
+        scenario_text = f"{scenario.description} {' '.join(variables)}"
 
         if data is not None and treatment in data.columns and outcome in data.columns:
             corr = compute_correlation(data, treatment, outcome)
             evidence.append(f"{treatment} 与 {outcome} 的相关系数约为 {corr['pearson_r']:.2f}")
+            evidence.extend(self._public_effect_evidence(data, treatment, outcome))
             tools_used.append("compute_correlation")
 
         if level == 1:
@@ -289,28 +273,23 @@ class AgentB:
                 f"在已观测协变量范围内仍值得优先考虑因果解释。"
             )
         elif level == 2:
-            instrument = ground_truth.get("instrument")
+            instrument = self._find_instrument_variable(scenario_text, variables, treatment, outcome)
             instrument_text = f"，并可进一步借助工具变量 {instrument} 识别" if instrument else ""
             content = (
                 f"当前证据支持 {treatment} 对 {outcome} 存在正向干预效应，"
                 f"应优先检验后门调整与工具变量路径{instrument_text}。"
             )
+            if instrument:
+                evidence.append(f"候选工具变量为 {instrument}")
         else:
-            mediator = ground_truth.get("mediator")
+            mediator = self._find_mediator_variable(scenario_text, variables, treatment, outcome)
             mediator_text = f"，尤其需要结合中介 {mediator} 与反事实推断" if mediator else ""
             content = (
                 f"当前结构证据表明 {treatment} 很可能影响 {outcome}，"
                 f"但这一判断需要在 SCM 与反事实层面继续验证{mediator_text}。"
             )
-
-        if "observational_difference" in ground_truth:
-            evidence.append(f"观测差异约为 {float(ground_truth['observational_difference']):.2f}")
-        if "observational_slope" in ground_truth:
-            evidence.append(f"观测斜率约为 {float(ground_truth['observational_slope']):.2f}")
-        if "instrument" in ground_truth:
-            evidence.append(f"候选工具变量为 {ground_truth['instrument']}")
-        if "mediator" in ground_truth:
-            evidence.append(f"关键中介为 {ground_truth['mediator']}")
+            if mediator:
+                evidence.append(f"关键中介为 {mediator}")
 
         return ScientificClaim(
             content=content,
@@ -370,18 +349,9 @@ class AgentB:
         return None
 
     def _get_graph(self, scenario) -> Optional[nx.DiGraph]:
-        graph = getattr(scenario, "true_dag", None)
-        if isinstance(graph, nx.DiGraph):
-            return graph
-        if isinstance(graph, dict):
-            dag = nx.DiGraph()
-            for source, targets in graph.items():
-                for target in targets:
-                    dag.add_edge(source, target)
-            return dag
-        scm = getattr(scenario, "true_scm", None)
-        if isinstance(scm, dict) and "graph" in scm:
-            return self._get_graph(type("SCMScenario", (), {"true_dag": scm["graph"]})())
+        del scenario
+        # Phase 0+ public/gold contract: Agent B should not recover verifier-side graph access
+        # through legacy oracle fields.
         return None
 
     def _get_variables(self, scenario, data: Optional[pd.DataFrame]) -> list[str]:
@@ -393,15 +363,58 @@ class AgentB:
         return variables
 
     def _infer_focus_variables(self, claim: str, variables: list[str], scenario=None) -> tuple[str, str]:
-        ground_truth = getattr(scenario, "ground_truth", {}) or {}
-        treatment = ground_truth.get("treatment")
-        outcome = ground_truth.get("outcome")
-        if treatment in variables and outcome in variables:
-            return str(treatment), str(outcome)
-        matched = [variable for variable in variables if variable.lower() in claim.lower()]
+        for text in self._focus_hint_texts(claim, scenario):
+            pair = self._extract_focus_pair(text, variables)
+            if pair is not None:
+                return pair
+
+        if "X" in variables and "Y" in variables:
+            return "X", "Y"
+        if len(variables) >= 2:
+            return variables[0], variables[-1]
+        return variables[0], variables[0]
+
+    def _focus_hint_texts(self, claim: str, scenario=None) -> list[str]:
+        texts: list[str] = []
+        claim_text = str(claim or "").strip()
+        if claim_text:
+            texts.append(claim_text)
+        description = str(getattr(scenario, "description", "")).strip()
+        if description:
+            texts.append(description)
+        return texts
+
+    def _extract_focus_pair(self, text: str, variables: list[str]) -> tuple[str, str] | None:
+        lookup = {variable.lower(): variable for variable in variables}
+        patterns = (
+            r"\bevaluate claims? about (?P<treatment>[A-Za-z][A-Za-z0-9_]*) and (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\bclaims? about (?P<treatment>[A-Za-z][A-Za-z0-9_]*) and (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\bcausal effect of (?P<treatment>[A-Za-z][A-Za-z0-9_]*) on (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\b(?P<treatment>[A-Za-z][A-Za-z0-9_]*)\s+(?:causes?|affects?|drives?|changes?|influences?)\s+(?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\bassociation between (?P<treatment>[A-Za-z][A-Za-z0-9_]*) and (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\brelationship between (?P<treatment>[A-Za-z][A-Za-z0-9_]*) and (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+            r"\blink between (?P<treatment>[A-Za-z][A-Za-z0-9_]*) and (?P<outcome>[A-Za-z][A-Za-z0-9_]*)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            treatment = lookup.get(str(match.group("treatment")).strip().lower())
+            outcome = lookup.get(str(match.group("outcome")).strip().lower())
+            if treatment and outcome and treatment != outcome:
+                return treatment, outcome
+
+        lowered = text.lower()
+        matched = [
+            (lowered.find(variable.lower()), variable)
+            for variable in variables
+            if re.search(rf"\b{re.escape(variable)}\b", text, flags=re.IGNORECASE)
+        ]
+        matched = [item for item in matched if item[0] >= 0]
+        matched.sort(key=lambda item: item[0])
         if len(matched) >= 2:
-            return matched[0], matched[1]
-        return variables[0], variables[1]
+            return matched[0][1], matched[1][1]
+        return None
 
     def _find_instrument_variable(
         self, claim: str, variables: list[str], treatment: str, outcome: str
@@ -416,11 +429,58 @@ class AgentB:
                 return variable
         return None
 
-    def _suggest_hidden_variable(self, scenario, treatment: str, outcome: str) -> str:
-        hidden = list(getattr(scenario, "hidden_variables", []))
-        if hidden:
-            return hidden[0]
+    def _find_mediator_variable(
+        self,
+        claim: str,
+        variables: list[str],
+        treatment: str,
+        outcome: str,
+    ) -> Optional[str]:
+        preferred_tokens = ("mediator", "biomarker", "intermediate", "mechanism", "dosage", "uptake")
+        lowered_claim = claim.lower()
+        for variable in variables:
+            if variable in {treatment, outcome}:
+                continue
+            lowered = variable.lower()
+            if lowered in lowered_claim and any(token in lowered for token in preferred_tokens):
+                return variable
+        for variable in variables:
+            if variable not in {treatment, outcome} and variable.lower() in lowered_claim:
+                return variable
+        return None
+
+    def _suggest_hidden_variable(self, treatment: str, outcome: str) -> str:
         return f"latent_confounder_between_{treatment}_and_{outcome}"
+
+    def _public_effect_evidence(
+        self,
+        data: Optional[pd.DataFrame],
+        treatment: str,
+        outcome: str,
+    ) -> list[str]:
+        if data is None or treatment not in data.columns or outcome not in data.columns:
+            return []
+
+        frame = pd.DataFrame(
+            {
+                "treatment": pd.to_numeric(data[treatment], errors="coerce"),
+                "outcome": pd.to_numeric(data[outcome], errors="coerce"),
+            }
+        ).dropna()
+        if len(frame) < 2:
+            return []
+
+        evidence: list[str] = []
+        treated = frame.loc[frame["treatment"] >= 0.5, "outcome"]
+        control = frame.loc[frame["treatment"] < 0.5, "outcome"]
+        if not treated.empty and not control.empty:
+            evidence.append(f"观测差异约为 {float(treated.mean() - control.mean()):.2f}")
+
+        variance = float(frame["treatment"].var())
+        if variance > 0:
+            slope = float(frame["treatment"].cov(frame["outcome"]) / variance)
+            evidence.append(f"观测斜率约为 {slope:.2f}")
+        return self._deduplicate(evidence)
 
     def _get_observed_controls(
         self,

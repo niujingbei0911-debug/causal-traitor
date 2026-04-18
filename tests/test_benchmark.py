@@ -608,8 +608,15 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(gold.scenario_id, "smoking_cancer")
         self.assertIsInstance(public, PublicCausalInstance)
         self.assertIsInstance(exported, PublicCausalInstance)
-        self.assertEqual(public.scenario_id, gold.scenario_id)
-        self.assertEqual(exported.scenario_id, gold.scenario_id)
+        self.assertNotEqual(public.scenario_id, gold.scenario_id)
+        self.assertNotEqual(exported.scenario_id, gold.scenario_id)
+        self.assertTrue(public.scenario_id.startswith("public_case_"))
+        self.assertTrue(exported.scenario_id.startswith("public_case_"))
+        self.assertNotEqual(public.description, gold.description)
+        self.assertIn("smoking", public.description.lower())
+        self.assertIn("cancer", public.description.lower())
+        self.assertNotIn("hidden", public.description.lower())
+        self.assertNotIn("genetic_risk", public.description)
         self.assertFalse(hasattr(public, "true_dag"))
 
     def test_benchmark_generator_supports_showcase_and_non_showcase_samples(self) -> None:
