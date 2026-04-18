@@ -127,6 +127,16 @@ class ClaimParserTests(unittest.TestCase):
         self.assertIn("instrument independence", iv_claim.implied_assumptions)
         self.assertEqual(iv_claim.rhetorical_strategy, "instrumental_variable_appeal")
 
+    def test_parser_recognizes_programmatic_proxy_tokens(self) -> None:
+        for proxy_name in ("proxy_signal", "triage_note"):
+            with self.subTest(proxy_name=proxy_name):
+                parsed = parse_claim(
+                    f"With {proxy_name} available, the benchmark still supports the observed relationship between exposure and recovery."
+                )
+
+                assumptions = set(parsed.mentioned_assumptions) | set(parsed.implied_assumptions)
+                self.assertIn("proxy sufficiency", assumptions)
+
     def test_parser_covers_once_included_adjustment_overclaim(self) -> None:
         parsed = self.parser.parse(
             "Once baseline_score is included, the treatment effect of adoption_level on income_score should be interpreted as identified."
@@ -743,6 +753,9 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(decision.support_witness.witness_type, WitnessKind.SUPPORT)
         self.assertIs(decision.witness, decision.support_witness)
         self.assertEqual(payload["label"], "valid")
+        self.assertIn("probabilities", payload)
+        self.assertAlmostEqual(sum(payload["probabilities"].values()), 1.0, places=6)
+        self.assertGreater(payload["probabilities"]["valid"], payload["probabilities"]["invalid"])
         self.assertIn("valid adjustment set", decision.support_witness.assumptions)
         json.dumps(payload)
 
@@ -1117,6 +1130,65 @@ class PipelineTests(unittest.TestCase):
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
                 self.assertEqual(result.label, VerdictLabel.VALID)
                 self.assertTrue(result.metadata["support_stage_entered"])
+
+    def test_pipeline_handles_regression_grid_for_truthful_valid_samples_with_real_tool_executor(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        executor = ToolExecutor({})
+        cases = (
+            ("l1_proxy_disambiguation_family", 8),
+            ("l2_valid_backdoor_family", 0),
+            ("l2_valid_iv_family", 0),
+            ("l2_valid_iv_family", 2),
+        )
+
+        for family_name, seed in cases:
+            with self.subTest(family_name=family_name, seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name=family_name,
+                    difficulty=0.4,
+                    seed=seed,
+                )
+                level = int(str(sample.claim.causal_level).replace("L", ""))
+                report = executor.execute_for_claim(
+                    scenario=sample.public,
+                    claim=sample.claim.claim_text,
+                    level=level,
+                    context={"claim_stance": "pro_causal"},
+                )
+                result = run_verifier_pipeline(
+                    sample.claim.claim_text,
+                    scenario=sample.public,
+                    tool_trace=report["tool_trace"],
+                )
+
+                self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
+                self.assertEqual(result.label, VerdictLabel.VALID)
+                self.assertTrue(result.metadata["support_stage_entered"])
+
+    def test_pipeline_keeps_proxy_family_renaming_overclaim_on_invalid_path(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        executor = ToolExecutor({})
+        sample = generator.generate_benchmark_sample(
+            family_name="l1_proxy_disambiguation_family",
+            difficulty=0.4,
+            seed=11,
+        )
+
+        report = executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=1,
+            context={"claim_stance": "pro_causal"},
+        )
+        result = run_verifier_pipeline(
+            sample.claim.claim_text,
+            scenario=sample.public,
+            tool_trace=report["tool_trace"],
+        )
+
+        self.assertIs(sample.claim.gold_label, VerdictLabel.INVALID)
+        self.assertEqual(sample.claim.meta.get("attack_name"), "association_overclaim")
+        self.assertEqual(result.label, VerdictLabel.INVALID)
 
     def test_pipeline_with_real_tool_executor_keeps_invalid_adjustment_claim_off_valid_path(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(

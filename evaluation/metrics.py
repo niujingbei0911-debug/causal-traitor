@@ -292,12 +292,14 @@ class CausalMetrics:
         predicted_labels: Sequence[Any],
         confidences: Sequence[Any],
         *,
+        predicted_probabilities: Sequence[Any] | None = None,
         n_bins: int = 10,
     ) -> MetricResult:
         records = cls._paired_label_records(
             gold_labels,
             predicted_labels,
             confidences=confidences,
+            predicted_probabilities=predicted_probabilities,
         )
         if not records:
             return cls._metric(
@@ -309,10 +311,17 @@ class CausalMetrics:
                 higher_is_better=False,
             )
 
-        clipped_confidences = [
-            _clip01(record.get("confidence", 0.0))
-            for record in records
-        ]
+        clipped_confidences = []
+        for record in records:
+            probability_distribution = _normalize_probability_distribution(
+                record.get("predicted_probabilities"),
+                predicted_label=record["predicted_label"],
+                confidence=record.get("confidence"),
+            )
+            if record.get("predicted_probabilities") is not None:
+                clipped_confidences.append(probability_distribution[record["predicted_label"]])
+            else:
+                clipped_confidences.append(_clip01(record.get("confidence", 0.0)))
         correctness = [
             1.0 if record["gold_label"] == record["predicted_label"] else 0.0
             for record in records
@@ -867,7 +876,12 @@ class CausalMetrics:
                     cls.verdict_macro_f1(gold_labels, predicted_labels),
                     cls.invalid_claim_acceptance_rate(gold_labels, predicted_labels),
                     cls.unidentifiable_awareness(gold_labels, predicted_labels),
-                    cls.expected_calibration_error(gold_labels, predicted_labels, confidences),
+                    cls.expected_calibration_error(
+                        gold_labels,
+                        predicted_labels,
+                        confidences,
+                        predicted_probabilities=predicted_probabilities,
+                    ),
                     cls.brier_score(
                         gold_labels,
                         predicted_labels,

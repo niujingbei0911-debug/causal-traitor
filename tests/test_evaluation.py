@@ -200,6 +200,29 @@ class EvaluationTests(unittest.TestCase):
         self.assertFalse(lookup["brier"].higher_is_better)
         self.assertAlmostEqual(lookup["brier"].value, 0.1789, places=4)
 
+    def test_score_game_uses_explicit_verdict_probabilities_for_calibration_metrics(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "calibration-probabilities",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "valid",
+                        "verdict_label": "valid",
+                        "verifier_confidence": 0.99,
+                        "verdict_probabilities": {
+                            "valid": 0.55,
+                            "invalid": 0.30,
+                            "unidentifiable": 0.15,
+                        },
+                    }
+                ],
+            }
+        )
+
+        self.assertAlmostEqual(score.final_scores["ece"], 0.45, places=4)
+        self.assertAlmostEqual(score.final_scores["brier"], 0.105, places=4)
+
     def test_countermodel_applicability_is_not_polluted_by_predicted_label(self) -> None:
         self.assertFalse(
             _extract_countermodel_applicable(

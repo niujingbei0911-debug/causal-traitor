@@ -82,6 +82,19 @@ def _extract_confidence(round_data: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _extract_probability_distribution(round_data: Dict[str, Any]) -> Dict[str, float] | None:
+    candidates = [
+        round_data.get("predicted_probabilities"),
+        round_data.get("verdict_probabilities"),
+        _nested_value(round_data.get("verdict"), "probabilities"),
+        _nested_value(round_data.get("verifier_verdict"), "probabilities"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return {str(key): candidate[key] for key in candidate}
+    return None
+
+
 def _extract_countermodel_hit(round_data: Dict[str, Any]) -> bool:
     if "countermodel_found" in round_data:
         return bool(round_data.get("countermodel_found"))
@@ -114,6 +127,7 @@ class RoundScore:
     gold_label: str | None
     verdict_correct: bool
     confidence: float
+    probabilities: Dict[str, float] | None = None
     metric_results: List[MetricResult] = field(default_factory=list)
     appendix: Dict[str, Any] = field(default_factory=dict)
 
@@ -161,6 +175,7 @@ class Scorer:
         gold_labels = list(game_data.get("gold_labels", []))
         predicted_labels = list(game_data.get("predicted_labels", []))
         confidences = list(game_data.get("confidences", []))
+        predicted_probabilities = list(game_data.get("predicted_probabilities", []))
         countermodel_hits = list(game_data.get("countermodel_hits", []))
         countermodel_applicable = list(game_data.get("countermodel_applicable", []))
         count = min(len(gold_labels), len(predicted_labels))
@@ -174,6 +189,8 @@ class Scorer:
             }
             if index < len(confidences):
                 payload["verifier_confidence"] = confidences[index]
+            if index < len(predicted_probabilities):
+                payload["predicted_probabilities"] = predicted_probabilities[index]
             if index < len(countermodel_hits):
                 payload["countermodel_found"] = countermodel_hits[index]
             if index < len(countermodel_applicable):
@@ -195,6 +212,7 @@ class Scorer:
         predicted_label = _extract_predicted_label(round_data)
         gold_label = _extract_gold_label(round_data)
         confidence = _extract_confidence(round_data)
+        probabilities = _extract_probability_distribution(round_data)
         verdict_correct = bool(predicted_label and gold_label and predicted_label == gold_label)
         countermodel_hit = _extract_countermodel_hit(round_data)
         countermodel_applicable = _extract_countermodel_applicable(round_data)
@@ -246,6 +264,7 @@ class Scorer:
             gold_label=gold_label,
             verdict_correct=verdict_correct,
             confidence=confidence,
+            probabilities=probabilities,
             metric_results=metric_results,
             appendix=appendix,
         )
@@ -262,6 +281,7 @@ class Scorer:
         paired_gold_labels: list[str] = []
         paired_predicted_labels: list[str] = []
         confidences: list[float] = []
+        predicted_probabilities: list[dict[str, float] | None] = []
         countermodel_hits: list[bool] = []
         countermodel_applicable: list[bool] = []
 
@@ -271,6 +291,7 @@ class Scorer:
             paired_gold_labels.append(round_score.gold_label)
             paired_predicted_labels.append(round_score.predicted_label)
             confidences.append(round_score.confidence)
+            predicted_probabilities.append(round_score.probabilities)
             countermodel_hits.append(_extract_countermodel_hit(round_data))
             countermodel_applicable.append(_extract_countermodel_applicable(round_data))
 
@@ -283,11 +304,13 @@ class Scorer:
                 paired_gold_labels,
                 paired_predicted_labels,
                 confidences,
+                predicted_probabilities=predicted_probabilities,
             ),
             CausalMetrics.brier_score(
                 paired_gold_labels,
                 paired_predicted_labels,
                 confidences,
+                predicted_probabilities=predicted_probabilities,
             ),
             CausalMetrics.countermodel_coverage(countermodel_hits, countermodel_applicable),
         ]

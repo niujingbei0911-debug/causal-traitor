@@ -455,7 +455,10 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
         (
             re.compile(r"\bproxy\b", re.IGNORECASE),
             re.compile(r"\bsurrogate\b", re.IGNORECASE),
-            re.compile(r"\b(sensor_proxy|screening_trace|archive_indicator|surrogate_measure)\b", re.IGNORECASE),
+            re.compile(
+                r"\b(proxy_signal|triage_note|sensor_proxy|screening_trace|archive_indicator|surrogate_measure)\b",
+                re.IGNORECASE,
+            ),
             re.compile(r"代理变量|替代变量"),
         ),
     ),
@@ -683,6 +686,8 @@ def _infer_implied_assumptions(
         text,
         re.IGNORECASE,
     ):
+        _add_if_missing(implied, "proxy sufficiency", mentioned)
+    if re.search(r"\b(proxy_signal|triage_note)\b", text, re.IGNORECASE):
         _add_if_missing(implied, "proxy sufficiency", mentioned)
 
     if has_iv_story or re.search(r"\bas an instrument\b|\biv\b|工具变量", text, re.IGNORECASE):

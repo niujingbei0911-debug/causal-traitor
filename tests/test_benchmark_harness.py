@@ -1,6 +1,11 @@
 import unittest
 
-from experiments.benchmark_harness import compare_system_predictions
+from experiments.benchmark_harness import (
+    _apply_family_postprocessing,
+    aggregate_seed_metrics,
+    compare_system_predictions,
+)
+from experiments.exp_leakage_study.run import _mcnemar_significance
 
 
 def _prediction_record(
@@ -107,6 +112,119 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 },
                 baseline="baseline",
             )
+
+    def test_leakage_mcnemar_significance_rejects_mismatched_sample_sets(self) -> None:
+        baseline_records = [
+            {
+                **_prediction_record(
+                    seed=0,
+                    split="test_iid",
+                    instance_id="inst_a",
+                    gold_label="valid",
+                    predicted_label="valid",
+                ),
+                "system_name": "countermodel_grounded",
+            },
+            {
+                **_prediction_record(
+                    seed=0,
+                    split="test_iid",
+                    instance_id="inst_b",
+                    gold_label="invalid",
+                    predicted_label="invalid",
+                ),
+                "system_name": "countermodel_grounded",
+            },
+        ]
+        mismatched_records = [
+            {
+                **_prediction_record(
+                    seed=0,
+                    split="test_iid",
+                    instance_id="inst_a",
+                    gold_label="valid",
+                    predicted_label="valid",
+                ),
+                "system_name": "oracle_leaking_partition",
+            },
+            {
+                **_prediction_record(
+                    seed=0,
+                    split="test_iid",
+                    instance_id="inst_c",
+                    gold_label="invalid",
+                    predicted_label="invalid",
+                ),
+                "system_name": "oracle_leaking_partition",
+            },
+        ]
+
+        with self.assertRaises(ValueError):
+            _mcnemar_significance(baseline_records + mismatched_records)
+
+    def test_aggregate_seed_metrics_raises_on_missing_primary_metric(self) -> None:
+        with self.assertRaises(ValueError):
+            aggregate_seed_metrics(
+                {
+                    0: {
+                        "test_iid": {
+                            "metrics": {
+                                "verdict_accuracy": 1.0,
+                            }
+                        }
+                    }
+                },
+                split_name="test_iid",
+            )
+
+    def test_family_variants_keep_verdict_semantics_consistent(self) -> None:
+        skeptical = _apply_family_postprocessing(
+            "skeptical_family",
+            {
+                "predicted_label": "valid",
+                "confidence": 0.73,
+                "verdict": {
+                    "label": "valid",
+                    "confidence": 0.73,
+                    "witness": {"witness_type": "support"},
+                    "support_witness": {"witness_type": "support"},
+                    "countermodel_witness": None,
+                    "reasoning_summary": "Stage 4: no effective countermodel remained.",
+                    "metadata": {},
+                },
+                "countermodel_found": False,
+                "countermodel_type": None,
+                "system_notes": [],
+            },
+        )
+        self.assertEqual(skeptical["predicted_label"], "unidentifiable")
+        self.assertIsNone(skeptical["verdict"].get("support_witness"))
+        self.assertIsNone(skeptical["verdict"].get("countermodel_witness"))
+        self.assertIn("Skeptical family override", skeptical["verdict"].get("reasoning_summary", ""))
+
+        optimistic = _apply_family_postprocessing(
+            "optimistic_family",
+            {
+                "predicted_label": "unidentifiable",
+                "confidence": 0.58,
+                "verdict": {
+                    "label": "unidentifiable",
+                    "confidence": 0.58,
+                    "witness": {"witness_type": "assumption"},
+                    "support_witness": None,
+                    "countermodel_witness": None,
+                    "reasoning_summary": "Stage 3: assumptions remain unsupported.",
+                    "metadata": {},
+                },
+                "countermodel_found": False,
+                "countermodel_type": None,
+                "system_notes": [],
+            },
+        )
+        self.assertEqual(optimistic["predicted_label"], "valid")
+        self.assertIsNotNone(optimistic["verdict"].get("support_witness"))
+        self.assertIsNone(optimistic["verdict"].get("countermodel_witness"))
+        self.assertIn("Optimistic family override", optimistic["verdict"].get("reasoning_summary", ""))
 
 
 if __name__ == "__main__":

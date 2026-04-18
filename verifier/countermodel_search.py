@@ -553,6 +553,42 @@ def _status_lookup(ledger: AssumptionLedger) -> dict[str, AssumptionLedgerEntry]
     return ledger.by_name()
 
 
+def _apply_public_semantic_support(
+    statuses: dict[str, AssumptionLedgerEntry],
+    scenario: PublicCausalInstance | None,
+) -> dict[str, AssumptionLedgerEntry]:
+    if scenario is None:
+        return dict(statuses)
+    metadata = dict(getattr(scenario, "metadata", {}) or {})
+    measurement_semantics = metadata.get("measurement_semantics")
+    if not isinstance(measurement_semantics, dict):
+        return dict(statuses)
+
+    supported_assumptions: set[str] = set()
+    for semantics in measurement_semantics.values():
+        if not isinstance(semantics, dict):
+            continue
+        supported_assumptions.update(
+            str(item).strip()
+            for item in semantics.get("supports_assumptions", [])
+            if str(item).strip()
+        )
+
+    updated = dict(statuses)
+    for assumption_name in supported_assumptions:
+        entry = updated.get(assumption_name)
+        if entry is None or entry.status is AssumptionStatus.CONTRADICTED:
+            continue
+        updated[assumption_name] = AssumptionLedgerEntry(
+            name=entry.name,
+            source=entry.source,
+            category=entry.category,
+            status=AssumptionStatus.SUPPORTED,
+            note="Public benchmark semantics explicitly support this assumption.",
+        )
+    return updated
+
+
 def _status_of(
     statuses: dict[str, AssumptionLedgerEntry],
     name: str,
@@ -907,7 +943,12 @@ def _l2_candidates(
             "fully valid",
         )
     )
-    if has_iv_story and has_explicit_iv_overclaim:
+    iv_semantics_resolved = (
+        relevance_status is AssumptionStatus.SUPPORTED
+        and exclusion_status is AssumptionStatus.SUPPORTED
+        and independence_status is AssumptionStatus.SUPPORTED
+    )
+    if has_iv_story and has_explicit_iv_overclaim and not iv_semantics_resolved:
         iv_statuses = [status for status in (exclusion_status, independence_status) if status is not None]
         strongest = (
             AssumptionStatus.CONTRADICTED
@@ -1168,7 +1209,7 @@ def search_countermodels(
     """Search for countermodel families suggested by the parsed claim and ledger."""
 
     resolved_ledger = ledger if ledger is not None else build_assumption_ledger(parsed_claim)
-    statuses = _status_lookup(resolved_ledger)
+    statuses = _apply_public_semantic_support(_status_lookup(resolved_ledger), scenario)
     context_text = _context_text(context)
     resolved_data = _resolve_observed_data(
         scenario=scenario,

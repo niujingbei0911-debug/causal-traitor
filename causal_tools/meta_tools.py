@@ -240,7 +240,7 @@ class ToolSelector:
                 tools.append("propensity_score_matching")
 
         elif level_name == "L3":
-            tools.extend(["backdoor_adjustment_check", "probability_of_necessity", "probability_of_sufficiency", "sensitivity_analysis", "overlap_check"])
+            tools.extend(["backdoor_adjustment_check", "sensitivity_analysis", "overlap_check"])
             if has_public_scm:
                 tools.extend(["counterfactual_inference", "scm_identification_test", "ett_computation"])
             if has_mediator:

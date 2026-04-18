@@ -130,11 +130,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             main_payload = run_main_benchmark(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_main_benchmark.json"),
             )
             leakage_payload = run_leakage_study(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_leakage_study.json"),
             )
             ablation_payload = run_identifiability_ablation(
@@ -167,6 +169,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("test_iid", main_payload["aggregated_metrics"]["countermodel_grounded"])
             self.assertIn("test_ood", main_payload["aggregated_metrics"]["countermodel_grounded"])
             self.assertIn("verdict_accuracy", main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"])
+            self.assertFalse(main_payload["protocol"]["compliant"])
+            self.assertTrue(main_payload["protocol"]["override_used"])
 
             leaking_predictions = [
                 record
@@ -174,10 +178,25 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if record["system_name"] == "oracle_leaking_partition"
             ]
             self.assertTrue(leaking_predictions)
-            self.assertTrue(all(not record["supports_public_only"] for record in leaking_predictions))
+            self.assertTrue(all(record["supports_public_only"] for record in leaking_predictions))
+            self.assertTrue(
+                all(
+                    record["verdict"]["metadata"].get("same_verifier_pipeline")
+                    for record in leaking_predictions
+                )
+            )
+            self.assertTrue(
+                all(
+                    record["verdict"]["metadata"].get("leakage_mode")
+                    == "oracle_public_partition_rerun"
+                    for record in leaking_predictions
+                )
+            )
             self.assertIn("inflation", leakage_payload)
             self.assertIn("conclusion", leakage_payload)
             self.assertIn("mcnemar_significance", leakage_payload)
+            self.assertFalse(leakage_payload["protocol"]["compliant"])
+            self.assertTrue(leakage_payload["protocol"]["override_used"])
 
             for system_name in ("no_ledger", "no_countermodel", "no_abstention", "no_tools"):
                 self.assertIn(system_name, ablation_payload["aggregated_metrics"])
@@ -208,6 +227,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertGreaterEqual(len(main_payload["seeds"]), 3)
             self.assertGreaterEqual(len(main_payload["systems"]), 2)
+            self.assertNotIn("skeptical_family", main_payload["systems"])
+            self.assertNotIn("optimistic_family", main_payload["systems"])
+            self.assertIn("no_tools", main_payload["systems"])
+            self.assertIn("no_countermodel", main_payload["systems"])
             self.assertIn("ECE", main_payload["markdown_summary"])
             self.assertIn("Brier", main_payload["markdown_summary"])
 
@@ -219,23 +242,112 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for split_name in ("test_iid", "test_ood"):
                 self.assertIsNotNone(main_payload["significance"][split_name])
                 self.assertTrue(main_payload["significance"][split_name]["comparisons"])
+                self.assertEqual(
+                    main_payload["significance"][split_name]["estimand"],
+                    "seed_mean_verdict_accuracy",
+                )
+                baseline_name = main_payload["significance"][split_name]["baseline"]
+                comparison = main_payload["significance"][split_name]["comparisons"][0]
+                candidate_name = comparison["model_b"]
+                expected_delta = (
+                    main_payload["aggregated_metrics"][candidate_name][split_name]["verdict_accuracy"]["mean"]
+                    - main_payload["aggregated_metrics"][baseline_name][split_name]["verdict_accuracy"]["mean"]
+                )
+                self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
             self.assertGreaterEqual(len(leakage_payload["seeds"]), 3)
             self.assertGreaterEqual(
                 leakage_payload["config"]["samples_per_family"],
                 LEAKAGE_DEFAULT_SAMPLES_PER_FAMILY,
             )
-            self.assertTrue(leakage_payload["conclusion"]["supported"])
-            self.assertTrue(leakage_payload["conclusion"]["robust_support"])
             self.assertIn(
                 leakage_payload["conclusion"]["summary_statement"],
                 leakage_payload["markdown_summary"],
             )
             self.assertIn("Supports Warning", leakage_payload["markdown_summary"])
+            self.assertIn("95% CI", leakage_payload["markdown_summary"])
+            self.assertIn("Macro-F1", leakage_payload["markdown_summary"])
+            self.assertEqual(
+                leakage_payload["global_multiple_comparison_correction"]["family_size"],
+                4,
+            )
             for split_name in ("test_iid", "test_ood"):
-                self.assertTrue(leakage_payload["conclusion"]["split_details"][split_name]["supported"])
                 self.assertTrue(leakage_payload["significance"][split_name]["comparisons"])
                 self.assertTrue(leakage_payload["mcnemar_significance"][split_name]["comparisons"])
+                self.assertEqual(
+                    leakage_payload["significance"][split_name]["estimand"],
+                    "seed_mean_verdict_accuracy",
+                )
+                self.assertEqual(
+                    leakage_payload["mcnemar_significance"][split_name]["metric_name"],
+                    "verdict_accuracy",
+                )
+                comparison = leakage_payload["significance"][split_name]["comparisons"][0]
+                expected_delta = leakage_payload["inflation"][split_name]["accuracy"]["delta_mean"]
+                self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
+
+    def test_phase4_main_and_leakage_reject_noncompliant_seed_lists_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_main_benchmark(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_main_benchmark_invalid.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_leakage_study(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_leakage_study_invalid.json"),
+                )
+
+    def test_phase4_payload_records_effective_config_separately_from_requested_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            main_payload = run_main_benchmark(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_main_benchmark_effective.json"),
+            )
+            leakage_payload = run_leakage_study(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_leakage_study_effective.json"),
+            )
+
+            self.assertEqual(main_payload["config"]["samples_per_family"], 1)
+            self.assertEqual(main_payload["config"]["difficulty"], 1.0)
+            self.assertEqual(main_payload["requested_config"]["samples_per_family"], 0)
+            self.assertEqual(main_payload["requested_config"]["difficulty"], 1.5)
+
+            self.assertEqual(leakage_payload["config"]["samples_per_family"], 1)
+            self.assertEqual(leakage_payload["config"]["difficulty"], 1.0)
+            self.assertEqual(leakage_payload["requested_config"]["samples_per_family"], 0)
+            self.assertEqual(leakage_payload["requested_config"]["difficulty"], 1.5)
+
+    def test_phase4_main_runner_rejects_duplicate_systems_early(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_main_benchmark(
+                    systems=["countermodel_grounded", "countermodel_grounded"],
+                    output_path=str(Path(tmp_dir) / "exp_main_benchmark_duplicate_systems.json"),
+                )
+
+    def test_phase4_runners_reject_duplicate_seeds_early(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_main_benchmark(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_main_benchmark_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_leakage_study(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_leakage_study_duplicate_seeds.json"),
+                )
 
     async def test_phase5_appendix_and_demo_stay_on_public_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

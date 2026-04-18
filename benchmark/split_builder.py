@@ -111,15 +111,15 @@ def build_split_manifest(
     templates = _collect_unique(instance.language_template_id for instance in normalized_instances)
     renamed_available = any(_is_variable_renamed(instance) for instance in normalized_instances)
 
-    selected_family_holdout = _collect_unique(family_holdout or [])
-    selected_lexical_holdout = _collect_unique(lexical_holdout or [])
+    selected_family_holdout = _collect_unique(family_holdout or []) if family_holdout is not None else []
+    selected_lexical_holdout = _collect_unique(lexical_holdout or []) if lexical_holdout is not None else []
     selected_variable_renaming_holdout = (
         renamed_available if variable_renaming_holdout is None else bool(variable_renaming_holdout)
     )
 
-    if not selected_family_holdout and len(families) > 1:
+    if family_holdout is None and not selected_family_holdout and len(families) > 1:
         selected_family_holdout = [families[-1]]
-    if not selected_lexical_holdout and len(templates) > 1:
+    if lexical_holdout is None and not selected_lexical_holdout and len(templates) > 1:
         selected_lexical_holdout = [templates[-1]]
 
     ood_reasons: dict[str, list[str]] = {}
@@ -151,6 +151,20 @@ def build_split_manifest(
         dev_ratio=dev_ratio,
         test_iid_ratio=test_iid_ratio,
     )
+
+    id_to_split = {
+        **{instance_id: "train" for instance_id in split_map["train"]},
+        **{instance_id: "dev" for instance_id in split_map["dev"]},
+        **{instance_id: "test_iid" for instance_id in split_map["test_iid"]},
+        **{instance_id: "test_ood" for instance_id in test_ood_ids},
+    }
+    for instance in normalized_instances:
+        split_name = id_to_split.get(instance.instance_id)
+        if split_name is None:
+            continue
+        instance.meta["ood_split"] = split_name
+        if instance.instance_id in ood_reasons:
+            instance.meta["ood_reasons"] = list(ood_reasons[instance.instance_id])
 
     metadata = {
         "builder": "split_builder_v1",

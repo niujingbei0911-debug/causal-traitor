@@ -400,15 +400,8 @@ class BenchmarkGenerator:
         *,
         seed: int,
     ) -> tuple[GraphFamilyBlueprint, dict[str, Any]]:
-        allowed_families = {
-            "l1_proxy_disambiguation_family",
-            "l1_selection_bias_family",
-            "l2_valid_backdoor_family",
-            "l3_mediation_abduction_family",
-        }
         if (
-            blueprint.family_name not in allowed_families
-            or int(seed) % 4 != 3
+            int(seed) % 4 != 3
             or len(blueprint.observed_variables) < 2
         ):
             return blueprint, {}
@@ -422,6 +415,96 @@ class BenchmarkGenerator:
             "renamed_variables": list(renamed_blueprint.observed_variables),
         }
         return renamed_blueprint, renaming_meta
+
+    def _public_variable_descriptions(
+        self,
+        blueprint: GraphFamilyBlueprint,
+    ) -> dict[str, str]:
+        descriptions: dict[str, str] = {}
+        treatment = blueprint.target_variables.get("treatment")
+        outcome = blueprint.target_variables.get("outcome")
+        role_text = {
+            "backdoor_adjuster": "Observed pre-treatment covariate designated as the public adjustment variable.",
+            "observed_adjuster": "Observed covariate used as part of the public adjustment story.",
+            "observed_context": "Observed contextual covariate available to the verifier.",
+            "proxy": "Observed proxy measurement available as a public bridge.",
+            "instrument": "Observed instrument-style variable available as a public IV bridge.",
+            "mediator": "Observed mediator measurement available as a public counterfactual bridge.",
+            "selection": "Observed selection indicator visible to the verifier.",
+        }
+        for variable in blueprint.observed_variables:
+            parts: list[str] = []
+            if variable == treatment:
+                parts.append("Observed treatment variable used in the query.")
+            if variable == outcome:
+                parts.append("Observed outcome variable used in the query.")
+            for role, bound_variable in blueprint.role_bindings.items():
+                if bound_variable != variable or role in {"treatment", "outcome"}:
+                    continue
+                if role in role_text:
+                    parts.append(role_text[role])
+            if not parts:
+                parts.append("Observed benchmark variable available to the verifier.")
+            descriptions[variable] = " ".join(dict.fromkeys(parts))
+        return descriptions
+
+    def _public_measurement_semantics(
+        self,
+        blueprint: GraphFamilyBlueprint,
+    ) -> dict[str, dict[str, Any]]:
+        semantics: dict[str, dict[str, Any]] = {}
+        role_kind = {
+            "treatment": "treatment",
+            "outcome": "outcome",
+            "backdoor_adjuster": "adjustment_variable",
+            "observed_adjuster": "adjustment_variable",
+            "observed_context": "context",
+            "proxy": "proxy",
+            "instrument": "instrument",
+            "mediator": "mediator",
+            "selection": "selection_indicator",
+        }
+        for role, variable in blueprint.role_bindings.items():
+            if variable not in blueprint.observed_variables:
+                continue
+            entry = semantics.setdefault(
+                variable,
+                {"roles": [], "variable_kind": role_kind.get(role, "observed_variable")},
+            )
+            entry["roles"] = list(dict.fromkeys([*entry.get("roles", []), role]))
+            support_assumptions: list[str] = []
+            if role in {"backdoor_adjuster", "observed_adjuster"} and "backdoor" in blueprint.family_tags:
+                support_assumptions = ["valid adjustment set", "no unobserved confounding"]
+            elif role == "proxy" and blueprint.family_name == "l1_proxy_disambiguation_family":
+                support_assumptions = ["proxy sufficiency"]
+            elif role == "instrument" and "valid_iv" in blueprint.family_tags:
+                support_assumptions = [
+                    "instrument relevance",
+                    "exclusion restriction",
+                    "instrument independence",
+                ]
+            elif role == "mediator" and blueprint.family_name == "l3_mediation_abduction_family":
+                support_assumptions = [
+                    "stable mediation structure",
+                    "cross-world consistency",
+                    "counterfactual model uniqueness",
+                ]
+            if support_assumptions:
+                entry["supports_assumptions"] = list(
+                    dict.fromkeys([*entry.get("supports_assumptions", []), *support_assumptions])
+                )
+        return semantics
+
+    def _public_metadata_payload(
+        self,
+        blueprint: GraphFamilyBlueprint,
+    ) -> dict[str, Any]:
+        return {
+            "difficulty_family": blueprint.family_name,
+            "task_level": blueprint.causal_level,
+            "variable_descriptions": self._public_variable_descriptions(blueprint),
+            "measurement_semantics": self._public_measurement_semantics(blueprint),
+        }
 
     def _build_variable_rename_map(
         self,
@@ -674,6 +757,9 @@ class BenchmarkGenerator:
                 "benchmark_subfamily": benchmark_subfamily,
                 "family_source": gold.metadata.get("family_source", "programmatic"),
                 "is_showcase": bool(gold.metadata.get("is_showcase", False)),
+                "difficulty_family": gold.metadata.get("difficulty_family", benchmark_family),
+                "task_level": gold.metadata.get("task_level", blueprint.causal_level),
+                "ood_split": gold.metadata.get("ood_split"),
                 "generator_mode": "benchmark_generator_v1",
                 "claim_mode": attack_sample["claim_mode"],
                 "attack_name": attack_sample.get("attack_name"),
@@ -731,12 +817,16 @@ class BenchmarkGenerator:
         treatment = blueprint.target_variables["treatment"]
         outcome = blueprint.target_variables["outcome"]
         style_id = rng.choice(("direct", "cautious", "formal"))
-        bridge = self._resolve_truthful_bridge(blueprint=blueprint, query_type=query_type)
+        bridge_role, bridge = self._resolve_truthful_bridge_spec(
+            blueprint=blueprint,
+            query_type=query_type,
+        )
         claim_options = self._truthful_claim_options(
             query_type=query_type,
             treatment=treatment,
             outcome=outcome,
             bridge=bridge,
+            bridge_role=bridge_role,
         )
 
         rationale_options = (
@@ -808,6 +898,18 @@ class BenchmarkGenerator:
         )
         scenario.metadata.setdefault("family_tags", list(parent_blueprint.family_tags))
         scenario.metadata.setdefault("generator_hints", dict(parent_blueprint.generator_hints))
+        scenario.metadata.setdefault("difficulty_family", parent_blueprint.family_name)
+        scenario.metadata.setdefault("task_level", parent_blueprint.causal_level)
+        scenario.metadata.setdefault(
+            "variable_descriptions",
+            self._public_variable_descriptions(parent_blueprint),
+        )
+        scenario.metadata.setdefault(
+            "measurement_semantics",
+            self._public_measurement_semantics(parent_blueprint),
+        )
+        scenario.difficulty_config.setdefault("difficulty_family", parent_blueprint.family_name)
+        scenario.difficulty_config.setdefault("task_level", parent_blueprint.causal_level)
         return scenario
 
     def _generate_programmatic_instance(
@@ -832,6 +934,7 @@ class BenchmarkGenerator:
         effect_summary = self._estimate_effect_summary(observed_data, treatment, outcome)
         difficulty_profile = self._difficulty_profile(difficulty)
         renaming_meta = dict(renaming_meta or {})
+        public_metadata = self._public_metadata_payload(blueprint)
 
         return GoldCausalInstance(
             scenario_id=f"{blueprint.family_name}_seed_{seed}",
@@ -857,6 +960,8 @@ class BenchmarkGenerator:
             difficulty=difficulty,
             difficulty_config={
                 **difficulty_profile,
+                "difficulty_family": blueprint.family_name,
+                "task_level": blueprint.causal_level,
                 "generator_mode": "programmatic",
                 "generator_seed": seed,
             },
@@ -883,6 +988,7 @@ class BenchmarkGenerator:
                     outcome=outcome,
                     causal_level=blueprint.causal_level,
                 ),
+                **public_metadata,
                 **renaming_meta,
             },
         )
@@ -1008,12 +1114,18 @@ class BenchmarkGenerator:
             return "unidentifiable"
         return "valid"
 
-    def _resolve_truthful_bridge(
+    def _resolve_truthful_bridge_spec(
         self,
         *,
         blueprint: GraphFamilyBlueprint,
         query_type: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
+        if (
+            query_type in {"average_treatment_effect", "interventional_effect"}
+            and "valid_iv" in blueprint.family_tags
+            and blueprint.role_bindings.get("instrument")
+        ):
+            return "instrument", str(blueprint.role_bindings["instrument"])
         role_preferences = {
             "association_strength": ("proxy", "observed_adjuster", "observed_context"),
             "causal_direction": ("proxy", "observed_context", "observed_adjuster"),
@@ -1028,15 +1140,17 @@ class BenchmarkGenerator:
         for role in role_preferences.get(query_type, ()):
             value = blueprint.role_bindings.get(role)
             if value:
-                return value
+                return role, str(value)
         if blueprint.proxy_variables:
-            return blueprint.proxy_variables[0]
+            return "proxy", blueprint.proxy_variables[0]
         non_target_observed = [
             variable
             for variable in blueprint.observed_variables
             if variable not in blueprint.target_variables.values()
         ]
-        return non_target_observed[0] if non_target_observed else None
+        if non_target_observed:
+            return "observed_context", non_target_observed[0]
+        return None, None
 
     def _truthful_claim_options(
         self,
@@ -1045,6 +1159,7 @@ class BenchmarkGenerator:
         treatment: str,
         outcome: str,
         bridge: str | None,
+        bridge_role: str | None = None,
     ) -> tuple[str, ...]:
         if query_type == "association_strength":
             if bridge is None:
@@ -1053,10 +1168,16 @@ class BenchmarkGenerator:
                     f"The benchmark keeps a stable observed relationship between {treatment} and {outcome}.",
                     f"The available data support the observed association linking {treatment} and {outcome}.",
                 )
+            if bridge_role == "proxy":
+                return (
+                    f"With proxy {bridge} available, the observed association between {treatment} and {outcome} is supported by the benchmark evidence.",
+                    f"The measured proxy {bridge} supports the observed relationship between {treatment} and {outcome}.",
+                    f"Using proxy {bridge}, the benchmark still supports the observed association between {treatment} and {outcome}.",
+                )
             return (
                 f"Using {bridge}, the observed association between {treatment} and {outcome} is supported by the benchmark evidence.",
                 f"With {bridge} available, the benchmark still supports the observed relationship between {treatment} and {outcome}.",
-                f"The measured proxy structure around {bridge} supports the observed association between {treatment} and {outcome}.",
+                f"The observed structure around {bridge} supports the association between {treatment} and {outcome}.",
             )
 
         if query_type == "causal_direction":
@@ -1092,10 +1213,16 @@ class BenchmarkGenerator:
                     f"The causal effect of {treatment} on {outcome} is identified by the available benchmark evidence.",
                     f"The treatment effect of {treatment} on {outcome} is identified in this benchmark construction.",
                 )
+            if bridge_role == "instrument":
+                return (
+                    f"Using {bridge} as an instrument is enough to recover the causal effect of {treatment} on {outcome}.",
+                    f"The benchmark supports an instrumental-variable estimate of the causal effect of {treatment} on {outcome} using {bridge}.",
+                    f"With {bridge} as an instrument, the causal effect of {treatment} on {outcome} is identified.",
+                )
             return (
                 f"After controlling for {bridge}, the average treatment effect of {treatment} on {outcome} is identified.",
-                f"Using {bridge} as the adjustment set, the causal effect of {treatment} on {outcome} is identified.",
-                f"With {bridge} available, the treatment effect of {treatment} on {outcome} is identified.",
+                f"After adjusting for {bridge}, the causal effect of {treatment} on {outcome} is identified.",
+                f"Controlling for {bridge} identifies the treatment effect of {treatment} on {outcome}.",
             )
 
         if query_type == "interventional_effect":
@@ -1107,8 +1234,8 @@ class BenchmarkGenerator:
                 )
             return (
                 f"After controlling for {bridge}, the effect of intervening on {treatment} on {outcome} is identified.",
-                f"Using {bridge}, the interventional effect of {treatment} on {outcome} is identified.",
-                f"With {bridge} available, the effect of intervening on {treatment} on {outcome} is identified.",
+                f"After adjusting for {bridge}, the interventional effect of {treatment} on {outcome} is identified.",
+                f"Controlling for {bridge} identifies the effect of intervening on {treatment} on {outcome}.",
             )
 
         if query_type == "instrumental_variable_claim":

@@ -2,9 +2,10 @@ import unittest
 
 import pandas as pd
 
-from agents.tool_executor import ToolExecutor
+from agents.tool_executor import ToolExecutionResult, ToolExecutor
 from benchmark.generator import BenchmarkGenerator
 from game.debate_engine import CausalScenario
+from verifier.claim_parser import parse_claim
 
 
 class ToolExecutorTests(unittest.TestCase):
@@ -178,6 +179,29 @@ class ToolExecutorTests(unittest.TestCase):
             for assumption in entry["contradicts_assumptions"]
         }
         self.assertIn("valid adjustment set", contradicts)
+
+    def test_backdoor_adjustment_check_without_public_graph_does_not_promote_heuristic_support(self):
+        parsed_claim = parse_claim(
+            "After controlling for pretest_score, the causal effect of exposure on recovery is identified."
+        )
+        result = ToolExecutionResult(
+            tool_name="backdoor_adjustment_check",
+            success=True,
+            output={
+                "adjustment_set": ["pretest_score"],
+                "supports_adjustment_set": True,
+                "is_valid_adjustment": None,
+            },
+        )
+
+        supports, contradicts = self.executor._extract_tool_assumptions(
+            result,
+            claim="After controlling for pretest_score, the causal effect of exposure on recovery is identified.",
+            parsed_claim=parsed_claim,
+        )
+
+        self.assertNotIn("valid adjustment set", supports)
+        self.assertNotIn("valid adjustment set", contradicts)
 
     def test_sensitivity_analysis_is_not_promoted_to_no_unobserved_confounding_support(self):
         report = self.executor.execute_for_claim(

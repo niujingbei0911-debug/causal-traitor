@@ -139,6 +139,9 @@ class ToolTests(unittest.TestCase):
         )
         self.assertIn("backdoor_adjustment_check", select_tools(3, {"claim": "反事实", "needs_full_counterfactual": True}))
         self.assertIn("proxy_support_check", selector.select(1, scenario_type="proxy", claim="proxy_signal helps", context={"has_proxy": True}))
+        l3_selected = selector.select(3, scenario_type="counterfactual", claim="Counterfactual reasoning about X and Y", context={})
+        self.assertNotIn("probability_of_necessity", l3_selected)
+        self.assertNotIn("probability_of_sufficiency", l3_selected)
 
         logic = argument_logic_check("相关就说明因果，而且这是唯一解释")
         self.assertGreaterEqual(logic["n_fallacies_detected"], 1)

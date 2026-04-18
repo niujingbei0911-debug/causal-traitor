@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +38,19 @@ DEFAULT_MODEL_FAMILIES: tuple[str, ...] = (
     "optimistic_family",
     "claim_only_family",
 )
+SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
+    "countermodel_grounded",
+    "no_tools",
+    "no_ledger",
+    "no_countermodel",
+    "no_abstention",
+    "oracle_leaking_partition",
+    "claim_only_family",
+    "skeptical_family",
+    "optimistic_family",
+)
 OOD_SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
+MIN_FORMAL_SEED_COUNT = 3
 
 
 @dataclass(slots=True)
@@ -51,6 +65,88 @@ def default_benchmark_families() -> list[str]:
     return list_supported_benchmark_families(include_showcase=False)
 
 
+def normalize_benchmark_samples_per_family(samples_per_family: int) -> int:
+    return max(1, int(samples_per_family))
+
+
+def normalize_benchmark_difficulty(difficulty: float) -> float:
+    return float(max(0.0, min(1.0, float(difficulty))))
+
+
+def normalize_experiment_seeds(
+    seeds: list[int] | tuple[int, ...] | None,
+    *,
+    minimum_count: int | None = None,
+    allow_protocol_violations: bool = False,
+) -> list[int]:
+    resolved = list(DEFAULT_SEEDS) if not seeds else [int(seed) for seed in seeds]
+    seen: set[int] = set()
+    duplicates: list[int] = []
+    for seed in resolved:
+        if seed in seen and seed not in duplicates:
+            duplicates.append(seed)
+        seen.add(seed)
+    if duplicates:
+        raise ValueError(f"Duplicate seeds are not allowed: {duplicates!r}.")
+    if minimum_count is not None and len(resolved) < int(minimum_count) and not allow_protocol_violations:
+        raise ValueError(
+            f"Formal Phase 4 experiments require at least {int(minimum_count)} seeds; "
+            f"received {len(resolved)} seed(s): {resolved!r}."
+        )
+    return resolved
+
+
+def validate_system_names(
+    systems: list[str] | tuple[str, ...] | None,
+    *,
+    default_systems: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    resolved = list(default_systems or ()) if not systems else [str(system).strip() for system in systems]
+    if not resolved:
+        raise ValueError("At least one system_name is required.")
+    if any(not system_name for system_name in resolved):
+        raise ValueError("System names must be non-empty strings.")
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for system_name in resolved:
+        if system_name in seen and system_name not in duplicates:
+            duplicates.append(system_name)
+        seen.add(system_name)
+    if duplicates:
+        raise ValueError(f"Duplicate system names are not allowed: {duplicates!r}.")
+
+    unsupported = sorted(set(resolved) - set(SUPPORTED_SYSTEM_NAMES))
+    if unsupported:
+        raise ValueError(
+            f"Unsupported system_name values: {unsupported!r}. "
+            f"Supported values are: {sorted(SUPPORTED_SYSTEM_NAMES)!r}."
+        )
+    return resolved
+
+
+def summarize_protocol_compliance(
+    seeds: list[int] | tuple[int, ...],
+    *,
+    minimum_count: int = MIN_FORMAL_SEED_COUNT,
+    allow_protocol_violations: bool = False,
+) -> dict[str, Any]:
+    seed_list = [int(seed) for seed in seeds]
+    compliant = len(seed_list) >= int(minimum_count)
+    return {
+        "minimum_seed_count": int(minimum_count),
+        "seed_count": len(seed_list),
+        "seed_list": seed_list,
+        "compliant": compliant,
+        "override_used": bool(allow_protocol_violations and not compliant),
+    }
+
+
+def _stable_sample_seed(seed: int, family_name: str, sample_index: int) -> int:
+    material = f"phase4::{int(seed)}::{family_name}::{int(sample_index)}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
+
+
 def build_seed_benchmark_run(
     *,
     seed: int,
@@ -60,15 +156,17 @@ def build_seed_benchmark_run(
 ) -> SeedBenchmarkRun:
     families = list(family_names or default_benchmark_families())
     generator = BenchmarkGenerator(seed=seed)
+    resolved_difficulty = normalize_benchmark_difficulty(difficulty)
+    resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
     samples: list[BenchmarkSample] = []
     sample_index = 0
     for family_name in families:
-        for _ in range(max(1, int(samples_per_family))):
-            sample_seed = int(seed) * 1000 + sample_index
+        for _ in range(resolved_samples_per_family):
+            sample_seed = _stable_sample_seed(seed, family_name, sample_index)
             samples.append(
                 generator.generate_benchmark_sample(
                     family_name=family_name,
-                    difficulty=difficulty,
+                    difficulty=resolved_difficulty,
                     seed=sample_seed,
                 )
             )
@@ -338,19 +436,68 @@ def _apply_family_postprocessing(
     family_name: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    adjusted = dict(payload)
-    verdict = dict(payload["verdict"])
+    adjusted = deepcopy(payload)
+    verdict = dict(adjusted["verdict"])
     label = str(payload["predicted_label"])
     confidence = float(payload["confidence"])
 
     if family_name == "skeptical_family":
-        if label in {VerdictLabel.VALID.value, VerdictLabel.INVALID.value} and confidence < 0.82:
+        if label == VerdictLabel.VALID.value and confidence < 0.82:
             label = VerdictLabel.UNIDENTIFIABLE.value
             confidence = max(0.61, confidence)
+            verdict["witness"] = {
+                "witness_type": "assumption",
+                "description": "The skeptical family abstains on marginally supported claims when the base verifier lacks a decisive confidence margin.",
+                "evidence": [
+                    f"base_label={payload['predicted_label']}",
+                    f"base_confidence={float(payload['confidence']):.4f}",
+                ],
+                "assumptions": [],
+                "payload": {
+                    "base_label": payload["predicted_label"],
+                    "base_confidence": float(payload["confidence"]),
+                    "family_policy": "skeptical_abstention",
+                },
+                "verdict_suggestion": VerdictLabel.UNIDENTIFIABLE.value,
+                "metadata": {"decision_stage": "skeptical_family_override"},
+            }
+            verdict["support_witness"] = None
+            verdict["countermodel_witness"] = None
+            verdict["reasoning_summary"] = (
+                "Skeptical family override: the base verifier found no decisive countermodel, "
+                "but the remaining support margin is treated as insufficient for a committed valid verdict."
+            )
+            adjusted["countermodel_found"] = False
+            adjusted["countermodel_type"] = None
     elif family_name == "optimistic_family":
-        if label == VerdictLabel.UNIDENTIFIABLE.value:
+        if label == VerdictLabel.UNIDENTIFIABLE.value and verdict.get("countermodel_witness") is None:
             label = VerdictLabel.VALID.value
             confidence = max(0.57, confidence)
+            support_witness = {
+                "witness_type": "support",
+                "description": "The optimistic family resolves residual uncertainty in favor of the claim when no direct countermodel survives.",
+                "evidence": [
+                    f"base_label={payload['predicted_label']}",
+                    f"base_confidence={float(payload['confidence']):.4f}",
+                ],
+                "assumptions": [],
+                "payload": {
+                    "base_label": payload["predicted_label"],
+                    "base_confidence": float(payload["confidence"]),
+                    "family_policy": "optimistic_resolution",
+                },
+                "verdict_suggestion": VerdictLabel.VALID.value,
+                "metadata": {"decision_stage": "optimistic_family_override"},
+            }
+            verdict["witness"] = support_witness
+            verdict["support_witness"] = support_witness
+            verdict["countermodel_witness"] = None
+            verdict["reasoning_summary"] = (
+                "Optimistic family override: no direct countermodel survived, so the remaining "
+                "uncertainty is resolved in favor of the claim."
+            )
+            adjusted["countermodel_found"] = False
+            adjusted["countermodel_type"] = None
     elif family_name != "countermodel_grounded":
         raise ValueError(f"Unsupported model family: {family_name!r}.")
 
@@ -395,10 +542,15 @@ def predict_sample(
                 "support_witness": None,
                 "countermodel_witness": None,
                 "tool_trace": [],
-                "reasoning_summary": "Oracle-leaking partition accessed gold supervision directly.",
+                "reasoning_summary": (
+                    "Oracle supervision upper bound: this control reads gold_label directly and "
+                    "does not rerun the verifier on a faithfully leaking public partition."
+                ),
                 "metadata": {
-                    "leakage_mode": "oracle_leaking_partition",
-                    "oracle_fields": ["gold_label", "ground_truth", "true_dag", "true_scm"],
+                    "leakage_mode": "oracle_gold_label_supervision",
+                    "oracle_fields": ["gold_label"],
+                    "control_interpretation": "oracle_supervision_upper_bound",
+                    "same_verifier_pipeline": False,
                 },
             },
             "tool_report": {
@@ -409,10 +561,10 @@ def predict_sample(
                 "counter_evidence": [],
                 "tool_trace": [],
             },
-            "countermodel_found": gold_label in {VerdictLabel.INVALID.value, VerdictLabel.UNIDENTIFIABLE.value},
-            "countermodel_type": "oracle_access",
+            "countermodel_found": False,
+            "countermodel_type": None,
             "supports_public_only": False,
-            "system_notes": ["oracle_leakage"],
+            "system_notes": ["oracle_leakage", "oracle_supervision_upper_bound"],
         }
     if system_name == "claim_only_family":
         return _run_claim_only_family(sample)
@@ -494,13 +646,20 @@ def aggregate_seed_metrics(
     *,
     split_name: str,
 ) -> dict[str, Any]:
-    metric_values = {
-        metric_name: [
-            float(seed_payload[split_name]["metrics"].get(metric_name, 0.0))
-            for _, seed_payload in sorted(per_seed_payloads.items())
+    metric_values: dict[str, list[float]] = {metric_name: [] for metric_name in PRIMARY_METRICS}
+    for seed, seed_payload in sorted(per_seed_payloads.items()):
+        metrics = dict(seed_payload[split_name]["metrics"])
+        missing_metrics = [
+            metric_name
+            for metric_name in PRIMARY_METRICS
+            if metric_name not in metrics
         ]
-        for metric_name in PRIMARY_METRICS
-    }
+        if missing_metrics:
+            raise ValueError(
+                f"Missing primary metrics for seed={seed}, split={split_name!r}: {missing_metrics!r}."
+            )
+        for metric_name in PRIMARY_METRICS:
+            metric_values[metric_name].append(float(metrics[metric_name]))
     summarized = summarize_metrics(
         metric_values,
         n_resamples=2000,
@@ -512,13 +671,13 @@ def aggregate_seed_metrics(
     }
 
 
-def compare_system_predictions(
+def align_prediction_records(
     system_predictions: dict[str, list[dict[str, Any]]],
     *,
     baseline: str,
-) -> dict[str, Any] | None:
+) -> tuple[list[Any], dict[str, list[Any]]]:
     if len(system_predictions) < 2:
-        return None
+        raise ValueError("At least two systems are required for aligned paired comparisons.")
     aligned_records: dict[str, dict[tuple[int, str, str], dict[str, Any]]] = {}
     for system_name, records in system_predictions.items():
         indexed: dict[tuple[int, str, str], dict[str, Any]] = {}
@@ -568,6 +727,20 @@ def compare_system_predictions(
                 )
             aligned_system_predictions.append(record["predicted_label"])
         predictions[system_name] = aligned_system_predictions
+    return truth, predictions
+
+
+def compare_system_predictions(
+    system_predictions: dict[str, list[dict[str, Any]]],
+    *,
+    baseline: str,
+) -> dict[str, Any] | None:
+    if len(system_predictions) < 2:
+        return None
+    truth, predictions = align_prediction_records(
+        system_predictions,
+        baseline=baseline,
+    )
     report = compare_prediction_groups(
         truth,
         predictions,

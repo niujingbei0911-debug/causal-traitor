@@ -698,6 +698,46 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertNotIn("selection_variables", sample.public.metadata)
         self.assertNotIn("selection_mechanism", sample.public.metadata)
 
+    def test_programmatic_public_view_exposes_public_semantics_metadata(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_iv_family",
+            difficulty=0.4,
+            seed=0,
+        )
+
+        self.assertEqual(sample.public.metadata["difficulty_family"], "l2_valid_iv_family")
+        self.assertEqual(sample.public.metadata["task_level"], "L2")
+        self.assertIn("variable_descriptions", sample.public.metadata)
+        self.assertIn("measurement_semantics", sample.public.metadata)
+        self.assertIn(sample.claim.target_variables["treatment"], sample.public.metadata["variable_descriptions"])
+        self.assertIn(sample.claim.target_variables["outcome"], sample.public.metadata["variable_descriptions"])
+        self.assertEqual(sample.public.difficulty_config["difficulty_family"], "l2_valid_iv_family")
+        self.assertEqual(sample.public.difficulty_config["task_level"], "L2")
+
+    def test_benchmark_generator_variable_renaming_covers_valid_iv_family(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_iv_family",
+            difficulty=0.35,
+            seed=3,
+        )
+
+        self.assertTrue(sample.claim.meta.get("variable_renaming"))
+        self.assertTrue(sample.claim.meta.get("rename_map"))
+        self.assertNotEqual(
+            sample.claim.meta["original_variables"],
+            list(sample.claim.observed_variables),
+        )
+
+    def test_claim_instance_meta_tracks_difficulty_family_and_task_level(self) -> None:
+        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.35,
+            seed=8,
+        )
+
+        self.assertEqual(claim.meta["difficulty_family"], "l2_valid_backdoor_family")
+        self.assertEqual(claim.meta["task_level"], "L2")
+
     def test_benchmark_generator_produces_claim_instance_level_sample_bundle(self) -> None:
         generator = BenchmarkGenerator(seed=29)
 
@@ -949,6 +989,37 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertTrue(set(manifest.test_ood).isdisjoint(set(manifest.test_iid)))
         self.assertIn("ood_reasons", manifest.metadata)
         self.assertGreaterEqual(manifest.metadata["split_counts"]["test_ood"], 1)
+
+    def test_split_builder_annotates_sample_level_ood_split_metadata(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_in_domain",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_ood_family",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["T", "M", "Y"],
+            ),
+        ]
+
+        manifest = build_split_manifest(
+            instances,
+            family_holdout=["l2_valid_backdoor_family"],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            seed=11,
+        )
+
+        self.assertEqual(instances[0].meta["ood_split"], "train")
+        self.assertEqual(instances[1].meta["ood_split"], "test_ood")
+        self.assertEqual(
+            manifest.metadata["ood_reasons"]["inst_ood_family"],
+            ["family_holdout"],
+        )
 
     def test_split_builder_alias_and_loader_can_read_manifest(self) -> None:
         instances = [

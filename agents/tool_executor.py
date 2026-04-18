@@ -242,6 +242,13 @@ class ToolExecutor:
                 )
                 continue
             results.append(self.execute_tool(tool_name, **kwargs))
+        semantic_result = self._build_public_semantics_result(
+            scenario,
+            claim,
+            parsed_claim=context.get("_parsed_claim"),
+        )
+        if semantic_result is not None:
+            results.append(semantic_result)
 
         stance = context.get("claim_stance") or self._infer_claim_stance(claim)
         issues, evidence, counter_evidence, support_score = self._summarize_results(
@@ -323,6 +330,75 @@ class ToolExecutor:
                 ).to_dict()
             )
         return trace
+
+    def _build_public_semantics_result(
+        self,
+        scenario: PublicCausalInstance,
+        claim: str,
+        *,
+        parsed_claim: Any | None = None,
+    ) -> ToolExecutionResult | None:
+        metadata = dict(getattr(scenario, "metadata", {}) or {})
+        measurement_semantics = metadata.get("measurement_semantics")
+        if not isinstance(measurement_semantics, dict) or not measurement_semantics:
+            return None
+
+        supports: list[str] = []
+        contradicts: list[str] = []
+        matched_variables: list[str] = []
+        required_assumptions: set[str] = set()
+        if parsed_claim is not None:
+            required_assumptions = set(getattr(parsed_claim, "mentioned_assumptions", [])) | set(
+                getattr(parsed_claim, "implied_assumptions", [])
+            )
+
+        for raw_variable, raw_semantics in measurement_semantics.items():
+            variable = str(raw_variable).strip()
+            semantics = raw_semantics if isinstance(raw_semantics, dict) else {}
+            if not variable or not re.search(rf"\b{re.escape(variable)}\b", claim, flags=re.IGNORECASE):
+                continue
+            matched_variables.append(variable)
+            supports.extend(
+                str(item)
+                for item in semantics.get("supports_assumptions", [])
+                if str(item).strip()
+            )
+            contradicts.extend(
+                str(item)
+                for item in semantics.get("contradicts_assumptions", [])
+                if str(item).strip()
+            )
+
+        if not matched_variables and required_assumptions:
+            for assumption in required_assumptions:
+                owners = [
+                    str(raw_variable).strip()
+                    for raw_variable, raw_semantics in measurement_semantics.items()
+                    if isinstance(raw_semantics, dict)
+                    and assumption in {
+                        str(item).strip()
+                        for item in raw_semantics.get("supports_assumptions", [])
+                        if str(item).strip()
+                    }
+                ]
+                if len(owners) == 1:
+                    matched_variables.append(owners[0])
+                    supports.append(assumption)
+
+        supports = self._deduplicate(supports)
+        contradicts = self._deduplicate(contradicts)
+        matched_variables = self._deduplicate(matched_variables)
+        if not supports and not contradicts:
+            return None
+        return ToolExecutionResult(
+            tool_name="public_semantics_check",
+            success=True,
+            output={
+                "matched_variables": matched_variables,
+                "supports_assumptions": supports,
+                "contradicts_assumptions": contradicts,
+            },
+        )
 
     def _build_tool_kwargs(
         self,
@@ -492,6 +568,9 @@ class ToolExecutor:
 
         output = result.output
         if isinstance(output, dict):
+            if "matched_variables" in output:
+                joined = ", ".join(str(item) for item in output["matched_variables"])
+                return f"{result.tool_name} matched public semantics for {joined}"
             if "causal_effect" in output:
                 return f"{result.tool_name} estimates causal_effect={float(output['causal_effect']):.3f}"
             if "estimated_effect" in output:
@@ -569,14 +648,24 @@ class ToolExecutor:
                 supports.append("valid adjustment set")
             elif output.get("is_valid_adjustment") is False:
                 contradicts.append("valid adjustment set")
-            elif conservative_adjustment_claim and output.get("supports_adjustment_set") is True:
-                supports.append("valid adjustment set")
             elif (
                 (conservative_adjustment_claim or aggressive_adjustment_claim)
                 and output.get("supports_adjustment_set") is False
                 and output.get("adjustment_set")
             ):
                 contradicts.append("valid adjustment set")
+
+        if result.tool_name == "public_semantics_check" and output is not None:
+            supports.extend(
+                str(item)
+                for item in output.get("supports_assumptions", [])
+                if str(item).strip()
+            )
+            contradicts.extend(
+                str(item)
+                for item in output.get("contradicts_assumptions", [])
+                if str(item).strip()
+            )
 
         if result.tool_name == "iv_estimation" and output is not None and is_iv_claim:
             if output.get("is_strong_instrument") is True:
