@@ -128,6 +128,15 @@ class ToolTests(unittest.TestCase):
         selector = ToolSelector()
         selected = selector.select(2, scenario_type="instrument", claim="This IV is weak", context={"has_instrument": True})
         self.assertIn("iv_estimation", selected)
+        self.assertNotIn(
+            "iv_estimation",
+            selector.select(
+                2,
+                scenario_type="default",
+                claim="Given the most relevant observed variables, after controlling for Z the causal effect of X on Y is identified.",
+                context={"has_instrument": False},
+            ),
+        )
         self.assertIn("backdoor_adjustment_check", select_tools(3, {"claim": "反事实", "needs_full_counterfactual": True}))
         self.assertIn("proxy_support_check", selector.select(1, scenario_type="proxy", claim="proxy_signal helps", context={"has_proxy": True}))
 

@@ -278,8 +278,13 @@ class ToolExecutor:
         stance: str,
     ) -> list[dict[str, Any]]:
         trace: list[dict[str, Any]] = []
+        parsed_claim = self._parse_claim(claim)
         for result in results:
-            supports_assumptions, contradicts_assumptions = self._extract_tool_assumptions(result)
+            supports_assumptions, contradicts_assumptions = self._extract_tool_assumptions(
+                result,
+                claim=claim,
+                parsed_claim=parsed_claim,
+            )
             status = "success" if result.success else "skipped"
             if result.error and result.kwargs:
                 status = "error"
@@ -519,32 +524,65 @@ class ToolExecutor:
     def _extract_tool_assumptions(
         self,
         result: ToolExecutionResult,
+        *,
+        claim: str,
+        parsed_claim: Any | None = None,
     ) -> tuple[list[str], list[str]]:
         supports: list[str] = []
         contradicts: list[str] = []
         output = result.output if isinstance(result.output, dict) else None
+        claim_lower = claim.lower()
+        required_assumptions: set[str] = set()
+        rhetorical_strategy = ""
+        query_type = ""
+        if parsed_claim is not None:
+            required_assumptions = set(getattr(parsed_claim, "mentioned_assumptions", [])) | set(
+                getattr(parsed_claim, "implied_assumptions", [])
+            )
+            rhetorical_strategy = str(getattr(parsed_claim, "rhetorical_strategy", ""))
+            query_type_value = getattr(parsed_claim, "query_type", None)
+            query_type = getattr(query_type_value, "value", str(query_type_value or "")).strip().lower()
+
+        conservative_adjustment_claim = any(
+            phrase in claim_lower
+            for phrase in (
+                "after controlling for",
+                "controlling for",
+                "control for",
+                "adjusting for",
+                "backdoor",
+            )
+        )
+        aggressive_adjustment_claim = (
+            "only adjustment needed" in claim_lower
+            or bool(re.search(r"\bonce [A-Za-z][A-Za-z0-9_]* is included\b", claim, flags=re.IGNORECASE))
+        )
+        is_iv_claim = bool(
+            {"instrument relevance", "exclusion restriction", "instrument independence"} & required_assumptions
+        ) or rhetorical_strategy == "instrumental_variable_appeal"
+        is_proxy_claim = "proxy sufficiency" in required_assumptions
+        is_counterfactual_claim = query_type == "counterfactual"
+        is_counterfactual_overclaim = rhetorical_strategy in {"false_uniqueness", "counterfactual_certainty"}
 
         if result.tool_name in {"backdoor_adjustment", "backdoor_adjustment_check"} and output is not None:
             if output.get("is_valid_adjustment") is True:
                 supports.append("valid adjustment set")
             elif output.get("is_valid_adjustment") is False:
                 contradicts.append("valid adjustment set")
-            elif output.get("supports_adjustment_set") is True:
+            elif conservative_adjustment_claim and output.get("supports_adjustment_set") is True:
                 supports.append("valid adjustment set")
-            elif output.get("supports_adjustment_set") is False and output.get("adjustment_set"):
+            elif (
+                (conservative_adjustment_claim or aggressive_adjustment_claim)
+                and output.get("supports_adjustment_set") is False
+                and output.get("adjustment_set")
+            ):
                 contradicts.append("valid adjustment set")
 
-        if result.tool_name == "iv_estimation" and output is not None:
+        if result.tool_name == "iv_estimation" and output is not None and is_iv_claim:
             if output.get("is_strong_instrument") is True:
                 supports.append("instrument relevance")
             elif output.get("is_strong_instrument") is False:
                 contradicts.append("instrument relevance")
-
-        if result.tool_name == "sensitivity_analysis" and output is not None:
-            effect = output.get("effect")
-            effect_is_finite = effect is not None and np.isfinite(effect)
-            if output.get("is_sensitive") is False and effect_is_finite:
-                supports.append("no unobserved confounding")
 
         if result.tool_name == "overlap_check" and output is not None:
             if output.get("has_overlap") is True:
@@ -552,13 +590,18 @@ class ToolExecutor:
             elif output.get("has_overlap") is False:
                 contradicts.append("positivity")
 
-        if result.tool_name == "proxy_support_check" and output is not None:
+        if result.tool_name == "proxy_support_check" and output is not None and is_proxy_claim:
             if output.get("supports_proxy_sufficiency") is True:
                 supports.append("proxy sufficiency")
             elif output.get("supports_proxy_sufficiency") is False:
                 contradicts.append("proxy sufficiency")
 
-        if result.tool_name == "counterfactual_bridge_check" and output is not None:
+        if (
+            result.tool_name == "counterfactual_bridge_check"
+            and output is not None
+            and is_counterfactual_claim
+            and not is_counterfactual_overclaim
+        ):
             if output.get("supports_stable_mediation") is True:
                 supports.append("stable mediation structure")
 
@@ -927,6 +970,10 @@ class ToolExecutor:
             remaining,
             patterns=(
                 r"\bafter controlling for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\bcontrolling for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\badjusting for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\bonce (?P<name>[A-Za-z][A-Za-z0-9_]*) is included\b",
+                r"\b(?P<name>[A-Za-z][A-Za-z0-9_]*) is the only adjustment needed\b",
                 r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as the adjustment set\b",
                 r"\busing proxy (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
                 r"\bwith (?P<name>[A-Za-z][A-Za-z0-9_]*) (?:available|observed|measured)\b",
@@ -1155,9 +1202,12 @@ class ToolExecutor:
                 merged.setdefault("selection_mechanism", scenario.selection_mechanism)
         merged["has_public_graph"] = bool(self._get_graph(merged, scenario=scenario))
         merged["has_public_scm"] = self._get_scm(merged, scenario=scenario) is not None
+        has_iv_signal = bool(
+            re.search(r"\biv\b|\binstrument(?:al variable)?\b|\bquarter\b", lowered, flags=re.IGNORECASE)
+        ) or any(token in lowered for token in ["工具变量", "出生季度"])
         merged.setdefault(
             "has_instrument",
-            bool(merged.get("instrument")) or any(token in lowered for token in ["iv", "instrument", "工具变量", "出生季度"]),
+            bool(merged.get("instrument")) or has_iv_signal,
         )
         merged.setdefault(
             "has_mediator",

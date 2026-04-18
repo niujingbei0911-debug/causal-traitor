@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
+    DEFAULT_MODEL_FAMILIES,
     DEFAULT_SEEDS,
     OOD_SPLITS,
     aggregate_seed_metrics,
@@ -43,8 +44,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             [
                 f"## {system_name}",
                 "",
-                "| Split | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness | Countermodel Coverage |",
-                "| --- | --- | --- | --- | --- | --- |",
+                "| Split | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness | ECE | Brier | Countermodel Coverage |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for split_name in OOD_SPLITS:
@@ -55,6 +56,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                 f"{metrics['macro_f1']['formatted']} | "
                 f"{metrics['invalid_claim_acceptance_rate']['formatted']} | "
                 f"{metrics['unidentifiable_awareness']['formatted']} | "
+                f"{metrics['ece']['formatted']} | "
+                f"{metrics['brier']['formatted']} | "
                 f"{metrics['countermodel_coverage']['formatted']} |"
             )
         lines.append("")
@@ -83,7 +86,7 @@ def run_experiment(
     output_path: str | None = None,
 ) -> dict[str, Any]:
     resolved_seeds = _normalize_seeds(seeds)
-    resolved_systems = list(systems or ["countermodel_grounded"])
+    resolved_systems = list(systems or DEFAULT_MODEL_FAMILIES)
 
     raw_predictions: list[dict[str, Any]] = []
     per_seed_results: dict[int, dict[str, Any]] = {}

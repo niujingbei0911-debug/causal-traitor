@@ -163,27 +163,14 @@ class AgentC:
             agent_b_text=agent_b_text,
             transcript=transcript_text,
         )
-        claim_report = self.tool_executor.execute_for_claim(
-            scenario=scenario,
-            claim=primary_claim,
-            level=level,
-            context={**context_flags, "claim_stance": "pro_causal"},
-        )
-        rebuttal_report = self.tool_executor.execute_for_claim(
-            scenario=scenario,
-            claim=agent_b_text or transcript_text,
-            level=level,
-            context={**context_flags, "claim_stance": "anti_causal"},
-        )
-        tool_trace = self._build_pipeline_tool_trace(claim_report, rebuttal_report)
         verifier_verdict = self.verifier_pipeline.run(
             primary_claim,
             scenario=scenario,
             transcript=transcript,
-            tool_trace=tool_trace,
             tool_context=context_flags,
         )
         verdict_payload = verifier_verdict.to_dict()
+        tool_trace = list(verifier_verdict.tool_trace)
         winner = self._winner_from_verdict_label(verifier_verdict.label.value)
         argument_quality_a, argument_quality_b, causal_validity_score = self._score_verdict(
             verifier_verdict.label.value,

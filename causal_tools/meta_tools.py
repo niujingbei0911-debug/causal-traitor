@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from typing import Callable
 
 import networkx as nx
@@ -55,6 +56,13 @@ TOOL_REGISTRY: dict[str, dict[str, str]] = {
         "causal_graph_validator": "causal_tools.meta_tools.causal_graph_validator",
     },
 }
+
+
+def _has_iv_signal(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return bool(
+        re.search(r"\biv\b|\binstrument(?:al variable)?\b|\bquarter\b", lowered, flags=re.IGNORECASE)
+    ) or any(token in lowered for token in ("工具变量", "出生季度"))
 
 
 CAUSAL_FALLACIES: dict[str, dict[str, list[str] | str]] = {
@@ -222,7 +230,7 @@ class ToolSelector:
             tools.extend(["conditional_independence_test", "backdoor_adjustment_check", "sensitivity_analysis", "overlap_check"])
             if has_public_graph:
                 tools.append("backdoor_adjustment")
-            if any(token in scenario_text for token in ["iv", "instrument", "工具变量", "quarter", "出生季度"]) or context.get("has_instrument"):
+            if _has_iv_signal(scenario_text) or context.get("has_instrument"):
                 tools.append("iv_estimation")
             if has_proxy:
                 tools.append("proxy_support_check")

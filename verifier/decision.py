@@ -135,34 +135,23 @@ def _ledger_entries_from_tool_support(
         )
         seen_names.add(entry.name)
 
-    for assumption_name in sorted((supported_by_tools | contradicted_by_tools) - seen_names):
-        status = (
-            AssumptionStatus.CONTRADICTED
-            if assumption_name in contradicted_by_tools
-            else AssumptionStatus.SUPPORTED
-        )
-        note = (
-            "Tool-backed evidence contradicts this identifying assumption."
-            if status is AssumptionStatus.CONTRADICTED
-            else "Tool-backed evidence provides direct support for this identifying assumption."
-        )
-        entries.append(
-            AssumptionLedgerEntry(
-                name=assumption_name,
-                source="tool requirement",
-                status=status,
-                note=note,
-            )
-        )
-
     return AssumptionLedger(entries)
 
 
 def _unsupported_core_assumptions(ledger: AssumptionLedger) -> list[AssumptionLedgerEntry]:
+    supported_names = {
+        entry.name
+        for entry in ledger.entries
+        if entry.status is AssumptionStatus.SUPPORTED
+    }
     return [
         entry
         for entry in ledger.entries
         if entry.status is not AssumptionStatus.SUPPORTED
+        and not (
+            entry.name == "no unobserved confounding"
+            and "valid adjustment set" in supported_names
+        )
     ]
 
 

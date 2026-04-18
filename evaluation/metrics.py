@@ -209,14 +209,9 @@ class CausalMetrics:
                 is_primary=True,
             )
 
-        active_labels = [
-            label
-            for label in VERDICT_LABEL_SPACE
-            if any(gold == label or pred == label for gold, pred in pairs)
-        ]
         per_label_f1: dict[str, float] = {}
         scores: list[float] = []
-        for label in active_labels:
+        for label in VERDICT_LABEL_SPACE:
             tp = sum(1 for gold, pred in pairs if gold == label and pred == label)
             fp = sum(1 for gold, pred in pairs if gold != label and pred == label)
             fn = sum(1 for gold, pred in pairs if gold == label and pred != label)
@@ -231,7 +226,7 @@ class CausalMetrics:
             "macro_f1",
             macro_f1,
             category="verdict",
-            details={"labels": active_labels, "per_label_f1": per_label_f1},
+            details={"labels": list(VERDICT_LABEL_SPACE), "per_label_f1": per_label_f1},
             is_primary=True,
         )
 

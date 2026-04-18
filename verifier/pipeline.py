@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pandas as pd
+
 from benchmark.schema import PublicCausalInstance, require_public_instance
 from verifier.assumption_ledger import build_assumption_ledger
 from verifier.claim_parser import parse_claim
@@ -12,10 +14,34 @@ from verifier.countermodel_search import search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
 from verifier.outputs import QueryType
 
+_FORBIDDEN_TOOL_CONTEXT_KEYS = frozenset(
+    {
+        "observed_data",
+        "data",
+        "full_data",
+        "scenario",
+        "public_instance",
+        "public_scenario",
+        "public_metadata",
+        "public_graph",
+        "public_scm",
+        "graph",
+        "scm",
+        "variables",
+        "instrument",
+        "mediator",
+        "true_dag",
+        "hidden_variables",
+        "true_scm",
+        "ground_truth",
+        "gold_label",
+    }
+)
+
 
 @dataclass(slots=True)
 class VerifierPipeline:
-    """One-click verifier pipeline: parse -> ledger -> countermodel -> decide."""
+    """One-click verifier pipeline: parse -> ledger -> countermodel -> tools -> decide."""
 
     tool_runner: Any | None = None
 
@@ -83,6 +109,30 @@ class VerifierPipeline:
             merged.setdefault("transcript", transcript)
         return merged
 
+    def _sanitize_tool_context(
+        self,
+        tool_context: dict[str, Any] | None,
+        *,
+        scenario: PublicCausalInstance | None,
+    ) -> dict[str, Any]:
+        sanitized: dict[str, Any] = {}
+        for raw_key, value in (tool_context or {}).items():
+            key = str(raw_key)
+            if key in _FORBIDDEN_TOOL_CONTEXT_KEYS:
+                continue
+            if isinstance(value, (pd.DataFrame, PublicCausalInstance)):
+                continue
+            if any(hasattr(value, field_name) for field_name in ("true_dag", "hidden_variables", "true_scm", "full_data")):
+                continue
+            sanitized[key] = value
+
+        if scenario is not None:
+            sanitized["proxy_variables"] = list(getattr(scenario, "proxy_variables", []))
+            sanitized["selection_variables"] = list(getattr(scenario, "selection_variables", []))
+            sanitized["selection_mechanism"] = getattr(scenario, "selection_mechanism", None)
+
+        return sanitized
+
     def run(
         self,
         claim_text: str | None,
@@ -93,11 +143,20 @@ class VerifierPipeline:
         tool_context: dict[str, Any] | None = None,
     ) -> VerifierDecision:
         public_scenario = None if scenario is None else require_public_instance(scenario)
+        if public_scenario is None and (tool_trace is not None or self.tool_runner is not None):
+            raise TypeError(
+                "Support-stage verifier inputs require PublicCausalInstance. "
+                "Do not provide tool_trace or tool_runner without a public scenario."
+            )
+        sanitized_tool_context = self._sanitize_tool_context(
+            tool_context,
+            scenario=public_scenario,
+        )
         resolved_claim = self._resolve_claim_text(claim_text, transcript)
         parsed_claim = parse_claim(resolved_claim, transcript=transcript)
         ledger = build_assumption_ledger(parsed_claim)
         search_context = {
-            **(tool_context or {}),
+            **sanitized_tool_context,
             "claim_text": resolved_claim,
             "transcript": transcript,
         }
@@ -126,7 +185,7 @@ class VerifierPipeline:
                 claim_text=resolved_claim,
                 transcript=transcript,
                 tool_trace=tool_trace,
-                tool_context=tool_context,
+                tool_context=sanitized_tool_context,
             )
         return decide_verdict(
             parsed_claim,
@@ -148,10 +207,16 @@ class VerifierPipeline:
     ) -> list[dict[str, Any]]:
         if tool_trace is not None:
             return self._normalize_tool_trace(tool_trace)
-        if self.tool_runner is None:
-            return []
-
         runner = self.tool_runner
+        if runner is None:
+            if scenario is None:
+                return []
+            # Keep the pipeline as the manual's default closed-loop verifier entrypoint:
+            # when a public scenario is available and no explicit runner/trace is passed,
+            # fall back to the public-only ToolExecutor instead of silently skipping tools.
+            from agents.tool_executor import ToolExecutor
+
+            runner = ToolExecutor({})
         if callable(runner):
             raw_trace = runner(
                 parsed_claim=parsed_claim,

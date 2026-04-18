@@ -6,7 +6,7 @@ from evaluation.reporting import (
     summarize_human_audit_agreement,
     summarize_metric,
 )
-from evaluation.scorer import Scorer
+from evaluation.scorer import Scorer, _extract_countermodel_applicable
 from evaluation.significance import (
     bootstrap_confidence_interval,
     holm_bonferroni,
@@ -170,6 +170,19 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result.details["n"], 1)
         self.assertAlmostEqual(result.value, 0.1, places=4)
 
+    def test_macro_f1_uses_frozen_three_label_space(self) -> None:
+        result = CausalMetrics.verdict_macro_f1(
+            ["valid", "invalid"],
+            ["valid", "invalid"],
+        )
+
+        self.assertAlmostEqual(result.value, 2.0 / 3.0, places=4)
+        self.assertEqual(
+            result.details["labels"],
+            ["valid", "invalid", "unidentifiable"],
+        )
+        self.assertEqual(result.details["per_label_f1"]["unidentifiable"], 0.0)
+
     def test_brier_score_is_part_of_core_metric_bundle(self) -> None:
         results = CausalMetrics.compute_all(
             {
@@ -186,6 +199,16 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(lookup["brier"].is_primary)
         self.assertFalse(lookup["brier"].higher_is_better)
         self.assertAlmostEqual(lookup["brier"].value, 0.1789, places=4)
+
+    def test_countermodel_applicability_is_not_polluted_by_predicted_label(self) -> None:
+        self.assertFalse(
+            _extract_countermodel_applicable(
+                {
+                    "gold_label": "valid",
+                    "verdict_label": "invalid",
+                }
+            )
+        )
 
 
 class EvaluationStatisticsTests(unittest.TestCase):

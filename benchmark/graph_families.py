@@ -545,6 +545,52 @@ def _build_l2_valid_backdoor_family(seed: int) -> GraphFamilyBlueprint:
     )
 
 
+def _build_l2_valid_iv_family(seed: int) -> GraphFamilyBlueprint:
+    rng = _stable_rng("l2_valid_iv_family", seed)
+    used: set[str] = set()
+    treatment = _sample_unique_name(rng, "treatment", used)
+    outcome = _sample_unique_name(rng, "outcome", used)
+    instrument = _sample_unique_name(rng, "instrument", used)
+    latent = _sample_unique_name(rng, "latent_confounder", used)
+    context = _sample_unique_name(rng, "observed_context", used)
+
+    edges = [
+        (instrument, treatment),
+        (latent, treatment),
+        (latent, outcome),
+        (context, treatment),
+        (treatment, outcome),
+    ]
+    observed_variables = [context, instrument, treatment, outcome]
+
+    return _make_blueprint(
+        family_name="l2_valid_iv_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.IDENTIFIABLE,
+        description="Intervention-level family with a valid instrument that identifies the effect despite hidden confounding.",
+        seed=seed,
+        nodes=observed_variables + [latent],
+        edges=edges,
+        observed_variables=observed_variables,
+        hidden_variables=[latent],
+        target_variables={"treatment": treatment, "outcome": outcome},
+        role_bindings={
+            "treatment": treatment,
+            "outcome": outcome,
+            "instrument": instrument,
+            "latent_confounder": latent,
+            "observed_context": context,
+        },
+        query_types=["average_treatment_effect", "instrumental_variable_claim"],
+        supported_gold_labels=["valid", "invalid"],
+        family_tags=["l2", "intervention", "instrument", "valid_iv"],
+        generator_hints={
+            "attack_modes": ["heterogeneity_overgeneralization"],
+            "selection_mechanism": "none",
+        },
+    )
+
+
 def _build_l2_invalid_iv_family(seed: int) -> GraphFamilyBlueprint:
     rng = _stable_rng("l2_invalid_iv_family", seed)
     used: set[str] = set()
@@ -717,6 +763,13 @@ GRAPH_FAMILY_REGISTRY: dict[str, GraphFamilyTemplate] = {
         identifiability=IdentifiabilityStatus.IDENTIFIABLE,
         description="Intervention family with a valid observed backdoor adjustment set.",
         builder=_build_l2_valid_backdoor_family,
+    ),
+    "l2_valid_iv_family": GraphFamilyTemplate(
+        family_name="l2_valid_iv_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.IDENTIFIABLE,
+        description="Intervention family with a valid instrument.",
+        builder=_build_l2_valid_iv_family,
     ),
     "l2_invalid_iv_family": GraphFamilyTemplate(
         family_name="l2_invalid_iv_family",

@@ -71,7 +71,7 @@ SHOWCASE_FAMILY_REGISTRY: dict[str, dict[str, Any]] = {
     "education_income": {
         "showcase_name": "education",
         "showcase_family": "showcase_education_family",
-        "benchmark_family": "l2_invalid_iv_family",
+        "benchmark_family": "l2_valid_iv_family",
         "causal_level": 2,
     },
     "drug_recovery": {

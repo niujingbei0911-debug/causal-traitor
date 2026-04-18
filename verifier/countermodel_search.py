@@ -141,18 +141,15 @@ def _resolve_observed_data(
     observed_data: pd.DataFrame | None,
     context: dict[str, Any] | None,
 ) -> pd.DataFrame:
-    if isinstance(observed_data, pd.DataFrame):
-        return observed_data.copy(deep=True)
     public_instance = _resolve_public_instance(scenario, context)
     if public_instance is not None:
         if isinstance(public_instance.observed_data, pd.DataFrame) and not public_instance.observed_data.empty:
             return public_instance.observed_data.copy(deep=True)
         if isinstance(public_instance.data, pd.DataFrame) and not public_instance.data.empty:
             return public_instance.data.copy(deep=True)
-    if context:
-        candidate = context.get("observed_data")
-        if isinstance(candidate, pd.DataFrame):
-            return candidate.copy(deep=True)
+    # Core verifier entrypoints only trust observed data carried by the typed
+    # public schema. Raw DataFrame side channels would bypass the public/gold
+    # partition contract and can silently reintroduce oracle leakage.
     return pd.DataFrame()
 
 
@@ -176,7 +173,9 @@ def _normalize_public_hint(
     normalized = str(value).strip()
     if not normalized:
         return None
-    if not observed_columns or normalized in observed_columns:
+    if not observed_columns:
+        return None
+    if normalized in observed_columns:
         return normalized
     return None
 
@@ -785,8 +784,9 @@ def _l2_candidates(
         for phrase in (
             "only adjustment needed",
             "should be interpreted causally",
+            "should be interpreted as identified",
         )
-    )
+    ) or bool(re.search(r"\bonce [A-Za-z][A-Za-z0-9_]* is included\b", context_text, re.IGNORECASE))
     has_population_generalization_overclaim = any(
         phrase in context_text
         for phrase in (

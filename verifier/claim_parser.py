@@ -38,6 +38,10 @@ _STOP_TOKENS = {
     "what",
 }
 
+_CHINESE_CAUSAL_VERBS = r"导致|造成|影响|改变|驱动|决定|作用于|识别"
+_CHINESE_ASSOCIATION_TERMS = r"相关性|关联|相关|关系"
+_CHINESE_TENTATIVE_TERMS = r"可能|也许|或许|似乎|看起来"
+
 _QUERY_PATTERNS: dict[QueryType, tuple[tuple[re.Pattern[str], int], ...]] = {
     QueryType.ASSOCIATION: (
         (re.compile(r"\bassociation\b", re.IGNORECASE), 5),
@@ -52,6 +56,11 @@ _QUERY_PATTERNS: dict[QueryType, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\bhidden[- ]variable\b", re.IGNORECASE), 4),
         (re.compile(r"\bomitted variable\b", re.IGNORECASE), 4),
         (re.compile(r"\blatent confounding\b", re.IGNORECASE), 4),
+        (re.compile(r"相关性"), 5),
+        (re.compile(r"关联"), 4),
+        (re.compile(r"一起变化|共同变化"), 4),
+        (re.compile(r"选择偏差|选择机制"), 4),
+        (re.compile(r"隐藏变量|未观察混杂|遗漏变量"), 4),
         (re.compile(r"\bpattern\b", re.IGNORECASE), 1),
     ),
     QueryType.INTERVENTION: (
@@ -71,6 +80,8 @@ _QUERY_PATTERNS: dict[QueryType, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\biv\b", re.IGNORECASE), 4),
         (re.compile(r"\bexclusion restriction\b", re.IGNORECASE), 4),
         (re.compile(r"\bidentified\b", re.IGNORECASE), 2),
+        (re.compile(r"干预|因果效应|工具变量|后门|前门|中介"), 5),
+        (re.compile(rf"{_CHINESE_CAUSAL_VERBS}"), 3),
     ),
     QueryType.COUNTERFACTUAL: (
         (re.compile(r"\bcounterfactual\b", re.IGNORECASE), 5),
@@ -88,6 +99,9 @@ _QUERY_PATTERNS: dict[QueryType, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\beffect_of_treatment_on_treated\b", re.IGNORECASE), 5),
         (re.compile(r"\babduction[- ]action\b", re.IGNORECASE), 4),
         (re.compile(r"\babduction_action_prediction\b", re.IGNORECASE), 4),
+        (re.compile(r"反事实"), 5),
+        (re.compile(r"同一观测历史|同一个个体|同一个案例"), 5),
+        (re.compile(r"如果把|换成另一个值"), 4),
     ),
 }
 
@@ -252,6 +266,19 @@ _PAIR_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"\blink from (?P<treatment>{_VARIABLE_TOKEN}) to (?P<outcome>{_VARIABLE_TOKEN})\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        rf"(?P<treatment>{_VARIABLE_TOKEN})\s*(?:本身\s*)?(?:直接\s*|明确地\s*|清楚地\s*|确实\s*|真的\s*)?"
+        rf"(?:{_CHINESE_TENTATIVE_TERMS}\s*)?(?:{_CHINESE_CAUSAL_VERBS})\s*(?P<outcome>{_VARIABLE_TOKEN})"
+    ),
+    re.compile(
+        rf"(?P<treatment>{_VARIABLE_TOKEN})\s*对\s*(?P<outcome>{_VARIABLE_TOKEN})\s*的(?:干预|因果)?(?:效应|影响)"
+    ),
+    re.compile(
+        rf"(?P<treatment>{_VARIABLE_TOKEN})\s*与\s*(?P<outcome>{_VARIABLE_TOKEN})\s*的(?:{_CHINESE_ASSOCIATION_TERMS})"
+    ),
+    re.compile(
+        rf"用于识别\s*(?P<treatment>{_VARIABLE_TOKEN})\s*[-=]>\s*(?P<outcome>{_VARIABLE_TOKEN})\s*的工具变量"
+    ),
 )
 
 _NEGATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -261,6 +288,9 @@ _NEGATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bcannot (?:identify|determine|support)\b", re.IGNORECASE),
     re.compile(r"\bcan't (?:identify|determine|support)\b", re.IGNORECASE),
     re.compile(r"\bnot identif(?:ied|iable)\b", re.IGNORECASE),
+    re.compile(rf"并不(?:{_CHINESE_CAUSAL_VERBS})"),
+    re.compile(rf"不(?:会)?(?:{_CHINESE_CAUSAL_VERBS})"),
+    re.compile(r"无法识别|不能识别|并不可信|不可信"),
 )
 
 _TENTATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -272,6 +302,7 @@ _TENTATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\blikely\b", re.IGNORECASE),
     re.compile(r"\bsuggests?\b", re.IGNORECASE),
     re.compile(r"\btentative\b", re.IGNORECASE),
+    re.compile(rf"{_CHINESE_TENTATIVE_TERMS}"),
 )
 
 _STRONG_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -283,6 +314,7 @@ _STRONG_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\btrustworthy\b", re.IGNORECASE),
     re.compile(r"\bclean\b", re.IGNORECASE),
     re.compile(r"\bsettled\b", re.IGNORECASE),
+    re.compile(r"明确|清楚|可靠|足以"),
 )
 
 _POSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -302,6 +334,8 @@ _POSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bidentified rather than ambiguous\b", re.IGNORECASE),
     re.compile(r"\baccepted as identified\b", re.IGNORECASE),
     re.compile(r"\bpinned down\b", re.IGNORECASE),
+    re.compile(rf"{_CHINESE_CAUSAL_VERBS}"),
+    re.compile(r"因果效应|因果结论|因果方向"),
 )
 
 _ABSOLUTE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -322,6 +356,7 @@ _ABSOLUTE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bfully determined\b", re.IGNORECASE),
     re.compile(r"\brules out any serious ambiguity\b", re.IGNORECASE),
     re.compile(r"\bwithout extra assumptions\b", re.IGNORECASE),
+    re.compile(r"必然|一定|毫无疑问|唯一确定|完全确定"),
 )
 
 _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
@@ -347,6 +382,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\blatent confounding\b", re.IGNORECASE),
             re.compile(r"\bomitted variables?\b", re.IGNORECASE),
             re.compile(r"\bhidden[- ]variable explanation\b", re.IGNORECASE),
+            re.compile(r"未观察混杂|隐藏变量|遗漏变量|混杂"),
         ),
     ),
     (
@@ -358,6 +394,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\bconditioning on\b", re.IGNORECASE),
             re.compile(r"\bwithin the observed [A-Za-z][A-Za-z0-9_]* sample\b", re.IGNORECASE),
             re.compile(r"\b(enrollment_gate|screening_pass|recorded_flag|clinic_selection|audit_inclusion|portal_entry)\b", re.IGNORECASE),
+            re.compile(r"选择偏差|选择机制|碰撞点"),
         ),
     ),
     (
@@ -368,6 +405,9 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\badjust(?:ing|ment)?\b", re.IGNORECASE),
             re.compile(r"\bbackdoor\b", re.IGNORECASE),
             re.compile(r"\bonly adjustment needed\b", re.IGNORECASE),
+            re.compile(r"\bonce [A-Za-z][A-Za-z0-9_]* is included\b", re.IGNORECASE),
+            re.compile(rf"\b{_VARIABLE_TOKEN} is the only adjustment needed\b", re.IGNORECASE),
+            re.compile(r"控制|调整|后门"),
         ),
     ),
     (
@@ -379,6 +419,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\biv\b", re.IGNORECASE),
             re.compile(r"\bvariation induced by\b", re.IGNORECASE),
             re.compile(r"\bonly shifts\b", re.IGNORECASE),
+            re.compile(r"工具变量"),
         ),
     ),
     (
@@ -386,6 +427,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
         (
             re.compile(r"\bexclusion restriction\b", re.IGNORECASE),
             re.compile(r"\bonly through\b", re.IGNORECASE),
+            re.compile(r"排除限制|仅通过"),
         ),
     ),
     (
@@ -394,6 +436,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\binstrument independence\b", re.IGNORECASE),
             re.compile(r"\bas good as random\b", re.IGNORECASE),
             re.compile(r"\bindependent of (?:unblocked )?outcome determinants\b", re.IGNORECASE),
+            re.compile(r"工具独立性|近似随机"),
         ),
     ),
     (
@@ -404,6 +447,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\bpathway through\b", re.IGNORECASE),
             re.compile(r"\bmediat(?:or|ion)\b", re.IGNORECASE),
             re.compile(r"\b(biomarker|uptake|engagement|intermediate_state|dosage_response)\b", re.IGNORECASE),
+            re.compile(r"中介|机制路径"),
         ),
     ),
     (
@@ -412,6 +456,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\bproxy\b", re.IGNORECASE),
             re.compile(r"\bsurrogate\b", re.IGNORECASE),
             re.compile(r"\b(sensor_proxy|screening_trace|archive_indicator|surrogate_measure)\b", re.IGNORECASE),
+            re.compile(r"代理变量|替代变量"),
         ),
     ),
     (
@@ -435,6 +480,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\bcross-world\b", re.IGNORECASE),
             re.compile(r"\bsame observed history\b", re.IGNORECASE),
             re.compile(r"\bfor the same case\b", re.IGNORECASE),
+            re.compile(r"同一观测历史|同一个案例|同一个个体"),
         ),
     ),
     (
@@ -448,6 +494,7 @@ _ASSUMPTION_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
             re.compile(r"\baccepted as identified\b", re.IGNORECASE),
             re.compile(r"\beffectively determined\b", re.IGNORECASE),
             re.compile(r"\bpinned down\b", re.IGNORECASE),
+            re.compile(r"唯一确定|唯一识别|排除了所有歧义"),
         ),
     ),
 )
@@ -541,6 +588,14 @@ def _infer_query_type(text: str) -> QueryType:
         return QueryType.ASSOCIATION
     if re.search(r"\b(cause|causal|effect|affect|drive|determine|identify|instrument)\b", text, re.IGNORECASE):
         return QueryType.INTERVENTION
+    if re.search(r"反事实|同一观测历史|同一个个体|如果把", text):
+        return QueryType.COUNTERFACTUAL
+    if re.search(r"干预|因果效应|工具变量|后门|前门", text):
+        return QueryType.INTERVENTION
+    if re.search(rf"{_CHINESE_CAUSAL_VERBS}", text):
+        return QueryType.INTERVENTION
+    if re.search(rf"{_CHINESE_ASSOCIATION_TERMS}", text):
+        return QueryType.ASSOCIATION
     return QueryType.ASSOCIATION
 
 
@@ -588,7 +643,7 @@ def _infer_implied_assumptions(
     lower_text = text.lower()
     has_iv_story = bool(
         re.search(
-            r"\binstrument(?:al variable)?\b|\binstrumental-variable\b|\bvariation induced by\b|\bonly shifts\b",
+            r"\binstrument(?:al variable)?\b|\binstrumental-variable\b|\bvariation induced by\b|\bonly shifts\b|工具变量|仅通过|排除限制",
             text,
             re.IGNORECASE,
         )
@@ -599,7 +654,7 @@ def _infer_implied_assumptions(
         _add_if_missing(implied, "positivity", mentioned)
 
     if query_type is QueryType.ASSOCIATION and re.search(
-        r"\b(cause|causes|causal|effect|affect|affects|read causally|causal direction)\b",
+        rf"\b(cause|causes|causal|effect|affect|affects|read causally|causal direction)\b|{_CHINESE_CAUSAL_VERBS}|因果方向|因果结论",
         text,
         re.IGNORECASE,
     ):
@@ -613,24 +668,24 @@ def _infer_implied_assumptions(
         _add_if_missing(implied, "no unobserved confounding", mentioned)
 
     if re.search(
-        r"\bselection\b|\bselected sample\b|\bconditioning on\b|\bwithin the observed [A-Za-z][A-Za-z0-9_]* sample\b|\b(enrollment_gate|screening_pass|recorded_flag|clinic_selection|audit_inclusion|portal_entry)\b",
+        r"\bselection\b|\bselected sample\b|\bconditioning on\b|\bwithin the observed [A-Za-z][A-Za-z0-9_]* sample\b|\b(enrollment_gate|screening_pass|recorded_flag|clinic_selection|audit_inclusion|portal_entry)\b|选择偏差|选择机制|碰撞点",
         text,
         re.IGNORECASE,
     ):
         _add_if_missing(implied, "no selection bias", mentioned)
 
-    if re.search(r"\bcontrol(?:ling)? for\b|\badjust(?:ing|ment)?\b|\bbackdoor\b", text, re.IGNORECASE):
+    if re.search(r"\bcontrol(?:ling)? for\b|\badjust(?:ing|ment)?\b|\bbackdoor\b|控制|调整|后门", text, re.IGNORECASE):
         _add_if_missing(implied, "valid adjustment set", mentioned)
         _add_if_missing(implied, "no unobserved confounding", mentioned)
 
     if re.search(
-        r"\bproxy\b|\bsurrogate\b|\b(sensor_proxy|screening_trace|archive_indicator|surrogate_measure)\b",
+        r"\bproxy\b|\bsurrogate\b|\b(sensor_proxy|screening_trace|archive_indicator|surrogate_measure)\b|代理变量|替代变量",
         text,
         re.IGNORECASE,
     ):
         _add_if_missing(implied, "proxy sufficiency", mentioned)
 
-    if has_iv_story or re.search(r"\bas an instrument\b|\biv\b", text, re.IGNORECASE):
+    if has_iv_story or re.search(r"\bas an instrument\b|\biv\b|工具变量", text, re.IGNORECASE):
         _add_if_missing(implied, "instrument relevance", mentioned)
         _add_if_missing(implied, "exclusion restriction", mentioned)
         _add_if_missing(implied, "instrument independence", mentioned)
@@ -640,26 +695,27 @@ def _infer_implied_assumptions(
         _add_if_missing(implied, "counterfactual model uniqueness", mentioned)
 
     if re.search(
-        r"\bidentified rather than ambiguous\b|\baccepted as identified\b|\benough information on the table\b|\brules out any serious ambiguity\b",
+        r"\bidentified rather than ambiguous\b|\baccepted as identified\b|\benough information on the table\b|\brules out any serious ambiguity\b|唯一确定|排除了所有歧义",
         text,
         re.IGNORECASE,
     ):
         if query_type is QueryType.INTERVENTION:
             _add_if_missing(implied, "no unobserved confounding", mentioned)
             _add_if_missing(implied, "valid adjustment set", mentioned)
-        _add_if_missing(implied, "counterfactual model uniqueness", mentioned)
+        if query_type is QueryType.COUNTERFACTUAL:
+            _add_if_missing(implied, "counterfactual model uniqueness", mentioned)
 
     if re.search(
-        r"\bmediat(?:or|ion)\b|\bmechanism linking\b|\bpathway through\b|\b(biomarker|uptake|engagement|intermediate_state|dosage_response)\b",
+        r"\bmediat(?:or|ion)\b|\bmechanism linking\b|\bpathway through\b|\b(biomarker|uptake|engagement|intermediate_state|dosage_response)\b|中介|机制路径",
         text,
         re.IGNORECASE,
     ):
         _add_if_missing(implied, "stable mediation structure", mentioned)
 
-    if re.search(r"\bfunctional form\b|\bsmooth\b|\bmodel class\b|\bregular enough\b", text, re.IGNORECASE):
+    if re.search(r"\bfunctional form\b|\bsmooth\b|\bmodel class\b|\bregular enough\b|函数形式", text, re.IGNORECASE):
         _add_if_missing(implied, "correct functional form", mentioned)
 
-    if re.search(r"\bmonotonic(?:ity)?\b", text, re.IGNORECASE):
+    if re.search(r"\bmonotonic(?:ity)?\b|单调性", text, re.IGNORECASE):
         _add_if_missing(implied, "monotonicity", mentioned)
 
     if query_type is QueryType.COUNTERFACTUAL and claim_strength is ClaimStrength.ABSOLUTE:
@@ -684,9 +740,17 @@ def _infer_rhetorical_strategy(
         or "rules out any serious ambiguity" in lower_text
         or "confidently say exactly" in lower_text
         or "fully determined" in lower_text
+        or "唯一确定" in lower_text
+        or "无需额外假设" in lower_text
     ):
         return "false_uniqueness"
-    if "functional form" in lower_text or "monotonic" in lower_text or "regular enough" in lower_text:
+    if (
+        "functional form" in lower_text
+        or "monotonic" in lower_text
+        or "regular enough" in lower_text
+        or "函数形式" in lower_text
+        or "单调性" in lower_text
+    ):
         return "assumption_smuggling"
     if query_type is QueryType.COUNTERFACTUAL:
         if (
@@ -694,6 +758,8 @@ def _infer_rhetorical_strategy(
             or "would definitely" in lower_text
             or "pinned down" in lower_text
             or "effectively determined" in lower_text
+            or "同一观测历史" in lower_text
+            or "反事实" in lower_text
         ):
             return "counterfactual_certainty"
     if (
@@ -706,6 +772,9 @@ def _infer_rhetorical_strategy(
         or "only shifts" in lower_text
         or "iv estimate" in lower_text
         or "trustworthy" in lower_text
+        or "工具变量" in lower_text
+        or "排除限制" in lower_text
+        or "仅通过" in lower_text
     ):
         return "instrumental_variable_appeal"
     if (
@@ -716,9 +785,20 @@ def _infer_rhetorical_strategy(
         or "only adjustment needed" in lower_text
         or "causal estimate from" in lower_text
         or "interpreted causally" in lower_text
+        or "控制" in lower_text
+        or "调整" in lower_text
+        or "后门" in lower_text
+        or re.search(r"\bonce [A-Za-z][A-Za-z0-9_]* is included\b", text, re.IGNORECASE)
     ):
         return "adjustment_sufficiency_assertion"
-    if "hidden-variable" in lower_text or "omitted variable" in lower_text or "latent confounding" in lower_text:
+    if (
+        "hidden-variable" in lower_text
+        or "omitted variable" in lower_text
+        or "latent confounding" in lower_text
+        or "隐藏变量" in lower_text
+        or "未观察混杂" in lower_text
+        or "遗漏变量" in lower_text
+    ):
         return "confounder_denial"
     if (
         "selection" in lower_text
@@ -726,6 +806,8 @@ def _infer_rhetorical_strategy(
         or "collider" in lower_text
         or re.search(r"\bwithin the observed [A-Za-z][A-Za-z0-9_]* sample\b", text, re.IGNORECASE)
         or re.search(r"\b(enrollment_gate|screening_pass|recorded_flag|clinic_selection|audit_inclusion|portal_entry)\b", text, re.IGNORECASE)
+        or "选择偏差" in lower_text
+        or "碰撞点" in lower_text
     ):
         return "selection_bias_obfuscation"
     if (
@@ -737,6 +819,10 @@ def _infer_rhetorical_strategy(
         or "causal direction is effectively settled" in lower_text
         or "read causally" in lower_text
         or "as a cause of" in lower_text
+        or "相关性" in lower_text
+        or "关联" in lower_text
+        or "因果结论" in lower_text
+        or "因果方向" in lower_text
     ):
         return "association_overclaim"
     return "plain_causal_assertion"
@@ -784,6 +870,12 @@ class ClaimParser:
         claim_strength = _infer_claim_strength(context_text)
         claim_polarity = _infer_claim_polarity(context_text)
         mentioned_assumptions = _extract_mentioned_assumptions(context_text)
+        if query_type is not QueryType.COUNTERFACTUAL:
+            mentioned_assumptions = [
+                assumption
+                for assumption in mentioned_assumptions
+                if assumption not in {"cross-world consistency", "counterfactual model uniqueness"}
+            ]
         implied_assumptions = _infer_implied_assumptions(
             context_text,
             query_type=query_type,
@@ -791,6 +883,12 @@ class ClaimParser:
             claim_polarity=claim_polarity,
             mentioned_assumptions=mentioned_assumptions,
         )
+        if query_type is not QueryType.COUNTERFACTUAL:
+            implied_assumptions = [
+                assumption
+                for assumption in implied_assumptions
+                if assumption not in {"cross-world consistency", "counterfactual model uniqueness"}
+            ]
         rhetorical_strategy = _infer_rhetorical_strategy(
             context_text,
             query_type=query_type,

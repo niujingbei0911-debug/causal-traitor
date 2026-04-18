@@ -179,6 +179,55 @@ class ToolExecutorTests(unittest.TestCase):
         }
         self.assertIn("valid adjustment set", contradicts)
 
+    def test_sensitivity_analysis_is_not_promoted_to_no_unobserved_confounding_support(self):
+        report = self.executor.execute_for_claim(
+            scenario=self.public_scenario,
+            claim="After controlling for Z, the causal effect of X on Y is identified.",
+            level=2,
+            context={"claim_stance": "pro_causal"},
+        )
+
+        sensitivity_entries = [
+            entry
+            for entry in report["tool_trace"]
+            if entry["tool_name"] == "sensitivity_analysis"
+        ]
+
+        self.assertTrue(sensitivity_entries)
+        self.assertNotIn(
+            "no unobserved confounding",
+            {
+                assumption
+                for entry in sensitivity_entries
+                for assumption in entry["supports_assumptions"]
+            },
+        )
+
+    def test_counterfactual_bridge_support_is_not_promoted_for_false_uniqueness_overclaim(self):
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l3_mediation_abduction_family",
+            difficulty=0.4,
+            seed=1,
+        )
+
+        report = self.executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=3,
+            context={"claim_stance": "pro_causal"},
+        )
+
+        bridge_entries = [
+            entry
+            for entry in report["tool_trace"]
+            if entry["tool_name"] == "counterfactual_bridge_check"
+        ]
+
+        self.assertTrue(bridge_entries)
+        for entry in bridge_entries:
+            self.assertNotIn("cross-world consistency", entry["supports_assumptions"])
+            self.assertNotIn("counterfactual model uniqueness", entry["supports_assumptions"])
+
     def test_safe_python_executor(self):
         result = self.executor.execute_python(
             "answer = sum(values)\nmean_value = round(answer / len(values), 2)",

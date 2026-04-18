@@ -139,8 +139,9 @@ class InformationPartitionTests(unittest.TestCase):
 
         self.assertIsInstance(public, PublicCausalInstance)
         self.assertIsInstance(public, VerifierScenario)
-        self.assertEqual(public.scenario_id, self.gold.scenario_id)
-        self.assertEqual(public.description, self.gold.description)
+        self.assertNotEqual(public.scenario_id, self.gold.scenario_id)
+        self.assertTrue(public.scenario_id.startswith("public_case_"))
+        self.assertNotEqual(public.description, self.gold.description)
         self.assertEqual(public.variables, self.gold.variables)
         self.assertEqual(public.proxy_variables, ["proxy_Z"])
         self.assertEqual(public.selection_variables, ["proxy_Z"])
@@ -150,6 +151,43 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertFalse(hasattr(public, "verdict"))
         self.assertFalse(hasattr(public, "gold_label"))
         self.assertEqual(public.difficulty_config, {"difficulty_family": "latent_confounding"})
+
+    def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="description_leak_case",
+            description="Hidden confounder exists between X and Y.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+            ground_truth={"treatment": "X", "outcome": "Y"},
+        )
+
+        public = gold.to_public()
+
+        self.assertNotIn("hidden confounder", public.description.lower())
+        self.assertIn("public evidence", public.description.lower())
+
+    def test_gold_to_public_filters_hidden_variable_names_from_public_variables(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="hidden_variable_name_case",
+            description="Public variables must match observed columns only.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+        )
+
+        public = gold.to_public()
+
+        self.assertEqual(gold.variables, ["X", "Y"])
+        self.assertEqual(public.variables, ["X", "Y"])
 
     def test_verifier_input_type_does_not_expose_gold_only_fields(self) -> None:
         public = self.gold.to_public()
@@ -219,6 +257,16 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("proxy_variables", public.metadata)
         self.assertNotIn("selection_variables", public.metadata)
         self.assertNotIn("selection_mechanism", public.metadata)
+
+    def test_public_schema_normalizes_variables_to_observed_columns(self) -> None:
+        public = PublicCausalInstance(
+            scenario_id="variable_normalization_case",
+            description="Observed data columns should define the public variable view.",
+            variables=["X", "Y", "U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+        )
+
+        self.assertEqual(public.variables, ["X", "Y"])
 
     def test_public_view_uses_data_copies_instead_of_gold_references(self) -> None:
         public = self.gold.to_public()

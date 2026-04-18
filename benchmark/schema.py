@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 from typing import Any, ClassVar
 
 import pandas as pd
@@ -268,6 +269,42 @@ def _sanitize_difficulty_config(value: Any) -> dict[str, Any]:
     }
 
 
+def _public_scenario_id(raw_scenario_id: str) -> str:
+    digest = hashlib.sha256(str(raw_scenario_id).encode("utf-8")).hexdigest()[:12]
+    return f"public_case_{digest}"
+
+
+def _public_description(
+    *,
+    observed_variables: list[str],
+    treatment: str | None,
+    outcome: str | None,
+    causal_level: int | str,
+) -> str:
+    visible = list(observed_variables[:4])
+    variable_text = ", ".join(visible) if visible else "the observed variables"
+    if len(observed_variables) > len(visible) and variable_text != "the observed variables":
+        variable_text = f"{variable_text}, ..."
+    normalized_level = str(causal_level).strip().upper()
+    if normalized_level in {"1", "2", "3"}:
+        normalized_level = f"L{normalized_level}"
+    if treatment and outcome:
+        return (
+            f"Observed {normalized_level or 'public'} case over {variable_text}. "
+            f"Evaluate claims about {treatment} and {outcome} using only the public evidence in this view."
+        )
+    return (
+        f"Observed {normalized_level or 'public'} case over {variable_text}. "
+        "Evaluate claims using only the public evidence in this view."
+    )
+
+
+def _frame_variable_names(frame: pd.DataFrame) -> list[str]:
+    if frame.empty:
+        return []
+    return _normalize_str_list(list(frame.columns))
+
+
 def _normalize_public_variables(
     values: list[Any] | tuple[Any, ...] | None,
     *,
@@ -365,8 +402,9 @@ class PublicCausalInstance:
         observed = _copy_frame(self.observed_data)
         if observed.empty and self.data is not None:
             observed = _copy_frame(self.data)
-        if not self.variables and not observed.empty:
-            self.variables = list(observed.columns)
+        observed_variables = _frame_variable_names(observed)
+        provided_variables = _normalize_str_list(self.variables)
+        self.variables = list(observed_variables) if observed_variables else provided_variables
         metadata = dict(self.metadata)
         self.proxy_variables = _normalize_public_variables(
             list(self.proxy_variables) + list(metadata.pop("proxy_variables", [])),
@@ -431,6 +469,7 @@ class GoldCausalInstance:
     verdict_label_space: ClassVar[tuple[str, ...]] = VERDICT_LABEL_SPACE
 
     def __post_init__(self) -> None:
+        self.hidden_variables = _normalize_str_list(self.hidden_variables)
         observed = _copy_frame(self.observed_data)
         full = _copy_frame(self.full_data)
         data = _copy_frame(self.data)
@@ -444,6 +483,14 @@ class GoldCausalInstance:
         if data.empty:
             data = observed.copy(deep=True)
 
+        observed_variables = _frame_variable_names(observed)
+        provided_variables = _normalize_str_list(self.variables)
+        hidden_variable_set = set(self.hidden_variables)
+        self.variables = (
+            list(observed_variables)
+            if observed_variables
+            else [value for value in provided_variables if value not in hidden_variable_set]
+        )
         self.observed_data = observed
         self.full_data = full
         self.data = data
@@ -463,9 +510,19 @@ class GoldCausalInstance:
     def to_public(self) -> PublicCausalInstance:
         """Project the gold scenario into the verifier-visible schema."""
 
+        public_scenario_id = _coerce_optional_string(self.metadata.get("public_scenario_id"))
+        public_description = _coerce_optional_string(self.metadata.get("public_description"))
+        treatment = _coerce_optional_string(self.ground_truth.get("treatment"))
+        outcome = _coerce_optional_string(self.ground_truth.get("outcome"))
         return PublicCausalInstance(
-            scenario_id=str(self.metadata.get("public_scenario_id", self.scenario_id)),
-            description=str(self.metadata.get("public_description", self.description)),
+            scenario_id=public_scenario_id or _public_scenario_id(self.scenario_id),
+            description=public_description
+            or _public_description(
+                observed_variables=list(self.variables),
+                treatment=treatment,
+                outcome=outcome,
+                causal_level=self.causal_level,
+            ),
             variables=list(self.variables),
             proxy_variables=list(self.metadata.get("proxy_variables", [])),
             selection_variables=list(self.metadata.get("selection_variables", [])),

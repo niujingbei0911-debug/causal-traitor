@@ -201,7 +201,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(verdict.verifier_verdict)
         self.assertIs(fake_pipeline.calls[0]["scenario"], self.public_scenario)
 
-    async def test_agent_c_verifier_first_normalizes_rebuttal_trace_before_pipeline(self):
+    async def test_agent_c_verifier_first_defers_tool_execution_to_pipeline(self):
         agent = AgentC(self.config)
         fake_pipeline = FakeVerifierPipeline(
             VerifierDecision(
@@ -214,25 +214,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         )
         agent.attach_verifier_pipeline(fake_pipeline)
         await agent.initialize()
-        reports = iter(
-            [
-                {
-                    "results": [],
-                    "successful_tools": ["claim_tool"],
-                    "supporting_evidence": ["claim support"],
-                    "identified_issues": [],
-                    "support_score": 0.8,
-                },
-                {
-                    "results": [],
-                    "successful_tools": ["rebuttal_tool"],
-                    "supporting_evidence": ["rebuttal support"],
-                    "identified_issues": [],
-                    "support_score": 0.9,
-                },
-            ]
+        agent.tool_executor.execute_for_claim = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("AgentC should not pre-run ToolExecutor before verifier.pipeline.")
         )
-        agent.tool_executor.execute_for_claim = lambda **kwargs: next(reports)
         context = DebateContext(
             scenario=self.public_scenario,
             turns=[
@@ -244,11 +228,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         await agent.evaluate_round(self.public_scenario, context, level=2)
 
         forwarded_trace = fake_pipeline.calls[0]["tool_trace"]
-        self.assertEqual(len(forwarded_trace), 2)
-        self.assertTrue(forwarded_trace[0]["supports_primary_claim"])
-        self.assertEqual(forwarded_trace[0]["claim_stance"], "pro_causal")
-        self.assertFalse(forwarded_trace[1]["supports_primary_claim"])
-        self.assertEqual(forwarded_trace[1]["claim_stance"], "anti_causal")
+        self.assertIsNone(forwarded_trace)
         self.assertEqual(fake_pipeline.calls[0]["tool_context"]["proxy_variables"], [])
 
     async def test_agent_c_maps_unidentifiable_verdict_to_draw(self):
@@ -277,44 +257,26 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict.verdict_label, "unidentifiable")
         self.assertEqual(verdict.winner, "draw")
 
-    async def test_agent_c_preserves_rebuttal_assumption_evidence_in_pipeline_trace(self):
+    async def test_agent_c_exposes_pipeline_tool_trace_verbatim(self):
         agent = AgentC(self.config)
         fake_pipeline = FakeVerifierPipeline(
             VerifierDecision(
                 label=VerdictLabel.UNIDENTIFIABLE,
                 confidence=0.61,
                 assumption_ledger=AssumptionLedger([]),
-                tool_trace=[],
+                tool_trace=[
+                    {
+                        "tool_name": "backdoor_adjustment_check",
+                        "claim_stance": "pro_causal",
+                        "supports_assumptions": [],
+                        "contradicts_assumptions": ["valid adjustment set"],
+                    }
+                ],
                 reasoning_summary="Verifier sees mixed evidence.",
             )
         )
         agent.attach_verifier_pipeline(fake_pipeline)
         await agent.initialize()
-        reports = iter(
-            [
-                {
-                    "results": [],
-                    "successful_tools": [],
-                    "supporting_evidence": [],
-                    "identified_issues": [],
-                    "support_score": 0.0,
-                },
-                {
-                    "results": [
-                        ToolExecutionResult(
-                            tool_name="backdoor_adjustment_check",
-                            success=True,
-                            output={"is_valid_adjustment": False},
-                        )
-                    ],
-                    "successful_tools": ["backdoor_adjustment_check"],
-                    "supporting_evidence": [],
-                    "identified_issues": [],
-                    "support_score": 0.9,
-                },
-            ]
-        )
-        agent.tool_executor.execute_for_claim = lambda **kwargs: next(reports)
         context = DebateContext(
             scenario=self.public_scenario,
             turns=[
@@ -325,12 +287,12 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
 
         await agent.evaluate_round(self.public_scenario, context, level=2)
 
-        forwarded_trace = fake_pipeline.calls[0]["tool_trace"]
+        exposed_trace = fake_pipeline.verdict.tool_trace
         rebuttal_entry = next(
-            entry for entry in forwarded_trace
+            entry for entry in exposed_trace
             if entry["tool_name"] == "backdoor_adjustment_check"
         )
-        self.assertEqual(rebuttal_entry["claim_stance"], "anti_causal")
+        self.assertEqual(rebuttal_entry["claim_stance"], "pro_causal")
         self.assertIn("valid adjustment set", rebuttal_entry["contradicts_assumptions"])
 
     async def test_agent_c_verifier_first_does_not_silently_fallback_to_legacy(self):

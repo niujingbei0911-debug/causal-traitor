@@ -281,6 +281,7 @@ class GraphFamilyTemplateTests(unittest.TestCase):
             "l1_latent_confounding_family": "L1",
             "l1_selection_bias_family": "L1",
             "l2_valid_backdoor_family": "L2",
+            "l2_valid_iv_family": "L2",
             "l2_invalid_iv_family": "L2",
             "l3_counterfactual_ambiguity_family": "L3",
             "l3_mediation_abduction_family": "L3",
@@ -318,6 +319,7 @@ class GraphFamilyTemplateTests(unittest.TestCase):
         )
 
         self.assertIn("l2_valid_backdoor_family", identifiable_l2)
+        self.assertIn("l2_valid_iv_family", identifiable_l2)
         self.assertIn("l2_invalid_iv_family", potentially_unidentifiable_l2)
         self.assertNotEqual(identifiable_l2, potentially_unidentifiable_l2)
 
@@ -571,7 +573,7 @@ class ShowcaseMigrationTests(unittest.TestCase):
         generator = DataGenerator(seed=11)
         expected = {
             1: ("smoking_cancer", "showcase_smoking_family", "l1_latent_confounding_family"),
-            2: ("education_income", "showcase_education_family", "l2_invalid_iv_family"),
+            2: ("education_income", "showcase_education_family", "l2_valid_iv_family"),
             3: ("drug_recovery", "showcase_drug_family", "l3_counterfactual_ambiguity_family"),
         }
         registered_families = set(list_graph_families())
@@ -774,13 +776,13 @@ class ShowcaseMigrationTests(unittest.TestCase):
 
     def test_showcase_families_can_generate_claim_instances_through_benchmark_chain(self) -> None:
         generator = BenchmarkGenerator(seed=37)
-        showcase_families = (
-            "showcase_smoking_family",
-            "showcase_education_family",
-            "showcase_drug_family",
-        )
+        showcase_expectations = {
+            "showcase_smoking_family": {VerdictLabel.INVALID, VerdictLabel.UNIDENTIFIABLE},
+            "showcase_education_family": {VerdictLabel.VALID, VerdictLabel.INVALID},
+            "showcase_drug_family": {VerdictLabel.INVALID, VerdictLabel.UNIDENTIFIABLE},
+        }
 
-        for family_name in showcase_families:
+        for family_name, expected_labels in showcase_expectations.items():
             with self.subTest(family_name=family_name):
                 claim = generator.generate_claim_instance(
                     family_name=family_name,
@@ -790,11 +792,19 @@ class ShowcaseMigrationTests(unittest.TestCase):
                 self.assertIsInstance(claim, ClaimInstance)
                 self.assertTrue(claim.meta["is_showcase"])
                 self.assertEqual(claim.meta["benchmark_subfamily"], family_name)
-                self.assertIn(
-                    claim.gold_label,
-                    {VerdictLabel.INVALID, VerdictLabel.UNIDENTIFIABLE},
-                )
+                self.assertIn(claim.gold_label, expected_labels)
                 self.assertTrue(claim.claim_text)
+
+    def test_education_showcase_inherits_valid_iv_parent_family(self) -> None:
+        sample = BenchmarkGenerator(seed=37).generate_benchmark_sample(
+            family_name="showcase_education_family",
+            difficulty=0.35,
+            seed=37,
+        )
+
+        self.assertEqual(sample.gold.metadata["benchmark_family"], "l2_valid_iv_family")
+        self.assertEqual(sample.claim.graph_family, "l2_valid_iv_family")
+        self.assertNotEqual(sample.claim.meta.get("attack_name"), "invalid_iv_exclusion_claim")
 
     def test_benchmark_sample_to_dict_is_json_serializable(self) -> None:
         sample = BenchmarkGenerator(seed=41).generate_benchmark_sample(

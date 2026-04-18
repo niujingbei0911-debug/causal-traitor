@@ -519,11 +519,55 @@ def compare_system_predictions(
 ) -> dict[str, Any] | None:
     if len(system_predictions) < 2:
         return None
-    truth = [item["gold_label"] for item in next(iter(system_predictions.values()))]
-    predictions = {
-        system_name: [item["predicted_label"] for item in records]
-        for system_name, records in system_predictions.items()
-    }
+    aligned_records: dict[str, dict[tuple[int, str, str], dict[str, Any]]] = {}
+    for system_name, records in system_predictions.items():
+        indexed: dict[tuple[int, str, str], dict[str, Any]] = {}
+        for record in records:
+            try:
+                key = (
+                    int(record["seed"]),
+                    str(record["split"]),
+                    str(record["instance_id"]),
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    "Paired significance requires seed/split/instance_id on every prediction record."
+                ) from exc
+            if key in indexed:
+                raise ValueError(
+                    f"Duplicate prediction record for {system_name!r} at sample key {key!r}."
+                )
+            indexed[key] = record
+        aligned_records[system_name] = indexed
+
+    if baseline not in aligned_records:
+        raise ValueError(f"Unknown baseline system: {baseline!r}.")
+
+    baseline_keys = set(aligned_records[baseline])
+    ordered_keys = sorted(baseline_keys)
+    for system_name, indexed in aligned_records.items():
+        current_keys = set(indexed)
+        if current_keys != baseline_keys:
+            missing = sorted(baseline_keys - current_keys)[:3]
+            extra = sorted(current_keys - baseline_keys)[:3]
+            raise ValueError(
+                "Paired significance requires identical sample identities across systems. "
+                f"{system_name!r} is missing {missing!r} and has extra {extra!r}."
+            )
+
+    truth = [aligned_records[baseline][key]["gold_label"] for key in ordered_keys]
+    predictions: dict[str, list[Any]] = {}
+    for system_name, indexed in aligned_records.items():
+        aligned_system_predictions: list[Any] = []
+        for key in ordered_keys:
+            record = indexed[key]
+            if record["gold_label"] != aligned_records[baseline][key]["gold_label"]:
+                raise ValueError(
+                    "Paired significance requires identical gold labels for each aligned sample. "
+                    f"Mismatch detected for {system_name!r} at sample key {key!r}."
+                )
+            aligned_system_predictions.append(record["predicted_label"])
+        predictions[system_name] = aligned_system_predictions
     report = compare_prediction_groups(
         truth,
         predictions,

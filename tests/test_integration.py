@@ -15,7 +15,10 @@ from experiments.exp4_evolution.run import run_experiment as run_exp4_evolution
 from experiments.exp_cross_model_transfer.run import run_experiment as run_cross_model_transfer
 from experiments.exp_human_audit.run import run_experiment as run_human_audit
 from experiments.exp_identifiability_ablation.run import run_experiment as run_identifiability_ablation
-from experiments.exp_leakage_study.run import run_experiment as run_leakage_study
+from experiments.exp_leakage_study.run import (
+    DEFAULT_SAMPLES_PER_FAMILY as LEAKAGE_DEFAULT_SAMPLES_PER_FAMILY,
+    run_experiment as run_leakage_study,
+)
 from experiments.exp_main_benchmark.run import run_experiment as run_main_benchmark
 from experiments.exp_ood_generalization.run import run_experiment as run_ood_generalization
 from game.config import ConfigLoader
@@ -173,6 +176,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(leaking_predictions)
             self.assertTrue(all(not record["supports_public_only"] for record in leaking_predictions))
             self.assertIn("inflation", leakage_payload)
+            self.assertIn("conclusion", leakage_payload)
+            self.assertIn("mcnemar_significance", leakage_payload)
 
             for system_name in ("no_ledger", "no_countermodel", "no_abstention", "no_tools"):
                 self.assertIn(system_name, ablation_payload["aggregated_metrics"])
@@ -191,6 +196,46 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(record["supports_public_only"] for record in human_payload["annotation_package"]))
             for artifact_path in human_payload["artifacts"].values():
                 self.assertTrue(Path(artifact_path).exists())
+
+    def test_phase4_default_main_and_leakage_paths_match_paper_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            main_payload = run_main_benchmark(
+                output_path=str(Path(tmp_dir) / "exp_main_benchmark_default.json"),
+            )
+            leakage_payload = run_leakage_study(
+                output_path=str(Path(tmp_dir) / "exp_leakage_study_default.json"),
+            )
+
+            self.assertGreaterEqual(len(main_payload["seeds"]), 3)
+            self.assertGreaterEqual(len(main_payload["systems"]), 2)
+            self.assertIn("ECE", main_payload["markdown_summary"])
+            self.assertIn("Brier", main_payload["markdown_summary"])
+
+            main_metrics = main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"]
+            self.assertIn("ece", main_metrics)
+            self.assertIn("brier", main_metrics)
+            for field_name in ("mean", "std", "ci_lower", "ci_upper", "formatted"):
+                self.assertIn(field_name, main_metrics["verdict_accuracy"])
+            for split_name in ("test_iid", "test_ood"):
+                self.assertIsNotNone(main_payload["significance"][split_name])
+                self.assertTrue(main_payload["significance"][split_name]["comparisons"])
+
+            self.assertGreaterEqual(len(leakage_payload["seeds"]), 3)
+            self.assertGreaterEqual(
+                leakage_payload["config"]["samples_per_family"],
+                LEAKAGE_DEFAULT_SAMPLES_PER_FAMILY,
+            )
+            self.assertTrue(leakage_payload["conclusion"]["supported"])
+            self.assertTrue(leakage_payload["conclusion"]["robust_support"])
+            self.assertIn(
+                leakage_payload["conclusion"]["summary_statement"],
+                leakage_payload["markdown_summary"],
+            )
+            self.assertIn("Supports Warning", leakage_payload["markdown_summary"])
+            for split_name in ("test_iid", "test_ood"):
+                self.assertTrue(leakage_payload["conclusion"]["split_details"][split_name]["supported"])
+                self.assertTrue(leakage_payload["significance"][split_name]["comparisons"])
+                self.assertTrue(leakage_payload["mcnemar_significance"][split_name]["comparisons"])
 
     async def test_phase5_appendix_and_demo_stay_on_public_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -97,11 +97,7 @@ def _extract_countermodel_applicable(round_data: Dict[str, Any]) -> bool:
     if "countermodel_applicable" in round_data:
         return bool(round_data.get("countermodel_applicable"))
     gold_label = _extract_gold_label(round_data)
-    predicted_label = _extract_predicted_label(round_data)
-    return gold_label in {"invalid", "unidentifiable"} or predicted_label in {
-        "invalid",
-        "unidentifiable",
-    }
+    return gold_label in {"invalid", "unidentifiable"}
 
 
 def _label_distribution(labels: List[str]) -> Dict[str, int]:
