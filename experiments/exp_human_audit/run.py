@@ -10,6 +10,8 @@ from typing import Any
 
 from evaluation.reporting import summarize_human_audit_agreement
 from experiments.benchmark_harness import (
+    MIN_FORMAL_SAMPLES_PER_FAMILY,
+    MIN_HUMAN_AUDIT_SUBSET_SIZE,
     MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
     aggregate_seed_metrics,
@@ -24,10 +26,11 @@ from experiments.benchmark_harness import (
 )
 
 SYSTEM_NAME = "countermodel_grounded"
+DEFAULT_SAMPLES_PER_FAMILY = 15
 AUDIT_FIELDS: tuple[str, ...] = (
     "gold_label_reasonable",
     "verifier_label_reasonable",
-    "witness_persuasive",
+    "countermodel_witness_persuasive",
     "explanation_faithful",
 )
 PACKAGE_IDENTITY_FIELDS: tuple[str, ...] = (
@@ -35,6 +38,7 @@ PACKAGE_IDENTITY_FIELDS: tuple[str, ...] = (
     "seed",
     "split",
     "instance_id",
+    "causal_level",
     "graph_family",
     "query_type",
     "attack_name",
@@ -52,9 +56,12 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
         ood_bucket = "+".join(sorted(record.get("ood_reasons", []))) or "iid"
         witness_type = (record.get("verdict") or {}).get("witness", {}).get("witness_type") or "none"
         attack_name = record.get("attack_name") or "truthful"
+        causal_level = record.get("causal_level")
+        if causal_level is None:
+            causal_level = (record.get("public_evidence_summary") or {}).get("causal_level", 0)
         key = (
             f"{record['split']}::{record['gold_label']}::{record.get('query_type')}::{attack_name}"
-            f"::{witness_type}::{ood_bucket}::L{record.get('causal_level', 0)}"
+            f"::{witness_type}::{ood_bucket}::L{causal_level}"
         )
         buckets.setdefault(key, []).append(record)
     ordered_keys = sorted(buckets)
@@ -79,11 +86,13 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
 def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
     verdict = dict(record["verdict"])
     witness = verdict.get("witness") or {}
+    public_payload = dict(record.get("public_evidence_summary", {}))
     return {
         "audit_id": f"{record['split']}::{record['instance_id']}",
         "seed": record["seed"],
         "split": record["split"],
         "instance_id": record["instance_id"],
+        "causal_level": record.get("causal_level", public_payload.get("causal_level")),
         "graph_family": record["graph_family"],
         "query_type": record["query_type"],
         "attack_name": record["attack_name"],
@@ -106,17 +115,19 @@ def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
         "annotation_questions": {
             "gold_label_reasonable": "Is the gold label itself reasonable for this claim and public evidence?",
             "verifier_label_reasonable": "Is the verifier label reasonable given the public evidence?",
-            "witness_persuasive": "Is the witness persuasive enough to justify the verifier's decision?",
+            "countermodel_witness_persuasive": (
+                "If a countermodel witness is present, is it persuasive enough to justify the verifier's decision?"
+            ),
             "explanation_faithful": "Is the reasoning summary faithful to the witness and tool evidence?",
         },
         "annotator_a_gold_label_reasonable": None,
         "annotator_a_verifier_label_reasonable": None,
-        "annotator_a_witness_persuasive": None,
+        "annotator_a_countermodel_witness_persuasive": None,
         "annotator_a_explanation_faithful": None,
         "annotator_a_notes": "",
         "annotator_b_gold_label_reasonable": None,
         "annotator_b_verifier_label_reasonable": None,
-        "annotator_b_witness_persuasive": None,
+        "annotator_b_countermodel_witness_persuasive": None,
         "annotator_b_explanation_faithful": None,
         "annotator_b_notes": "",
         "arbiter_notes": "",
@@ -289,9 +300,9 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
 def run_experiment(
     *,
     seeds: list[int] | tuple[int, ...] | None = None,
-    samples_per_family: int = 2,
+    samples_per_family: int = DEFAULT_SAMPLES_PER_FAMILY,
     difficulty: float = 0.55,
-    audit_subset_size: int = 150,
+    audit_subset_size: int = MIN_HUMAN_AUDIT_SUBSET_SIZE,
     annotations_path: str | None = None,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
@@ -303,11 +314,6 @@ def run_experiment(
     )
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
-    protocol = summarize_protocol_compliance(
-        resolved_seeds,
-        minimum_count=MIN_FORMAL_SEED_COUNT,
-        allow_protocol_violations=allow_protocol_violations,
-    )
     raw_predictions: list[dict[str, Any]] = []
     manifests: dict[int, dict[str, Any]] = {}
     per_seed_results: dict[int, Any] = {}
@@ -334,6 +340,15 @@ def run_experiment(
         per_seed_results[seed] = seed_payload
 
     resolved_audit_subset_size = min(int(audit_subset_size), len(raw_predictions))
+    protocol = summarize_protocol_compliance(
+        resolved_seeds,
+        minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=max(MIN_FORMAL_SAMPLES_PER_FAMILY, DEFAULT_SAMPLES_PER_FAMILY),
+        observed_samples_per_family=resolved_samples_per_family,
+        minimum_audit_subset_size=MIN_HUMAN_AUDIT_SUBSET_SIZE,
+        observed_audit_subset_size=resolved_audit_subset_size,
+        allow_protocol_violations=allow_protocol_violations,
+    )
     subset = _round_robin_subset(raw_predictions, resolved_audit_subset_size)
     annotation_package = [_build_annotation_record(record) for record in subset]
     aggregated_metrics = {
@@ -399,9 +414,19 @@ def run_experiment(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Phase 4 human audit packaging workflow.")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
-    parser.add_argument("--samples-per-family", type=int, default=2, help="Samples generated per benchmark family.")
+    parser.add_argument(
+        "--samples-per-family",
+        type=int,
+        default=DEFAULT_SAMPLES_PER_FAMILY,
+        help="Samples generated per benchmark family.",
+    )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
-    parser.add_argument("--audit-subset-size", type=int, default=150, help="Number of records in the annotation package.")
+    parser.add_argument(
+        "--audit-subset-size",
+        type=int,
+        default=MIN_HUMAN_AUDIT_SUBSET_SIZE,
+        help="Number of records in the annotation package.",
+    )
     parser.add_argument("--annotations", default=None, help="Optional JSON file with completed dual annotations.")
     parser.add_argument(
         "--allow-protocol-violations",

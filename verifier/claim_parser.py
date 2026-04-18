@@ -762,6 +762,7 @@ def _infer_rhetorical_strategy(
     if query_type is QueryType.COUNTERFACTUAL:
         if (
             "same observed history" in lower_text
+            or "for the same case" in lower_text
             or "would definitely" in lower_text
             or "pinned down" in lower_text
             or "effectively determined" in lower_text
@@ -869,6 +870,7 @@ class ClaimParser:
         if not normalized_claim:
             raise ValueError("claim_text must be a non-empty string.")
 
+        transcript_text = _normalize_whitespace(_flatten_transcript(transcript))
         context_text = normalized_claim
 
         query_type = _infer_query_type(context_text)
@@ -876,6 +878,10 @@ class ClaimParser:
         claim_strength = _infer_claim_strength(context_text)
         claim_polarity = _infer_claim_polarity(context_text)
         mentioned_assumptions = _extract_mentioned_assumptions(context_text)
+        if transcript_text:
+            for assumption in _extract_mentioned_assumptions(transcript_text):
+                if assumption not in mentioned_assumptions:
+                    mentioned_assumptions.append(assumption)
         if query_type is not QueryType.COUNTERFACTUAL:
             mentioned_assumptions = [
                 assumption
@@ -889,6 +895,16 @@ class ClaimParser:
             claim_polarity=claim_polarity,
             mentioned_assumptions=mentioned_assumptions,
         )
+        if transcript_text:
+            for assumption in _infer_implied_assumptions(
+                transcript_text,
+                query_type=query_type,
+                claim_strength=claim_strength,
+                claim_polarity=claim_polarity,
+                mentioned_assumptions=mentioned_assumptions,
+            ):
+                if assumption not in implied_assumptions:
+                    implied_assumptions.append(assumption)
         if query_type is not QueryType.COUNTERFACTUAL:
             implied_assumptions = [
                 assumption
@@ -899,6 +915,13 @@ class ClaimParser:
             context_text,
             query_type=query_type,
         )
+        if transcript_text and rhetorical_strategy == "plain_causal_assertion":
+            transcript_strategy = _infer_rhetorical_strategy(
+                transcript_text,
+                query_type=query_type,
+            )
+            if transcript_strategy in _RISK_STRATEGIES:
+                rhetorical_strategy = transcript_strategy
         needs_abstention_check = _needs_abstention_check(
             query_type=query_type,
             claim_strength=claim_strength,

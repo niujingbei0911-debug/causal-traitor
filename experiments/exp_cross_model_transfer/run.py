@@ -10,12 +10,12 @@ from typing import Any
 from experiments.benchmark_harness import (
     DEFAULT_ATTACKER_FAMILIES,
     DEFAULT_MODEL_FAMILIES,
+    MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     aggregate_seed_metrics,
     apply_attacker_family_profile,
-    attack_only_samples,
     build_seed_metric_significance,
-    build_seed_benchmark_run,
+    build_seed_attack_benchmark_run,
     evaluate_system_on_samples,
     manifest_metadata,
     normalize_benchmark_difficulty,
@@ -31,6 +31,8 @@ from experiments.benchmark_harness import (
 def _markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
         "# Cross-Model Transfer",
+        "",
+        payload["blueprint_alignment"]["note"],
         "",
         "| Attacker Family | Verifier Family | Split | Verdict Acc. | Macro-F1 | Unidentifiable Awareness |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -61,12 +63,29 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _blueprint_alignment_summary(
+    systems: list[str],
+    attacker_families: list[str],
+) -> dict[str, Any]:
+    return {
+        "model_family_transfer_realized": False,
+        "transfer_axis": "predictor_family_surrogate",
+        "verifier_predictor_families": list(systems),
+        "attacker_prompt_families": list(attacker_families),
+        "note": (
+            "This runner currently varies verifier predictor families and attacker prompt families. "
+            "It does not yet instantiate distinct attacker / verifier model families, so it should "
+            "be treated as a surrogate transfer study rather than the full blueprint cross-model-family experiment."
+        ),
+    }
+
+
 def run_experiment(
     *,
     seeds: list[int] | tuple[int, ...] | None = None,
     systems: list[str] | None = None,
     attacker_families: list[str] | None = None,
-    samples_per_family: int = 2,
+    samples_per_family: int = MIN_FORMAL_SAMPLES_PER_FAMILY,
     difficulty: float = 0.55,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
@@ -82,20 +101,23 @@ def run_experiment(
     )
     resolved_attacker_families = validate_attacker_families(attacker_families or list(DEFAULT_ATTACKER_FAMILIES))
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    effective_samples_per_family = max(2, resolved_samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        observed_samples_per_family=effective_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
     raw_predictions: list[dict[str, Any]] = []
     per_seed_results: dict[int, Any] = {}
     manifests: dict[int, dict[str, Any]] = {}
     base_runs = {
-        seed: build_seed_benchmark_run(
+        seed: build_seed_attack_benchmark_run(
             seed=seed,
             difficulty=resolved_difficulty,
-            samples_per_family=resolved_samples_per_family,
+            samples_per_family=effective_samples_per_family,
         )
         for seed in resolved_seeds
     }
@@ -115,7 +137,7 @@ def run_experiment(
                         attacker_family=attacker_family,
                     )
                     evaluated = evaluate_system_on_samples(
-                        attack_only_samples(profiled_samples),
+                        profiled_samples,
                         seed=seed,
                         split_name=split_name,
                         system_name=system_name,
@@ -167,7 +189,7 @@ def run_experiment(
     payload = {
         "experiment_id": "exp_cross_model_transfer",
         "config": {
-            "samples_per_family": int(resolved_samples_per_family),
+            "samples_per_family": int(effective_samples_per_family),
             "difficulty": float(resolved_difficulty),
         },
         "requested_config": {
@@ -179,6 +201,10 @@ def run_experiment(
         "attacker_families": resolved_attacker_families,
         "seeds": resolved_seeds,
         "protocol": protocol,
+        "blueprint_alignment": _blueprint_alignment_summary(
+            resolved_systems,
+            resolved_attacker_families,
+        ),
         "manifests": manifests,
         "per_seed_results": per_seed_results,
         "aggregated_metrics": aggregated_metrics,
@@ -204,7 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
     parser.add_argument("--systems", nargs="*", default=None, help="Predictor family names.")
     parser.add_argument("--attacker-families", nargs="*", default=None, help="Attacker family names.")
-    parser.add_argument("--samples-per-family", type=int, default=2, help="Samples generated per benchmark family.")
+    parser.add_argument(
+        "--samples-per-family",
+        type=int,
+        default=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        help="Samples generated per benchmark family.",
+    )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
     parser.add_argument(
         "--allow-protocol-violations",

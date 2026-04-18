@@ -1050,7 +1050,8 @@ class ToolExecutor:
             lowered = variable.lower()
             if lowered not in claim_lower:
                 continue
-            if any(token in lowered for token in tokens):
+            parts = [part for part in re.split(r"[_\W]+", lowered) if part]
+            if any(token == part for token in tokens for part in parts):
                 return variable
         return None
 

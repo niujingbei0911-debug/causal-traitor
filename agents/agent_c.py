@@ -260,25 +260,27 @@ class AgentC:
 
         agent_a_logic = argument_logic_check(agent_a_text) if agent_a_text else {"n_fallacies_detected": 0, "detected_fallacies": []}
         agent_b_logic = argument_logic_check(agent_b_text) if agent_b_text else {"n_fallacies_detected": 0, "detected_fallacies": []}
+        evidence_bonus_a = self._legacy_evidence_bonus(tool_report_a)
+        evidence_bonus_b = self._legacy_evidence_bonus(tool_report_b)
 
         profile = self._level_profile(level)
         rebuttal_confidence = self._extract_rebuttal_confidence(debate_context)
         argument_quality_a = (
             profile["a_base"]
-            + profile["a_support_weight"] * tool_report_a["support_score"]
+            + evidence_bonus_a
             - 0.05 * agent_a_logic["n_fallacies_detected"]
             + self._anti_causal_bonus(level, agent_a_text, scenario)
         )
         argument_quality_b = (
             profile["b_base"]
-            + profile["b_support_weight"] * tool_report_b["support_score"]
+            + evidence_bonus_b
             - 0.05 * agent_b_logic["n_fallacies_detected"]
         )
         argument_quality_b += profile["claim_weight"] * self._extract_b_confidence(debate_context)
         argument_quality_b += profile["rebuttal_weight"] * rebuttal_confidence
         argument_quality_b += profile["tool_awareness_weight"] * self._tool_awareness_bonus(agent_b_text)
-        argument_quality_a += 0.01 * len(tool_report_a["successful_tools"]) * tool_report_a["support_score"]
-        argument_quality_b += 0.01 * len(tool_report_b["successful_tools"]) * tool_report_b["support_score"]
+        argument_quality_a += 0.01 * len(tool_report_a["successful_tools"]) * max(0.0, evidence_bonus_a)
+        argument_quality_b += 0.01 * len(tool_report_b["successful_tools"]) * max(0.0, evidence_bonus_b)
 
         # ── 防御升级：已知模式惩罚 + 灵敏度提升 ──
         if self.known_patterns and agent_a_text:
@@ -420,6 +422,14 @@ class AgentC:
         verdict_text = f"Verifier label={verdict_label}."
         jury_text = f" Jury signal={jury_winner} ({jury_consensus:.2f})."
         return f"{verdict_text} {reasoning_summary}{jury_text}".strip()
+
+    def _legacy_evidence_bonus(self, report: dict[str, Any]) -> float:
+        evidence_component = dict(report.get("evidence_component", {}) or {})
+        supporting = len(evidence_component.get("supporting_evidence", []))
+        counter = len(evidence_component.get("counter_evidence", []))
+        issues = len(evidence_component.get("identified_issues", []))
+        score = 0.04 * supporting - 0.04 * counter - 0.05 * issues
+        return max(-0.2, min(0.2, score))
 
     def _build_pipeline_tool_trace(
         self,

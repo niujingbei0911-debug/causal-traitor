@@ -304,9 +304,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(main_payload["significance"][split_name]["comparisons"])
                 self.assertEqual(
                     main_payload["significance"][split_name]["estimand"],
-                    "paired_sample_verdict_accuracy",
+                    "seed_mean_verdict_accuracy",
                 )
-                self.assertEqual(main_payload["significance"][split_name]["method"], "paired_bootstrap")
+                self.assertEqual(main_payload["significance"][split_name]["method"], "paired_seed_bootstrap")
                 self.assertEqual(
                     main_payload["significance"][split_name]["metric_name"],
                     "verdict_accuracy",
@@ -371,7 +371,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     output_path=str(Path(tmp_dir) / "exp_main_benchmark_oracle.json"),
                 )
 
-    def test_phase4_main_benchmark_uses_formal_paired_bootstrap_significance(self) -> None:
+    def test_phase4_main_benchmark_uses_seed_level_significance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             payload = run_main_benchmark(
                 output_path=str(Path(tmp_dir) / "exp_main_benchmark_significance.json"),
@@ -379,9 +379,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             for split_name in ("test_iid", "test_ood"):
                 report = payload["significance"][split_name]
-                self.assertEqual(report["method"], "paired_bootstrap")
+                self.assertEqual(report["method"], "paired_seed_bootstrap")
                 self.assertEqual(report["metric_name"], "verdict_accuracy")
-                self.assertEqual(report["estimand"], "paired_sample_verdict_accuracy")
+                self.assertEqual(report["estimand"], "seed_mean_verdict_accuracy")
 
     def test_phase4_main_and_leakage_reject_noncompliant_seed_lists_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -488,15 +488,51 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             for payload in (
                 ablation_payload,
-                robustness_payload,
                 ood_payload,
-                transfer_payload,
                 human_payload,
             ):
                 self.assertEqual(payload["config"]["samples_per_family"], 1)
                 self.assertEqual(payload["config"]["difficulty"], 1.0)
                 self.assertEqual(payload["requested_config"]["samples_per_family"], 0)
                 self.assertEqual(payload["requested_config"]["difficulty"], 1.5)
+
+            for payload in (robustness_payload, transfer_payload):
+                self.assertEqual(payload["config"]["samples_per_family"], 2)
+                self.assertEqual(payload["config"]["difficulty"], 1.0)
+                self.assertEqual(payload["requested_config"]["samples_per_family"], 0)
+                self.assertEqual(payload["requested_config"]["difficulty"], 1.5)
+
+    def test_phase4_protocol_marks_toy_scale_runs_exploratory_even_with_three_seeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            robustness_payload = run_adversarial_robustness(
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_adversarial_robustness_toy.json"),
+            )
+            transfer_payload = run_cross_model_transfer(
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_toy.json"),
+            )
+            human_payload = run_human_audit(
+                samples_per_family=1,
+                audit_subset_size=150,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_human_audit_toy.json"),
+            )
+
+            self.assertFalse(robustness_payload["protocol"]["compliant"])
+            self.assertTrue(robustness_payload["protocol"]["override_used"])
+            self.assertIn("samples_per_family", robustness_payload["protocol"]["violations"])
+
+            self.assertFalse(transfer_payload["protocol"]["compliant"])
+            self.assertTrue(transfer_payload["protocol"]["override_used"])
+            self.assertIn("samples_per_family", transfer_payload["protocol"]["violations"])
+
+            self.assertFalse(human_payload["protocol"]["compliant"])
+            self.assertTrue(human_payload["protocol"]["override_used"])
+            self.assertIn("samples_per_family", human_payload["protocol"]["violations"])
+            self.assertIn("audit_subset_size", human_payload["protocol"]["violations"])
 
     def test_phase4_main_runner_rejects_duplicate_systems_early(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -571,6 +607,23 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_human_audit_from_csv.json"),
             )
             self.assertIsNotNone(csv_payload["agreement_stats"])
+            self.assertIn("causal_level", csv_payload["annotation_package"][0])
+            self.assertEqual(
+                csv_payload["annotation_package"][0]["causal_level"],
+                csv_payload["annotation_package"][0]["public_evidence_summary"]["causal_level"],
+            )
+            self.assertIn(
+                "countermodel_witness_persuasive",
+                csv_payload["annotation_package"][0]["annotation_questions"],
+            )
+            self.assertIn(
+                "annotator_a_countermodel_witness_persuasive",
+                csv_payload["annotation_package"][0],
+            )
+            self.assertNotIn(
+                "annotator_a_witness_persuasive",
+                csv_payload["annotation_package"][0],
+            )
 
             fake_annotations = [
                 {
@@ -579,8 +632,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "annotator_b_gold_label_reasonable": "yes",
                     "annotator_a_verifier_label_reasonable": "yes",
                     "annotator_b_verifier_label_reasonable": "yes",
-                    "annotator_a_witness_persuasive": "yes",
-                    "annotator_b_witness_persuasive": "yes",
+                    "annotator_a_countermodel_witness_persuasive": "yes",
+                    "annotator_b_countermodel_witness_persuasive": "yes",
                     "annotator_a_explanation_faithful": "yes",
                     "annotator_b_explanation_faithful": "yes",
                 }

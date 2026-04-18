@@ -9,7 +9,7 @@ import pandas as pd
 
 from benchmark.schema import PublicCausalInstance, require_public_instance
 from verifier.assumption_ledger import build_assumption_ledger
-from verifier.claim_parser import parse_claim
+from verifier.claim_parser import _flatten_transcript, parse_claim
 from verifier.countermodel_search import search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
 from verifier.outputs import QueryType
@@ -56,7 +56,7 @@ class VerifierPipeline:
         if isinstance(transcript, str):
             return transcript.strip()
         if transcript:
-            return "\n".join(str(item) for item in transcript).strip()
+            return _flatten_transcript(transcript).strip()
         raise ValueError("VerifierPipeline requires a non-empty claim_text or transcript.")
 
     def _resolve_tool_level(

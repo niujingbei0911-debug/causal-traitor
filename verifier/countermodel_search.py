@@ -16,6 +16,7 @@ from verifier.assumption_ledger import (
     build_assumption_ledger,
 )
 from verifier.outputs import ClaimPolarity, ClaimStrength, ParsedClaim, QueryType
+from verifier.claim_parser import _flatten_transcript
 
 
 VERDICT_SUGGESTION_SPACE: tuple[str, ...] = ("invalid", "unidentifiable")
@@ -105,7 +106,7 @@ def _context_text(context: dict[str, Any] | None) -> str:
         if isinstance(value, str):
             parts.append(value)
         elif isinstance(value, (list, tuple)):
-            parts.extend(str(item) for item in value)
+            parts.append(_flatten_transcript(value))
     return " ".join(parts).lower()
 
 

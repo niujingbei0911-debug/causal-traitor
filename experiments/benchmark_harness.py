@@ -11,6 +11,7 @@ from random import Random
 from typing import Any
 
 from agents.tool_executor import ToolExecutor
+from benchmark.attacks import generate_attack_sample
 from benchmark.generator import BenchmarkGenerator, BenchmarkSample, list_supported_benchmark_families
 from benchmark.schema import BenchmarkSplitManifest, ClaimInstance, PublicCausalInstance, VerdictLabel
 from benchmark.split_builder import build_benchmark_splits
@@ -53,6 +54,8 @@ SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
 )
 OOD_SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
 MIN_FORMAL_SEED_COUNT = 3
+MIN_FORMAL_SAMPLES_PER_FAMILY = 10
+MIN_HUMAN_AUDIT_SUBSET_SIZE = 150
 PAIRWISE_ALPHA = 0.05
 PAIRWISE_RESAMPLES = 2000
 DEFAULT_ATTACKER_FAMILIES: tuple[str, ...] = (
@@ -139,16 +142,56 @@ def summarize_protocol_compliance(
     seeds: list[int] | tuple[int, ...],
     *,
     minimum_count: int = MIN_FORMAL_SEED_COUNT,
+    minimum_samples_per_family: int | None = None,
+    observed_samples_per_family: int | None = None,
+    minimum_audit_subset_size: int | None = None,
+    observed_audit_subset_size: int | None = None,
     allow_protocol_violations: bool = False,
 ) -> dict[str, Any]:
     seed_list = [int(seed) for seed in seeds]
-    compliant = len(seed_list) >= int(minimum_count)
+    requirements: dict[str, dict[str, Any]] = {
+        "seeds": {
+            "minimum": int(minimum_count),
+            "observed": len(seed_list),
+            "satisfied": len(seed_list) >= int(minimum_count),
+        }
+    }
+    violations: list[str] = []
+
+    def _register_requirement(name: str, *, minimum: int, observed: int) -> None:
+        satisfied = int(observed) >= int(minimum)
+        requirements[name] = {
+            "minimum": int(minimum),
+            "observed": int(observed),
+            "satisfied": satisfied,
+        }
+        if not satisfied:
+            violations.append(name)
+
+    if minimum_samples_per_family is not None and observed_samples_per_family is not None:
+        _register_requirement(
+            "samples_per_family",
+            minimum=int(minimum_samples_per_family),
+            observed=int(observed_samples_per_family),
+        )
+    if minimum_audit_subset_size is not None and observed_audit_subset_size is not None:
+        _register_requirement(
+            "audit_subset_size",
+            minimum=int(minimum_audit_subset_size),
+            observed=int(observed_audit_subset_size),
+        )
+
+    if not requirements["seeds"]["satisfied"]:
+        violations.insert(0, "seeds")
+    compliant = len(violations) == 0
     return {
         "minimum_seed_count": int(minimum_count),
         "seed_count": len(seed_list),
         "seed_list": seed_list,
+        "requirements": requirements,
+        "violations": violations,
         "compliant": compliant,
-        "override_used": bool(allow_protocol_violations and not compliant),
+        "override_used": bool(allow_protocol_violations and bool(violations)),
     }
 
 
@@ -338,10 +381,58 @@ def build_seed_benchmark_run(
             )
             sample_index += 1
 
-    manifest = build_benchmark_splits(
-        [sample.claim for sample in samples],
+    manifest = build_benchmark_splits([sample.claim for sample in samples], seed=seed)
+    sample_by_id = {sample.claim.instance_id: sample for sample in samples}
+    split_samples = {
+        split_name: [sample_by_id[instance_id] for instance_id in instance_ids]
+        for split_name, instance_ids in manifest.split_map().items()
+    }
+    return SeedBenchmarkRun(
         seed=seed,
+        manifest=manifest,
+        samples=samples,
+        split_samples=split_samples,
     )
+
+
+def build_seed_attack_benchmark_run(
+    *,
+    seed: int,
+    difficulty: float,
+    samples_per_family: int,
+    family_names: list[str] | None = None,
+) -> SeedBenchmarkRun:
+    families = list(family_names or default_benchmark_families())
+    generator = BenchmarkGenerator(seed=seed)
+    resolved_difficulty = normalize_benchmark_difficulty(difficulty)
+    resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    samples: list[BenchmarkSample] = []
+    sample_index = 0
+
+    for family_name in families:
+        collected = 0
+        attempts = 0
+        max_attempts = max(8, resolved_samples_per_family * 24)
+        while collected < resolved_samples_per_family:
+            sample_seed = _stable_sample_seed(seed, family_name, sample_index)
+            candidate = generator.generate_benchmark_sample(
+                family_name=family_name,
+                difficulty=resolved_difficulty,
+                seed=sample_seed,
+            )
+            sample_index += 1
+            attempts += 1
+            if candidate.claim.meta.get("attack_name") is None or candidate.claim.meta.get("claim_mode") != "attack":
+                if attempts >= max_attempts:
+                    raise ValueError(
+                        "Unable to build an attack-only benchmark run with enough samples for "
+                        f"family={family_name!r}, seed={seed}, samples_per_family={resolved_samples_per_family}."
+                    )
+                continue
+            samples.append(candidate)
+            collected += 1
+
+    manifest = build_benchmark_splits([sample.claim for sample in samples], seed=seed)
     sample_by_id = {sample.claim.instance_id: sample for sample in samples}
     split_samples = {
         split_name: [sample_by_id[instance_id] for instance_id in instance_ids]
@@ -401,6 +492,72 @@ def attack_only_samples(samples: list[BenchmarkSample]) -> list[BenchmarkSample]
     ]
 
 
+def _profile_variant_seed(sample: BenchmarkSample, *, profile_name: str) -> int:
+    base_seed = int(sample.claim.meta.get("seed", 0))
+    material = f"{sample.claim.instance_id}::{profile_name}".encode("utf-8")
+    offset = int.from_bytes(hashlib.sha256(material).digest()[:4], "big")
+    return base_seed + offset
+
+
+def _render_attack_profile_variant(
+    sample: BenchmarkSample,
+    *,
+    profile_name: str,
+    style_id: str,
+    preferred_attack_names: tuple[str, ...] = (),
+    inject_private_hint: bool = False,
+    meta_updates: dict[str, Any] | None = None,
+) -> BenchmarkSample:
+    original_attack_name = str(sample.claim.meta.get("attack_name") or "").strip()
+    if not original_attack_name:
+        return sample
+
+    resolved_seed = _profile_variant_seed(sample, profile_name=profile_name)
+    gold_label = sample.claim.gold_label.value
+    query_type = sample.claim.query_type
+    variant = None
+    for attack_name in (*preferred_attack_names, original_attack_name):
+        try:
+            variant = generate_attack_sample(
+                sample.blueprint,
+                gold_label=gold_label,
+                query_type=query_type,
+                attack_name=attack_name,
+                seed=resolved_seed,
+                style_id=style_id,
+            )
+            break
+        except ValueError:
+            continue
+    if variant is None:
+        return sample
+
+    claim_text = variant.claim_text.rstrip()
+    attacker_rationale = variant.attacker_rationale.rstrip()
+    if inject_private_hint:
+        anchor = _private_anchor(sample)
+        claim_text = (
+            f"{claim_text} Private operational details tied to {anchor} close the usual remaining loophole."
+        ).strip()
+        attacker_rationale = (
+            f"{attacker_rationale} Present the argument as if private, non-public evidence closes "
+            "the main countermodel escape hatch."
+        ).strip()
+
+    return _rewrite_claim_instance(
+        sample,
+        claim_text=claim_text,
+        attacker_rationale=attacker_rationale,
+        language_suffix=profile_name,
+        meta_updates={
+            "attack_name": variant.attack_name,
+            "style_id": variant.style_id,
+            "attack_profile_source": "structured_attack_regeneration",
+            **dict(meta_updates or {}),
+        },
+    )
+
+
 def apply_attack_strength_profile(
     samples: list[BenchmarkSample],
     *,
@@ -412,38 +569,46 @@ def apply_attack_strength_profile(
             rewritten.append(sample)
             continue
 
-        anchor = _private_anchor(sample)
-        base_text = sample.claim.claim_text.rstrip()
-        base_rationale = sample.claim.attacker_rationale.rstrip()
         if strength_name == "weak":
-            suffix = " The pattern is suggestive enough that the causal reading is still the most plausible one."
-            rationale_suffix = " Keep the attack understated so it sounds compatible with ordinary observational uncertainty."
-        elif strength_name == "medium":
-            suffix = " The observed pattern already supports taking the causal story at face value."
-            rationale_suffix = " Present the attack as a confident observational reading without overexplaining it."
-        elif strength_name == "strong":
-            suffix = " No credible alternative causal explanation matches the public evidence as well as this claim."
-            rationale_suffix = " State the attack as decisive so the verifier faces a sharper overclaim."
-        elif strength_name == "hidden_information_aware":
-            suffix = (
-                f" Internal details about {anchor} rule out the usual hidden-confounding objection, "
-                "so the causal conclusion should be treated as settled."
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=strength_name,
+                    style_id="plainspoken",
+                    meta_updates={"attack_strength": strength_name},
+                )
             )
-            rationale_suffix = (
-                " Frame the attack as if the attacker has extra private knowledge that appears to close the main loophole."
+        elif strength_name == "medium":
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=strength_name,
+                    style_id="technical",
+                    meta_updates={"attack_strength": strength_name},
+                )
+            )
+        elif strength_name == "strong":
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=strength_name,
+                    style_id="assertive",
+                    meta_updates={"attack_strength": strength_name},
+                )
+            )
+        elif strength_name == "hidden_information_aware":
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=strength_name,
+                    style_id="technical",
+                    preferred_attack_names=("hidden_confounder_denial",),
+                    inject_private_hint=True,
+                    meta_updates={"attack_strength": strength_name},
+                )
             )
         else:
             raise ValueError(f"Unsupported attack strength profile: {strength_name!r}.")
-
-        rewritten.append(
-            _rewrite_claim_instance(
-                sample,
-                claim_text=f"{base_text} {suffix}".strip(),
-                attacker_rationale=f"{base_rationale} {rationale_suffix}".strip(),
-                language_suffix=strength_name,
-                meta_updates={"attack_strength": strength_name},
-            )
-        )
     return rewritten
 
 
@@ -481,40 +646,39 @@ def apply_attacker_family_profile(
             rewritten.append(sample)
             continue
 
-        anchor = _private_anchor(sample)
-        base_text = sample.claim.claim_text.rstrip()
-        base_rationale = sample.claim.attacker_rationale.rstrip()
         if attacker_family == "baseline_attacker":
             rewritten.append(
                 _rewrite_claim_instance(
                     sample,
-                    claim_text=base_text,
-                    attacker_rationale=base_rationale,
+                    claim_text=sample.claim.claim_text.rstrip(),
+                    attacker_rationale=sample.claim.attacker_rationale.rstrip(),
                     language_suffix=attacker_family,
                     meta_updates={"attacker_family": attacker_family},
                 )
             )
             continue
         if attacker_family == "formal_attacker":
-            suffix = " A careful analyst would therefore treat the claim as established from the observed evidence."
-            rationale_suffix = " Use more formal language so the attack resembles a methodical statistical conclusion."
-        elif attacker_family == "hidden_information_attacker":
-            suffix = (
-                f" Private operational details tied to {anchor} make the causal explanation look even harder to dispute."
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=attacker_family,
+                    style_id="technical",
+                    meta_updates={"attacker_family": attacker_family},
+                )
             )
-            rationale_suffix = " Make the attack sound as if it draws on extra non-public context."
+        elif attacker_family == "hidden_information_attacker":
+            rewritten.append(
+                _render_attack_profile_variant(
+                    sample,
+                    profile_name=attacker_family,
+                    style_id="technical",
+                    preferred_attack_names=("hidden_confounder_denial",),
+                    inject_private_hint=True,
+                    meta_updates={"attacker_family": attacker_family},
+                )
+            )
         else:
             raise ValueError(f"Unsupported attacker_family: {attacker_family!r}.")
-
-        rewritten.append(
-            _rewrite_claim_instance(
-                sample,
-                claim_text=f"{base_text} {suffix}".strip(),
-                attacker_rationale=f"{base_rationale} {rationale_suffix}".strip(),
-                language_suffix=attacker_family,
-                meta_updates={"attacker_family": attacker_family},
-            )
-        )
     return rewritten
 
 
@@ -1041,6 +1205,7 @@ def evaluate_system_on_samples(
             "system_name": system_name,
             "instance_id": sample.claim.instance_id,
             "scenario_id": sample.gold.scenario_id,
+            "causal_level": public_payload["causal_level"],
             "graph_family": sample.claim.graph_family,
             "language_template_id": sample.claim.language_template_id,
             "query_type": sample.claim.query_type,

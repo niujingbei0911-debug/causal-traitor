@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
+    MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
     aggregate_seed_metrics,
@@ -66,7 +67,7 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
 def run_experiment(
     *,
     seeds: list[int] | tuple[int, ...] | None = None,
-    samples_per_family: int = 2,
+    samples_per_family: int = MIN_FORMAL_SAMPLES_PER_FAMILY,
     difficulty: float = 0.55,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
@@ -81,6 +82,8 @@ def run_experiment(
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        observed_samples_per_family=resolved_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
     raw_predictions: list[dict[str, Any]] = []
@@ -176,7 +179,12 @@ def run_experiment(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Phase 4 identifiability ablation.")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
-    parser.add_argument("--samples-per-family", type=int, default=2, help="Samples generated per benchmark family.")
+    parser.add_argument(
+        "--samples-per-family",
+        type=int,
+        default=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        help="Samples generated per benchmark family.",
+    )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
     parser.add_argument(
         "--allow-protocol-violations",

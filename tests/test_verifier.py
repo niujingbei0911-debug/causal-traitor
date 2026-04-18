@@ -195,6 +195,31 @@ class ClaimParserTests(unittest.TestCase):
         self.assertTrue(parsed.needs_abstention_check)
         self.assertEqual(parsed.rhetorical_strategy, "false_uniqueness")
 
+    def test_parser_recognizes_generated_l3_false_uniqueness_phrasing(self) -> None:
+        parsed = self.parser.parse(
+            "The evidence clearly shows that we can say what income_score would have been under a different value of therapy_flag for the same case."
+        )
+
+        self.assertEqual(parsed.query_type, QueryType.COUNTERFACTUAL)
+        self.assertEqual(parsed.rhetorical_strategy, "counterfactual_certainty")
+
+    def test_parser_uses_transcript_to_add_risk_cues_without_changing_focus_pair(self) -> None:
+        claim_only = parse_claim("X causes Y.")
+        with_transcript = parse_claim(
+            "X causes Y.",
+            transcript=[
+                {
+                    "speaker": "agent_b",
+                    "content": "The issue is selection bias from clinic_selection and the claimed instrument is weak.",
+                }
+            ],
+        )
+
+        self.assertEqual(with_transcript.treatment, claim_only.treatment)
+        self.assertEqual(with_transcript.outcome, claim_only.outcome)
+        self.assertNotEqual(with_transcript.rhetorical_strategy, claim_only.rhetorical_strategy)
+        self.assertIn("instrument relevance", set(with_transcript.mentioned_assumptions) | set(with_transcript.implied_assumptions))
+
     def test_parser_handles_real_benchmark_attack_templates(self) -> None:
         mismatches = []
         abstention_failures = []
@@ -1257,6 +1282,31 @@ class PipelineTests(unittest.TestCase):
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
                 self.assertEqual(result.label, VerdictLabel.VALID)
 
+    def test_pipeline_l3_ambiguity_regression_seeds_stay_unidentifiable(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        executor = ToolExecutor({})
+        for seed in (4, 10):
+            with self.subTest(seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name="l3_counterfactual_ambiguity_family",
+                    difficulty=0.4,
+                    seed=seed,
+                )
+                report = executor.execute_for_claim(
+                    scenario=sample.public,
+                    claim=sample.claim.claim_text,
+                    level=3,
+                    context={"claim_stance": "pro_causal"},
+                )
+                result = run_verifier_pipeline(
+                    sample.claim.claim_text,
+                    scenario=sample.public,
+                    tool_runner=FakeToolRunner(report["tool_trace"]),
+                )
+
+                self.assertIs(sample.claim.gold_label, VerdictLabel.UNIDENTIFIABLE)
+                self.assertEqual(result.label, VerdictLabel.UNIDENTIFIABLE)
+
     def test_pipeline_with_real_tool_executor_keeps_invalid_adjustment_claim_off_valid_path(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l2_valid_backdoor_family",
@@ -1527,8 +1577,8 @@ class PipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result.label, VerdictLabel.UNIDENTIFIABLE)
-        self.assertTrue(result.metadata["support_stage_entered"])
-        self.assertIsNone(result.countermodel_witness)
+        self.assertFalse(result.metadata["support_stage_entered"])
+        self.assertIsNotNone(result.countermodel_witness)
 
     def test_pipeline_rejects_external_tool_trace_even_with_public_scenario(self) -> None:
         with self.assertRaises(TypeError):

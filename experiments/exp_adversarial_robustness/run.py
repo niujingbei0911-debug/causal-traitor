@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
+    MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
     aggregate_seed_metrics,
     apply_attack_strength_profile,
-    attack_only_samples,
     build_seed_metric_significance,
-    build_seed_benchmark_run,
+    build_seed_attack_benchmark_run,
     evaluate_system_on_samples,
     manifest_metadata,
     normalize_benchmark_difficulty,
@@ -55,7 +55,7 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
 def run_experiment(
     *,
     seeds: list[int] | tuple[int, ...] | None = None,
-    samples_per_family: int = 2,
+    samples_per_family: int = MIN_FORMAL_SAMPLES_PER_FAMILY,
     difficulty: float = 0.55,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
@@ -66,19 +66,22 @@ def run_experiment(
         allow_protocol_violations=allow_protocol_violations,
     )
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    effective_samples_per_family = max(2, resolved_samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        observed_samples_per_family=effective_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
     raw_predictions: list[dict[str, Any]] = []
     per_strength_results: dict[str, Any] = {}
     base_runs = {
-        seed: build_seed_benchmark_run(
+        seed: build_seed_attack_benchmark_run(
             seed=seed,
             difficulty=resolved_difficulty,
-            samples_per_family=resolved_samples_per_family,
+            samples_per_family=effective_samples_per_family,
         )
         for seed in resolved_seeds
     }
@@ -100,10 +103,8 @@ def run_experiment(
                     run.split_samples[split_name],
                     strength_name=strength_name,
                 )
-                attack_samples = attack_only_samples(profiled_samples)
-                strength_payload["excluded_non_attack_predictions"] += max(0, len(profiled_samples) - len(attack_samples))
                 evaluated = evaluate_system_on_samples(
-                    attack_samples,
+                    profiled_samples,
                     seed=seed,
                     split_name=split_name,
                     system_name=SYSTEM_NAME,
@@ -148,9 +149,10 @@ def run_experiment(
     payload = {
         "experiment_id": "exp_adversarial_robustness",
         "config": {
-            "samples_per_family": int(resolved_samples_per_family),
+            "samples_per_family": int(effective_samples_per_family),
             "difficulty": float(resolved_difficulty),
             "strength_levels": list(STRENGTH_LEVELS),
+            "attack_split_protocol": "dedicated_attack_only_benchmark",
         },
         "requested_config": {
             "samples_per_family": int(samples_per_family),
@@ -182,7 +184,12 @@ def run_experiment(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Phase 4 adversarial robustness experiment.")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
-    parser.add_argument("--samples-per-family", type=int, default=2, help="Samples generated per benchmark family.")
+    parser.add_argument(
+        "--samples-per-family",
+        type=int,
+        default=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        help="Samples generated per benchmark family.",
+    )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
     parser.add_argument(
         "--allow-protocol-violations",

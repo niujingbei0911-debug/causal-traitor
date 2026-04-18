@@ -5,7 +5,9 @@ from experiments.benchmark_harness import (
     _apply_no_abstention,
     _apply_family_postprocessing,
     aggregate_seed_metrics,
+    build_seed_attack_benchmark_run,
     compare_system_predictions,
+    summarize_protocol_compliance,
 )
 from experiments.exp_leakage_study.run import _mcnemar_significance
 
@@ -178,6 +180,35 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 },
                 split_name="test_iid",
             )
+
+    def test_build_seed_attack_benchmark_run_keeps_attack_only_protocol(self) -> None:
+        run = build_seed_attack_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=2,
+        )
+
+        self.assertTrue(run.split_samples["test_iid"])
+        self.assertTrue(run.split_samples["test_ood"])
+        for sample in run.samples:
+            self.assertIsNotNone(sample.claim.meta.get("attack_name"))
+            self.assertEqual(sample.claim.meta.get("claim_mode"), "attack")
+
+    def test_protocol_compliance_tracks_non_seed_requirements(self) -> None:
+        protocol = summarize_protocol_compliance(
+            [0, 1, 2],
+            minimum_count=3,
+            minimum_samples_per_family=10,
+            observed_samples_per_family=2,
+            minimum_audit_subset_size=150,
+            observed_audit_subset_size=20,
+            allow_protocol_violations=True,
+        )
+
+        self.assertFalse(protocol["compliant"])
+        self.assertTrue(protocol["override_used"])
+        self.assertIn("samples_per_family", protocol["violations"])
+        self.assertIn("audit_subset_size", protocol["violations"])
 
     def test_family_variants_keep_verdict_semantics_consistent(self) -> None:
         skeptical = _apply_family_postprocessing(

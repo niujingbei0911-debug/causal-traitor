@@ -222,6 +222,30 @@ class ToolExecutorTests(unittest.TestCase):
             {entry["tool_name"] for entry in report["tool_trace"]},
         )
 
+    def test_role_token_match_does_not_confuse_clinical_stage_with_selection(self):
+        scenario = self.public_scenario.__class__(
+            scenario_id="clinical-stage-case",
+            description="Observed L2 case over treatment_flag, clinical_stage, outcome_score. Evaluate claims about treatment_flag and outcome_score using only the public evidence in this view.",
+            variables=["treatment_flag", "clinical_stage", "outcome_score"],
+            observed_data=pd.DataFrame(
+                {
+                    "treatment_flag": [0, 1, 0, 1],
+                    "clinical_stage": [0, 1, 1, 0],
+                    "outcome_score": [0.2, 0.9, 0.3, 1.0],
+                }
+            ),
+            causal_level=2,
+        )
+
+        context = self.executor._merge_context(
+            {"claim_stance": "pro_causal"},
+            "After controlling for clinical_stage, the causal effect of treatment_flag on outcome_score is identified.",
+            scenario=scenario,
+        )
+
+        self.assertEqual(context["adjustment_set"], ["clinical_stage"])
+        self.assertFalse(context.get("has_selection"))
+
     def test_sensitivity_analysis_is_not_promoted_to_no_unobserved_confounding_support(self):
         report = self.executor.execute_for_claim(
             scenario=self.public_scenario,

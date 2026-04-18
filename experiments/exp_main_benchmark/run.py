@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
+    MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
     aggregate_seed_metrics,
+    build_seed_metric_significance,
     build_seed_benchmark_run,
-    compare_system_predictions,
     evaluate_system_on_samples,
     manifest_metadata,
     normalize_benchmark_difficulty,
@@ -49,67 +50,36 @@ def _validate_main_benchmark_systems(
 
 
 def _build_formal_paired_significance(
-    raw_predictions: list[dict[str, Any]],
+    per_seed_results: dict[int, dict[str, dict[str, Any]]],
     *,
     systems: list[str],
-    baseline: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    significance: dict[str, Any] = {}
-    raw_p_values: dict[str, float] = {}
-
-    for split_name in OOD_SPLITS:
-        system_predictions = {
-            system_name: [
-                record
-                for record in raw_predictions
-                if record["system_name"] == system_name and record["split"] == split_name
-            ]
-            for system_name in systems
-        }
-        report = compare_system_predictions(
-            system_predictions,
-            baseline=baseline,
-        )
-        if report is None:
-            significance[split_name] = None
-            continue
-        report["estimand"] = "paired_sample_verdict_accuracy"
-        for row in report["comparisons"]:
-            row["split_adjusted_p_value"] = row.get("adjusted_p_value")
-            row["split_reject_after_correction"] = row.get("reject_after_correction")
-            raw_p_values[f"{split_name}: {row['comparison']}"] = float(row["p_value"])
-        significance[split_name] = report
-
-    correction_table = holm_bonferroni(raw_p_values, alpha=PAIRWISE_ALPHA) if raw_p_values else []
-    correction_lookup = {entry.hypothesis: entry for entry in correction_table}
-    for split_name in OOD_SPLITS:
-        if significance.get(split_name) is None:
-            continue
-        for row in significance[split_name]["comparisons"]:
-            hypothesis = f"{split_name}: {row['comparison']}"
-            correction = correction_lookup[hypothesis]
-            row["adjusted_p_value"] = float(correction.adjusted_p_value)
-            row["reject_after_correction"] = bool(correction.reject)
-            row["family_hypothesis"] = hypothesis
-        significance[split_name]["correction_scope"] = {
-            "family_size": len(raw_p_values),
-            "hypotheses": list(raw_p_values),
-        }
-
-    return significance, {
-        "family_size": len(raw_p_values),
-        "alpha": float(PAIRWISE_ALPHA),
-        "correction": "holm-bonferroni",
-        "entries": [
-            {
-                "hypothesis": entry.hypothesis,
-                "p_value": float(entry.raw_p_value),
-                "adjusted_p_value": float(entry.adjusted_p_value),
-                "threshold": float(entry.threshold),
-                "reject": bool(entry.reject),
+    return build_seed_metric_significance(
+        {
+            split_name: {
+                system_name: [
+                    float(per_seed_results[seed][system_name][split_name]["metrics"]["verdict_accuracy"])
+                    for seed in sorted(per_seed_results)
+                ]
+                for system_name in systems
             }
-            for entry in correction_table
-        ],
+            for split_name in OOD_SPLITS
+        },
+        baseline=systems[0],
+        metric_name="verdict_accuracy",
+        estimand="seed_mean_verdict_accuracy",
+    )
+
+
+def _blueprint_alignment_summary(systems: list[str]) -> dict[str, Any]:
+    return {
+        "full_baseline_matrix_connected": False,
+        "implemented_systems": list(systems),
+        "missing_blueprint_baseline_categories": ["Judge", "Debate", "Tool"],
+        "note": (
+            "The current runner covers verifier variants plus heuristic families, not the full "
+            "Judge / Debate / Tool / Ours baseline matrix described in FINAL_CONSTRUCTION_BLUEPRINT.md."
+        ),
     }
 
 
@@ -132,12 +102,20 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                 "## Protocol Notice",
                 "",
                 (
-                    f"This run used only {protocol['seed_count']} seed(s), below the formal "
-                    f"minimum of {protocol['minimum_seed_count']}. Treat it as exploratory only."
+                    "This run is exploratory only because it misses one or more formal protocol "
+                    f"requirements: {', '.join(protocol.get('violations', []))}."
                 ),
                 "",
             ]
         )
+    lines.extend(
+        [
+            "## Blueprint Alignment",
+            "",
+            payload["blueprint_alignment"]["note"],
+            "",
+        ]
+    )
 
     for system_name, split_payload in payload["aggregated_metrics"].items():
         lines.extend(
@@ -201,6 +179,8 @@ def run_experiment(
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=MIN_FORMAL_SAMPLES_PER_FAMILY,
+        observed_samples_per_family=resolved_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
 
@@ -256,9 +236,8 @@ def run_experiment(
         }
     else:
         significance, global_multiple_comparison_correction = _build_formal_paired_significance(
-            raw_predictions,
+            per_seed_results,
             systems=resolved_systems,
-            baseline=resolved_systems[0],
         )
 
     payload = {
@@ -280,6 +259,7 @@ def run_experiment(
         "aggregated_metrics": aggregated_metrics,
         "significance": significance,
         "global_multiple_comparison_correction": global_multiple_comparison_correction,
+        "blueprint_alignment": _blueprint_alignment_summary(resolved_systems),
         "raw_predictions": raw_predictions,
     }
 
