@@ -144,13 +144,18 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotEqual(public.description, self.gold.description)
         self.assertEqual(public.variables, self.gold.variables)
         self.assertEqual(public.proxy_variables, ["proxy_Z"])
-        self.assertEqual(public.selection_variables, ["proxy_Z"])
+        self.assertEqual(public.selection_variables, [])
         self.assertEqual(public.selection_mechanism, "conditioning_on_proxy")
         self.assertEqual(list(public.observed_data.columns), list(self.observed_data.columns))
         self.assertEqual(list(public.data.columns), list(self.observed_data.columns))
         self.assertFalse(hasattr(public, "verdict"))
         self.assertFalse(hasattr(public, "gold_label"))
         self.assertEqual(public.difficulty_config, {})
+        self.assertNotIn("instrument_variables", public.verifier_visible_fields)
+        self.assertNotIn("mediator_variables", public.verifier_visible_fields)
+        self.assertNotIn("selection_variables", public.verifier_visible_fields)
+        self.assertNotIn("instrument_variables", public.to_dict())
+        self.assertNotIn("selection_variables", public.to_dict())
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(
@@ -260,7 +265,7 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("benchmark_family", public.metadata)
         self.assertNotIn("notes", public.metadata)
 
-    def test_public_schema_promotes_proxy_and_selection_hints_out_of_metadata(self) -> None:
+    def test_public_schema_keeps_only_proxy_and_selection_mechanism_public_hints(self) -> None:
         public = PublicCausalInstance(
             scenario_id="public_hint_case",
             description="Typed public schema should carry proxy and selection hints.",
@@ -274,11 +279,43 @@ class InformationPartitionTests(unittest.TestCase):
         )
 
         self.assertEqual(public.proxy_variables, ["proxy_Z"])
-        self.assertEqual(public.selection_variables, ["selection_S"])
+        self.assertEqual(public.selection_variables, [])
         self.assertEqual(public.selection_mechanism, "conditioning_on_collider")
         self.assertNotIn("proxy_variables", public.metadata)
         self.assertNotIn("selection_variables", public.metadata)
         self.assertNotIn("selection_mechanism", public.metadata)
+
+    def test_gold_to_public_preserves_benign_metadata_and_prefers_public_description(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="public_metadata_case",
+            description="Gold description should not reach verifier.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+            metadata={
+                "public_description": "Observed L2 benchmark case over X, Y. Use the verifier-safe summary.",
+                "task_level": "L2",
+                "variable_descriptions": {
+                    "X": "Observed treatment-like benchmark variable.",
+                    "Y": "Observed outcome-like benchmark variable.",
+                },
+                "measurement_semantics": {
+                    "X": {"measurement_view": "binary_assignment"},
+                    "Y": {"measurement_view": "continuous_outcome"},
+                },
+            },
+        )
+
+        public = gold.to_public()
+
+        self.assertEqual(public.description, gold.metadata["public_description"])
+        self.assertEqual(public.metadata["task_level"], "L2")
+        self.assertIn("variable_descriptions", public.metadata)
+        self.assertIn("measurement_semantics", public.metadata)
 
     def test_public_schema_normalizes_variables_to_observed_columns(self) -> None:
         public = PublicCausalInstance(

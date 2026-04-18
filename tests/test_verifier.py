@@ -218,7 +218,20 @@ class ClaimParserTests(unittest.TestCase):
         self.assertEqual(with_transcript.treatment, claim_only.treatment)
         self.assertEqual(with_transcript.outcome, claim_only.outcome)
         self.assertNotEqual(with_transcript.rhetorical_strategy, claim_only.rhetorical_strategy)
-        self.assertIn("instrument relevance", set(with_transcript.mentioned_assumptions) | set(with_transcript.implied_assumptions))
+
+    def test_parser_uses_transcript_for_query_focus_and_strength_when_claim_is_summarized(self) -> None:
+        parsed = parse_claim(
+            "This might hold.",
+            transcript=(
+                "For an individual with the same observed history, switching therapy_flag "
+                "would definitely change recovery, so the unit-level counterfactual is uniquely identified."
+            ),
+        )
+
+        self.assertEqual(parsed.query_type, QueryType.COUNTERFACTUAL)
+        self.assertEqual(parsed.treatment, "therapy_flag")
+        self.assertEqual(parsed.outcome, "recovery")
+        self.assertEqual(parsed.claim_strength, ClaimStrength.ABSOLUTE)
 
     def test_parser_handles_real_benchmark_attack_templates(self) -> None:
         mismatches = []

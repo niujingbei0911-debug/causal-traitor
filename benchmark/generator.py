@@ -424,13 +424,13 @@ class BenchmarkGenerator:
         treatment = blueprint.target_variables.get("treatment")
         outcome = blueprint.target_variables.get("outcome")
         role_text = {
-            "backdoor_adjuster": "Observed pre-treatment covariate designated as the public adjustment variable.",
-            "observed_adjuster": "Observed covariate used as part of the public adjustment story.",
+            "backdoor_adjuster": "Observed pre-treatment covariate available for public adjustment checks.",
+            "observed_adjuster": "Observed covariate available as part of the public evidence bundle.",
             "observed_context": "Observed contextual covariate available to the verifier.",
-            "proxy": "Observed proxy measurement available as a public bridge.",
-            "instrument": "Observed instrument-style variable available as a public IV bridge.",
-            "mediator": "Observed mediator measurement available as a public counterfactual bridge.",
-            "selection": "Observed selection indicator visible to the verifier.",
+            "proxy": "Observed proxy-style measurement available as part of the public evidence.",
+            "instrument": "Observed assignment-like or encouragement signal available in the public evidence.",
+            "mediator": "Observed intermediate measurement available in the public evidence.",
+            "selection": "Observed sample-inclusion indicator visible in the public evidence.",
         }
         for variable in blueprint.observed_variables:
             parts: list[str] = []
@@ -454,24 +454,28 @@ class BenchmarkGenerator:
     ) -> dict[str, dict[str, Any]]:
         semantics: dict[str, dict[str, Any]] = {}
         role_kind = {
-            "treatment": "treatment",
-            "outcome": "outcome",
-            "backdoor_adjuster": "adjustment_variable",
-            "observed_adjuster": "adjustment_variable",
-            "observed_context": "context",
-            "proxy": "proxy",
-            "instrument": "instrument",
-            "mediator": "mediator",
-            "selection": "selection_indicator",
+            "treatment": ("treatment_measurement", "Directly manipulated or assigned treatment quantity in the public data."),
+            "outcome": ("outcome_measurement", "Observed response quantity used as the public outcome."),
+            "backdoor_adjuster": ("adjustment_covariate", "Observed pre-treatment covariate used for public adjustment checks."),
+            "observed_adjuster": ("adjustment_covariate", "Observed covariate carried into the public evidence bundle."),
+            "observed_context": ("context_covariate", "Observed background covariate visible in the public view."),
+            "proxy": ("proxy_measurement", "Observed auxiliary measurement that can help disambiguate the public signal."),
+            "instrument": ("assignment_signal", "Observed assignment-like or encouragement-style signal in the public data."),
+            "mediator": ("intermediate_measurement", "Observed intermediate measurement between treatment and response."),
+            "selection": ("sample_inclusion_indicator", "Observed indicator related to which units enter the public sample."),
         }
         for role, variable in blueprint.role_bindings.items():
             if variable not in blueprint.observed_variables:
                 continue
+            measurement_view, note = role_kind.get(
+                role,
+                ("observed_measurement", "Observed benchmark measurement available in the public view."),
+            )
             entry = semantics.setdefault(
                 variable,
-                {"roles": [], "variable_kind": role_kind.get(role, "observed_variable")},
+                {"measurement_view": measurement_view, "notes": []},
             )
-            entry["roles"] = list(dict.fromkeys([*entry.get("roles", []), role]))
+            entry["notes"] = list(dict.fromkeys([*entry.get("notes", []), note]))
         return semantics
 
     def _public_metadata_payload(
@@ -480,6 +484,8 @@ class BenchmarkGenerator:
     ) -> dict[str, Any]:
         return {
             "task_level": blueprint.causal_level,
+            "variable_descriptions": self._public_variable_descriptions(blueprint),
+            "measurement_semantics": self._public_measurement_semantics(blueprint),
         }
 
     def _build_variable_rename_map(
@@ -876,6 +882,17 @@ class BenchmarkGenerator:
         scenario.metadata.setdefault("generator_hints", dict(parent_blueprint.generator_hints))
         scenario.metadata.setdefault("task_level", parent_blueprint.causal_level)
         scenario.difficulty_config.setdefault("task_level", parent_blueprint.causal_level)
+        scenario.metadata.setdefault(
+            "public_description",
+            _public_description(
+                observed_variables=list(parent_blueprint.observed_variables),
+                treatment=parent_blueprint.target_variables["treatment"],
+                outcome=parent_blueprint.target_variables["outcome"],
+                causal_level=parent_blueprint.causal_level,
+            ),
+        )
+        for key, value in self._public_metadata_payload(parent_blueprint).items():
+            scenario.metadata.setdefault(key, value)
         if parent_blueprint.role_bindings.get("instrument"):
             scenario.metadata.setdefault(
                 "instrument_variables",

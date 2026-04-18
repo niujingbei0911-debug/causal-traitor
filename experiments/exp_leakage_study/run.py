@@ -652,8 +652,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                 "## Protocol Notice",
                 "",
                 (
-                    f"This run used only {protocol['seed_count']} seed(s), below the formal "
-                    f"minimum of {protocol['minimum_seed_count']}. Treat it as exploratory only."
+                    "This run is exploratory only because it misses one or more formal protocol "
+                    f"requirements: {', '.join(protocol.get('violations', []))}."
                 ),
                 "",
             ]
@@ -736,6 +736,8 @@ def run_experiment(
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
+        minimum_samples_per_family=DEFAULT_SAMPLES_PER_FAMILY,
+        observed_samples_per_family=resolved_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
 

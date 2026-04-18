@@ -78,10 +78,10 @@ class ToolExecutorTests(unittest.TestCase):
             context={},
         )
 
-        self.assertNotIn("counterfactual_inference", l3_report["selected_tools"])
-        self.assertNotIn("scm_identification_test", l3_report["selected_tools"])
-        self.assertNotIn("ett_computation", l3_report["selected_tools"])
-        self.assertNotIn("abduction_action_prediction", l3_report["selected_tools"])
+        self.assertIn("counterfactual_inference", l3_report["selected_tools"])
+        self.assertIn("scm_identification_test", l3_report["selected_tools"])
+        self.assertIn("ett_computation", l3_report["selected_tools"])
+        self.assertIn("abduction_action_prediction", l3_report["selected_tools"])
 
         graph_leak_report = self.executor.execute_for_claim(
             scenario=self.public_scenario,
@@ -89,18 +89,27 @@ class ToolExecutorTests(unittest.TestCase):
             level=1,
             context={"graph": self.scenario.true_dag},
         )
+        graph_base_report = self.executor.execute_for_claim(
+            scenario=self.public_scenario,
+            claim="Check whether the observed graph is a DAG.",
+            level=1,
+            context={},
+        )
         scm_leak_report = self.executor.execute_for_claim(
             scenario=self.public_scenario,
             claim="Compute a counterfactual answer for X and Y.",
             level=3,
             context={"scm": self.scenario.true_scm, "scm_model": self.scenario.true_scm},
         )
+        scm_base_report = self.executor.execute_for_claim(
+            scenario=self.public_scenario,
+            claim="Compute a counterfactual answer for X and Y.",
+            level=3,
+            context={},
+        )
 
-        self.assertNotIn("causal_graph_validator", graph_leak_report["selected_tools"])
-        self.assertNotIn("counterfactual_inference", scm_leak_report["selected_tools"])
-        self.assertNotIn("scm_identification_test", scm_leak_report["selected_tools"])
-        self.assertNotIn("ett_computation", scm_leak_report["selected_tools"])
-        self.assertNotIn("abduction_action_prediction", scm_leak_report["selected_tools"])
+        self.assertEqual(graph_leak_report["selected_tools"], graph_base_report["selected_tools"])
+        self.assertEqual(scm_leak_report["selected_tools"], scm_base_report["selected_tools"])
 
     def test_tool_executor_ignores_caller_supplied_public_graph_or_public_scm(self):
         self.assertIsNone(self.executor._get_graph({"public_graph": {"Z": ["X"], "X": ["Y"]}}))
@@ -124,9 +133,37 @@ class ToolExecutorTests(unittest.TestCase):
             },
         )
 
-        self.assertNotIn("causal_graph_validator", graph_report["selected_tools"])
-        self.assertNotIn("counterfactual_inference", scm_report["selected_tools"])
-        self.assertNotIn("scm_identification_test", scm_report["selected_tools"])
+        base_graph_report = self.executor.execute_for_claim(
+            scenario=self.public_scenario,
+            claim="Check whether the observed graph is a DAG.",
+            level=1,
+            context={},
+        )
+        base_scm_report = self.executor.execute_for_claim(
+            scenario=self.public_scenario,
+            claim="Compute a counterfactual answer for X and Y.",
+            level=3,
+            context={},
+        )
+
+        self.assertEqual(graph_report["selected_tools"], base_graph_report["selected_tools"])
+        self.assertEqual(scm_report["selected_tools"], base_scm_report["selected_tools"])
+
+    def test_iv_family_public_sample_does_not_autoselect_iv_tool_without_claim_signal(self):
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_iv_family",
+            difficulty=0.4,
+            seed=0,
+        )
+
+        report = self.executor.execute_for_claim(
+            scenario=sample.public,
+            claim="Estimate the causal effect of policy_uptake on yield_score.",
+            level=2,
+            context={},
+        )
+
+        self.assertNotIn("iv_estimation", report["selected_tools"])
 
     def test_generated_valid_benchmark_claims_receive_real_support_assumptions(self):
         generator = BenchmarkGenerator(seed=17)

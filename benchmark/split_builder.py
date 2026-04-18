@@ -15,7 +15,10 @@ def _normalize_instances(
     normalized: list[ClaimInstance] = []
     seen_ids: set[str] = set()
     for item in instances:
-        instance = item if isinstance(item, ClaimInstance) else ClaimInstance.from_dict(dict(item))
+        if isinstance(item, ClaimInstance):
+            instance = ClaimInstance.from_dict(item.to_dict())
+        else:
+            instance = ClaimInstance.from_dict(dict(item))
         if instance.instance_id in seen_ids:
             raise ValueError(f"Duplicate instance_id detected while building splits: {instance.instance_id!r}.")
         seen_ids.add(instance.instance_id)

@@ -708,12 +708,17 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(sample.public.metadata["task_level"], "L2")
         self.assertEqual(sample.public.difficulty_config["task_level"], "L2")
         self.assertNotIn("difficulty_family", sample.public.metadata)
-        self.assertNotIn("measurement_semantics", sample.public.metadata)
-        self.assertNotIn("variable_descriptions", sample.public.metadata)
+        self.assertIn("measurement_semantics", sample.public.metadata)
+        self.assertIn("variable_descriptions", sample.public.metadata)
         self.assertNotIn("difficulty_family", sample.public.difficulty_config)
-        self.assertEqual(sample.public.instrument_variables, [sample.blueprint.role_bindings["instrument"]])
+        self.assertNotIn("instrument_variables", sample.public.verifier_visible_fields)
+        self.assertNotIn("mediator_variables", sample.public.verifier_visible_fields)
+        self.assertNotIn("selection_variables", sample.public.verifier_visible_fields)
+        self.assertEqual(sample.public.instrument_variables, [])
+        self.assertNotIn("instrument_variables", sample.public.to_dict())
+        self.assertEqual(sample.public.description, sample.gold.metadata["public_description"])
 
-    def test_programmatic_public_view_exposes_typed_instrument_and_mediator_hints(self) -> None:
+    def test_programmatic_public_view_routes_benign_metadata_without_structural_role_fields(self) -> None:
         iv_sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l2_valid_iv_family",
             difficulty=0.4,
@@ -725,9 +730,16 @@ class ShowcaseMigrationTests(unittest.TestCase):
             seed=0,
         )
 
-        self.assertTrue(iv_sample.public.instrument_variables)
-        self.assertFalse(iv_sample.public.mediator_variables)
-        self.assertTrue(mediation_sample.public.mediator_variables)
+        instrument = iv_sample.blueprint.role_bindings["instrument"]
+        mediator = mediation_sample.blueprint.role_bindings["mediator"]
+
+        self.assertEqual(iv_sample.public.instrument_variables, [])
+        self.assertEqual(iv_sample.public.mediator_variables, [])
+        self.assertEqual(mediation_sample.public.mediator_variables, [])
+        self.assertIn(instrument, iv_sample.public.metadata["variable_descriptions"])
+        self.assertIn(instrument, iv_sample.public.metadata["measurement_semantics"])
+        self.assertIn(mediator, mediation_sample.public.metadata["variable_descriptions"])
+        self.assertIn(mediator, mediation_sample.public.metadata["measurement_semantics"])
 
     def test_benchmark_generator_variable_renaming_covers_valid_iv_family(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
@@ -1005,7 +1017,7 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertIn("ood_reasons", manifest.metadata)
         self.assertGreaterEqual(manifest.metadata["split_counts"]["test_ood"], 1)
 
-    def test_split_builder_annotates_sample_level_ood_split_metadata(self) -> None:
+    def test_split_builder_reports_ood_reasons_without_mutating_input_instances(self) -> None:
         instances = [
             _build_claim_instance_for_split(
                 "inst_in_domain",
@@ -1038,6 +1050,7 @@ class SplitBuilderTests(unittest.TestCase):
                 observed_variables=["T", "M", "Y"],
             ),
         ]
+        original_meta = [dict(instance.meta) for instance in instances]
 
         manifest = build_split_manifest(
             instances,
@@ -1047,8 +1060,7 @@ class SplitBuilderTests(unittest.TestCase):
             seed=11,
         )
 
-        self.assertIn(instances[0].meta["ood_split"], {"train", "dev", "test_iid"})
-        self.assertEqual(instances[4].meta["ood_split"], "test_ood")
+        self.assertEqual([instance.meta for instance in instances], original_meta)
         self.assertEqual(
             manifest.metadata["ood_reasons"]["inst_ood_family"],
             ["family_holdout"],

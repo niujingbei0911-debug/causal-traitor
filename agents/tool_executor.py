@@ -188,8 +188,10 @@ class ToolExecutor:
         level: int,
         claim: str,
         context: dict[str, Any] | None = None,
+        *,
+        scenario: PublicCausalInstance | None = None,
     ) -> list[str]:
-        context = self._merge_context(context, claim)
+        context = self._merge_context(context, claim, scenario=scenario)
         return self.selector.select(
             level,
             scenario_type=context.get("scenario_type", "default"),
@@ -227,7 +229,7 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         scenario = require_public_instance(scenario)
         context = self._merge_context(context, claim, scenario=scenario)
-        selected_tools = self.select_tools(level, claim, context)
+        selected_tools = self.select_tools(level, claim, context, scenario=scenario)
         results: list[ToolExecutionResult] = []
 
         for tool_name in selected_tools:
@@ -959,17 +961,140 @@ class ToolExecutor:
             return scenario.observed_data
         return None
 
+    def _fit_public_linear_scm(
+        self,
+        data: pd.DataFrame | None,
+        graph: nx.DiGraph | None,
+    ) -> dict[str, Any] | None:
+        if data is None or data.empty or graph is None or graph.number_of_edges() == 0:
+            return None
+
+        numeric = data.copy(deep=True)
+        for column in numeric.columns:
+            numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
+
+        coefficients: dict[str, dict[str, float]] = {}
+        for node in graph.nodes:
+            if node not in numeric.columns:
+                continue
+            parents = [parent for parent in graph.predecessors(node) if parent in numeric.columns]
+            frame = numeric.loc[:, [*parents, node]].dropna()
+            if frame.empty:
+                series = numeric[node].dropna()
+                coefficients[node] = {
+                    "intercept": float(series.mean()) if not series.empty else 0.0,
+                }
+                continue
+
+            outcome = frame[node].to_numpy(dtype=float)
+            if not parents:
+                coefficients[node] = {"intercept": float(np.mean(outcome))}
+                continue
+
+            design = np.column_stack(
+                [
+                    np.ones(len(frame), dtype=float),
+                    frame.loc[:, parents].to_numpy(dtype=float),
+                ]
+            )
+            try:
+                weights, *_ = np.linalg.lstsq(design, outcome, rcond=None)
+            except np.linalg.LinAlgError:
+                coefficients[node] = {"intercept": float(np.mean(outcome))}
+                continue
+
+            spec = {"intercept": float(weights[0])}
+            for parent, weight in zip(parents, weights[1:]):
+                spec[parent] = float(weight)
+            coefficients[node] = spec
+
+        if not coefficients:
+            return None
+
+        return {
+            "name": "public_linear_scm",
+            "schema_view": "public",
+            "graph": graph,
+            "coefficients": coefficients,
+        }
+
     def _get_graph(
         self,
         context: dict[str, Any],
         *,
         scenario: PublicCausalInstance | None = None,
     ) -> nx.DiGraph | None:
-        # Under the Phase 0-3 public contract, verifier-side graph access is not allowed
-        # unless it is carried by an explicitly typed public schema field. The current
-        # public schema does not expose any such field, so arbitrary caller context must
-        # not reintroduce gold DAG access through "public_graph".
-        return None
+        if scenario is None:
+            return None
+
+        public_context = dict(context or {})
+        data = self._get_data(scenario)
+        variables = self._get_variables(scenario, data)
+        treatment = str(public_context.get("treatment", "")).strip()
+        outcome = str(public_context.get("outcome", "")).strip()
+        claim_text = str(public_context.get("_claim_text", "") or "")
+        selection_mechanism = str(public_context.get("selection_mechanism", "") or "").strip().lower()
+        scenario_level = str(getattr(scenario, "causal_level", "") or "").strip().upper()
+        if scenario_level in {"3", "L3"}:
+            scenario_level = "L3"
+        allow_public_graph = bool(
+            public_context.get("needs_full_counterfactual")
+            or scenario_level == "L3"
+        )
+        if not allow_public_graph:
+            return None
+        if treatment not in variables or outcome not in variables or treatment == outcome:
+            treatment, outcome = self._infer_focus_variables(
+                claim_text,
+                variables,
+                scenario=scenario,
+                context=public_context,
+            )
+        if treatment not in variables or outcome not in variables or treatment == outcome:
+            return None
+
+        graph = nx.DiGraph()
+        graph.add_nodes_from(variables)
+        graph.add_edge(treatment, outcome)
+
+        adjustment_set = [
+            column
+            for column in list(public_context.get("adjustment_set") or [])
+            if column in variables and column not in {treatment, outcome}
+        ]
+        for covariate in adjustment_set:
+            graph.add_edge(covariate, treatment)
+            graph.add_edge(covariate, outcome)
+
+        proxy_candidates = [
+            column
+            for column in list(public_context.get("proxy_variables") or [])
+            if column in variables and column not in {treatment, outcome}
+        ]
+        explicit_proxy = str(public_context.get("proxy", "")).strip()
+        if explicit_proxy in variables and explicit_proxy not in {treatment, outcome}:
+            proxy_candidates.append(explicit_proxy)
+        for proxy in self._deduplicate(proxy_candidates):
+            graph.add_edge(proxy, treatment)
+            graph.add_edge(proxy, outcome)
+
+        mediator = str(public_context.get("mediator", "")).strip()
+        if not mediator and bool(public_context.get("has_mediator")):
+            mediator = self._guess_mediator(None, data, variables, treatment, outcome) or ""
+        if mediator in variables and mediator not in {treatment, outcome}:
+            graph.add_edge(treatment, mediator)
+            graph.add_edge(mediator, outcome)
+
+        instrument = str(public_context.get("instrument", "")).strip()
+        if instrument in variables and instrument not in {treatment, outcome}:
+            graph.add_edge(instrument, treatment)
+
+        selection = str(public_context.get("selection", "")).strip()
+        if selection in variables and selection not in {treatment, outcome}:
+            graph.add_edge(treatment, selection)
+            graph.add_edge(outcome, selection)
+
+        return graph if graph.number_of_edges() > 0 else None
 
     def _get_scm(
         self,
@@ -977,8 +1102,18 @@ class ToolExecutor:
         *,
         scenario: PublicCausalInstance | None = None,
     ):
-        # Same contract as _get_graph: do not trust caller-supplied SCM objects.
-        return None
+        if scenario is None:
+            return None
+        public_context = dict(context or {})
+        scenario_level = str(getattr(scenario, "causal_level", "") or "").strip().upper()
+        if scenario_level in {"3", "L3"}:
+            scenario_level = "L3"
+        if not (public_context.get("needs_full_counterfactual") or scenario_level == "L3"):
+            return None
+
+        graph = self._get_graph(public_context, scenario=scenario)
+        data = self._get_data(scenario)
+        return self._fit_public_linear_scm(data, graph)
 
     def _get_variables(self, scenario, data: pd.DataFrame | None) -> list[str]:
         variables = list(getattr(scenario, "variables", []))
@@ -1095,6 +1230,16 @@ class ToolExecutor:
                 r"\bwith (?P<name>[A-Za-z][A-Za-z0-9_]*) as an instrument\b",
             ),
         )
+        if explicit_instrument is None and re.search(
+            r"\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|\biv\b",
+            claim,
+            flags=re.IGNORECASE,
+        ):
+            explicit_instrument = self._extract_named_variable(
+                claim,
+                remaining,
+                patterns=(r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",),
+            )
         if explicit_instrument is not None:
             hints["instrument"] = explicit_instrument
 
@@ -1284,6 +1429,7 @@ class ToolExecutor:
         scenario: PublicCausalInstance | None = None,
     ) -> dict[str, Any]:
         merged = dict(context or {})
+        merged.setdefault("_claim_text", claim)
         lowered = claim.lower()
         data = self._get_data(scenario) if scenario is not None else None
         variables = self._get_variables(scenario, data) if scenario is not None else []
@@ -1302,19 +1448,8 @@ class ToolExecutor:
             if getattr(scenario, "proxy_variables", None):
                 merged.setdefault("proxy_variables", list(scenario.proxy_variables))
                 merged.setdefault("proxy", scenario.proxy_variables[0])
-            if getattr(scenario, "instrument_variables", None):
-                merged.setdefault("instrument_variables", list(scenario.instrument_variables))
-                merged.setdefault("instrument", scenario.instrument_variables[0])
-            if getattr(scenario, "mediator_variables", None):
-                merged.setdefault("mediator_variables", list(scenario.mediator_variables))
-                merged.setdefault("mediator", scenario.mediator_variables[0])
-            if getattr(scenario, "selection_variables", None):
-                merged.setdefault("selection_variables", list(scenario.selection_variables))
-                merged.setdefault("selection", scenario.selection_variables[0])
             if getattr(scenario, "selection_mechanism", None):
                 merged.setdefault("selection_mechanism", scenario.selection_mechanism)
-        merged["has_public_graph"] = bool(self._get_graph(merged, scenario=scenario))
-        merged["has_public_scm"] = self._get_scm(merged, scenario=scenario) is not None
         has_iv_signal = bool(
             re.search(r"\biv\b|\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|\bquarter\b", lowered, flags=re.IGNORECASE)
         ) or any(token in lowered for token in ["工具变量", "出生季度"])
@@ -1328,11 +1463,18 @@ class ToolExecutor:
         )
         merged.setdefault(
             "has_proxy",
-            bool(merged.get("proxy")) or any(token in lowered for token in ["proxy", "surrogate", "代理"]),
+            bool(merged.get("proxy"))
+            or bool(merged.get("proxy_variables"))
+            or any(token in lowered for token in ["proxy", "surrogate", "代理"]),
         )
         merged.setdefault(
             "has_selection",
-            bool(merged.get("selection")) or any(token in lowered for token in ["selection", "collider", "选择偏差"]),
+            bool(merged.get("selection"))
+            or (
+                str(merged.get("selection_mechanism", "") or "").strip().lower()
+                not in {"", "none"}
+            )
+            or any(token in lowered for token in ["selection", "collider", "选择偏差"]),
         )
         merged.setdefault(
             "needs_full_counterfactual",
@@ -1346,5 +1488,7 @@ class ToolExecutor:
             merged.setdefault("scenario_type", "proxy")
         else:
             merged.setdefault("scenario_type", "default")
+        merged["has_public_graph"] = bool(self._get_graph(merged, scenario=scenario))
+        merged["has_public_scm"] = self._get_scm(merged, scenario=scenario) is not None
         merged.setdefault("claim_stance", self._infer_claim_stance(claim))
         return merged

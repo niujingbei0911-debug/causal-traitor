@@ -23,9 +23,6 @@ VERIFIER_VISIBLE_FIELDS: tuple[str, ...] = (
     "description",
     "variables",
     "proxy_variables",
-    "instrument_variables",
-    "mediator_variables",
-    "selection_variables",
     "selection_mechanism",
     "observed_data",
     "data",
@@ -93,6 +90,8 @@ _PUBLIC_METADATA_ALLOWED_KEYS = frozenset(
         "ood_split",
         "selection_ratio",
         "task_level",
+        "variable_descriptions",
+        "measurement_semantics",
     }
 )
 _PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset(
@@ -411,18 +410,14 @@ class PublicCausalInstance:
             list(self.proxy_variables) + list(metadata.pop("proxy_variables", [])),
             observed_variables=list(self.variables),
         )
-        self.instrument_variables = _normalize_public_variables(
-            list(self.instrument_variables) + list(metadata.pop("instrument_variables", [])),
-            observed_variables=list(self.variables),
-        )
-        self.mediator_variables = _normalize_public_variables(
-            list(self.mediator_variables) + list(metadata.pop("mediator_variables", [])),
-            observed_variables=list(self.variables),
-        )
-        self.selection_variables = _normalize_public_variables(
-            list(self.selection_variables) + list(metadata.pop("selection_variables", [])),
-            observed_variables=list(self.variables),
-        )
+        metadata.pop("instrument_variables", None)
+        metadata.pop("mediator_variables", None)
+        metadata.pop("selection_variables", None)
+        # Legacy structural role fields remain on the dataclass for compatibility,
+        # but the public contract no longer carries them to verifier-side callers.
+        self.instrument_variables = []
+        self.mediator_variables = []
+        self.selection_variables = []
         self.selection_mechanism = _coerce_optional_string(
             self.selection_mechanism
             if self.selection_mechanism is not None
@@ -439,9 +434,6 @@ class PublicCausalInstance:
             "description": self.description,
             "variables": list(self.variables),
             "proxy_variables": list(self.proxy_variables),
-            "instrument_variables": list(self.instrument_variables),
-            "mediator_variables": list(self.mediator_variables),
-            "selection_variables": list(self.selection_variables),
             "selection_mechanism": self.selection_mechanism,
             "observed_data": _serialize_frame(self.observed_data),
             "data": _serialize_frame(self.data),
@@ -526,11 +518,13 @@ class GoldCausalInstance:
         """Project the gold scenario into the verifier-visible schema."""
 
         public_scenario_id = _coerce_optional_string(self.metadata.get("public_scenario_id"))
+        public_description = _coerce_optional_string(self.metadata.get("public_description"))
         treatment = _coerce_optional_string(self.ground_truth.get("treatment"))
         outcome = _coerce_optional_string(self.ground_truth.get("outcome"))
         return PublicCausalInstance(
             scenario_id=public_scenario_id or _public_scenario_id(self.scenario_id),
-            description=_public_description(
+            description=public_description
+            or _public_description(
                 observed_variables=list(self.variables),
                 treatment=treatment,
                 outcome=outcome,
@@ -538,9 +532,6 @@ class GoldCausalInstance:
             ),
             variables=list(self.variables),
             proxy_variables=list(self.metadata.get("proxy_variables", [])),
-            instrument_variables=list(self.metadata.get("instrument_variables", [])),
-            mediator_variables=list(self.metadata.get("mediator_variables", [])),
-            selection_variables=list(self.metadata.get("selection_variables", [])),
             selection_mechanism=self.metadata.get("selection_mechanism"),
             observed_data=self.observed_data.copy(deep=True),
             data=self.observed_data.copy(deep=True),

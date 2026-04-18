@@ -178,14 +178,14 @@ class Scorer:
         predicted_probabilities = list(game_data.get("predicted_probabilities", []))
         countermodel_hits = list(game_data.get("countermodel_hits", []))
         countermodel_applicable = list(game_data.get("countermodel_applicable", []))
-        count = min(len(gold_labels), len(predicted_labels))
+        count = len(gold_labels)
 
         synthetic_rounds: list[dict[str, Any]] = []
         for index in range(count):
             payload: dict[str, Any] = {
                 "round_id": index + 1,
                 "gold_label": gold_labels[index],
-                "verdict_label": predicted_labels[index],
+                "verdict_label": predicted_labels[index] if index < len(predicted_labels) else None,
             }
             if index < len(confidences):
                 payload["verifier_confidence"] = confidences[index]

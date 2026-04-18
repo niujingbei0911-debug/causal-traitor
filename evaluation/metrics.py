@@ -133,7 +133,9 @@ class CausalMetrics:
         predicted_labels: Sequence[Any],
     ) -> list[tuple[str, str | None]]:
         pairs: list[tuple[str, str | None]] = []
-        for gold, pred in zip(gold_labels, predicted_labels):
+        predicted = list(predicted_labels)
+        for index, gold in enumerate(gold_labels):
+            pred = predicted[index] if index < len(predicted) else None
             gold_label = _normalize_verdict_label(gold)
             pred_label = _normalize_verdict_label(pred)
             if gold_label is None:
@@ -152,8 +154,10 @@ class CausalMetrics:
         records: list[dict[str, Any]] = []
         confidence_values = list(confidences) if confidences is not None else []
         probability_values = list(predicted_probabilities) if predicted_probabilities is not None else []
+        predicted = list(predicted_labels)
 
-        for index, (gold, pred) in enumerate(zip(gold_labels, predicted_labels)):
+        for index, gold in enumerate(gold_labels):
+            pred = predicted[index] if index < len(predicted) else None
             gold_label = _normalize_verdict_label(gold)
             pred_label = _normalize_verdict_label(pred)
             if gold_label is None:
@@ -871,7 +875,7 @@ class CausalMetrics:
                     else _normalize_verdict_label(round_data.get("gold_label")) in {"invalid", "unidentifiable"}
                 )
 
-        if gold_labels and predicted_labels:
+        if gold_labels:
             results.extend(
                 [
                     cls.verdict_accuracy(gold_labels, predicted_labels),

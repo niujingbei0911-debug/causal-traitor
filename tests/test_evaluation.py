@@ -274,6 +274,32 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score.summary["scored_rounds"], 2)
         self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 0.5, places=4)
 
+    def test_score_game_array_mode_counts_missing_predictions_as_failures(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "missing-array-verdicts",
+                "gold_labels": ["valid", "invalid"],
+                "predicted_labels": ["valid"],
+            }
+        )
+
+        self.assertEqual(score.summary["scored_rounds"], 2)
+        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 0.5, places=4)
+
+    def test_metrics_compute_all_array_mode_counts_missing_predictions_as_failures(self) -> None:
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all(
+                {
+                    "gold_labels": ["valid", "invalid"],
+                    "predicted_labels": ["valid"],
+                }
+            )
+        }
+
+        self.assertAlmostEqual(lookup["verdict_accuracy"].value, 0.5, places=4)
+        self.assertEqual(lookup["verdict_accuracy"].details["n"], 2)
+
 
 class EvaluationStatisticsTests(unittest.TestCase):
     def test_bootstrap_confidence_interval_is_exact_for_constant_values(self) -> None:

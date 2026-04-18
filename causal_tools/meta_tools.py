@@ -242,7 +242,15 @@ class ToolSelector:
         elif level_name == "L3":
             tools.extend(["backdoor_adjustment_check", "sensitivity_analysis", "overlap_check"])
             if has_public_scm:
-                tools.extend(["counterfactual_inference", "scm_identification_test", "ett_computation"])
+                tools.extend(
+                    [
+                        "counterfactual_inference",
+                        "scm_identification_test",
+                        "ett_computation",
+                        "probability_of_necessity",
+                        "probability_of_sufficiency",
+                    ]
+                )
             if has_mediator:
                 tools.append("counterfactual_bridge_check")
             if has_public_graph and has_mediator:
