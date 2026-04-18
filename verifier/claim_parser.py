@@ -742,6 +742,8 @@ def _infer_rhetorical_strategy(
         or "identified rather than ambiguous" in lower_text
         or "accepted as identified" in lower_text
         or "enough information on the table" in lower_text
+        or "enough to settle" in lower_text
+        or "settle the unit-level counterfactual effect" in lower_text
         or "rules out any serious ambiguity" in lower_text
         or "confidently say exactly" in lower_text
         or "fully determined" in lower_text

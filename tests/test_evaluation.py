@@ -250,6 +250,30 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(lookup["countermodel_coverage"].value, 0.0)
         self.assertEqual(lookup["countermodel_coverage"].details["applicable"], 0)
 
+    def test_score_game_counts_missing_predictions_as_scored_failures(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "missing-verdicts",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "valid",
+                        "verdict_label": "valid",
+                        "verifier_confidence": 0.8,
+                    },
+                    {
+                        "round_id": 2,
+                        "gold_label": "invalid",
+                        "verdict_label": None,
+                        "verifier_confidence": 0.0,
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(score.summary["scored_rounds"], 2)
+        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 0.5, places=4)
+
 
 class EvaluationStatisticsTests(unittest.TestCase):
     def test_bootstrap_confidence_interval_is_exact_for_constant_values(self) -> None:

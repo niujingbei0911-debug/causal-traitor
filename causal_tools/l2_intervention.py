@@ -392,7 +392,7 @@ def overlap_check(
 ) -> dict:
     """Simple overlap / positivity diagnostic for binary treatments."""
 
-    covariates = covariates or []
+    covariates = [str(column) for column in (covariates or []) if str(column) != treatment]
     frame = data.loc[:, [treatment, *covariates]].dropna().copy()
     if frame.empty:
         raise ValueError("没有足够的数据用于positivity检查")

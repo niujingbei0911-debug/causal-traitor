@@ -17,7 +17,7 @@ load_dotenv()
 
 import pandas as pd
 
-from evaluation.reporting import summarize_metric
+from evaluation.reporting import summarize_metric, summarize_metrics
 from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
@@ -90,11 +90,28 @@ def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[
         if correctness
         else None
     )
+    core_metric_values = {
+        metric_name: [metric_value]
+        for metric_name, metric_value in score.summary.get("core_metrics", {}).items()
+    }
+    core_metric_summaries = (
+        {
+            metric_name: summary.to_dict()
+            for metric_name, summary in summarize_metrics(
+                core_metric_values,
+                n_resamples=2000,
+                random_state=0,
+            ).items()
+        }
+        if core_metric_values
+        else {}
+    )
     return {
         "n_rounds": len(results),
         "scored_rounds": score.summary.get("scored_rounds", 0),
         "primary_metric": score.summary.get("primary_metric", "verdict_accuracy"),
         "verdict_metrics": dict(score.summary.get("core_metrics", {})),
+        "verdict_metric_summaries": core_metric_summaries,
         "verdict_accuracy_ci": verdict_accuracy_ci,
         "gold_label_distribution": dict(score.summary.get("gold_label_distribution", {})),
         "predicted_label_distribution": dict(score.summary.get("predicted_label_distribution", {})),

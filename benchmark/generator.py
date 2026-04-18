@@ -900,7 +900,7 @@ class BenchmarkGenerator:
         gold_label = VerdictLabel(str(self._select_gold_label(blueprint, seed)).strip().lower())
         query_type = self._select_query_type(blueprint, seed)
         sample_seed = seed
-        for attempt in range(12):
+        for attempt in range(64):
             full_data, true_scm = self._sample_programmatic_data(
                 blueprint=blueprint,
                 difficulty=difficulty,
@@ -1129,7 +1129,8 @@ class BenchmarkGenerator:
                 return bool(report.get("supports_proxy_sufficiency"))
 
             if blueprint.family_name == "l2_valid_backdoor_family":
-                from causal_tools.l2_intervention import backdoor_adjustment_check, overlap_check
+                import networkx as nx
+                from causal_tools.l2_intervention import overlap_check, validate_backdoor_criterion
 
                 adjuster = (
                     blueprint.role_bindings.get("backdoor_adjuster")
@@ -1137,15 +1138,12 @@ class BenchmarkGenerator:
                 )
                 if adjuster is None:
                     return False
-                adjustment_report = backdoor_adjustment_check(
-                    observed_data,
-                    treatment,
-                    outcome,
-                    [adjuster],
-                    graph=None,
-                )
+                graph = nx.DiGraph()
+                for parent, children in blueprint.true_dag.items():
+                    for child in children:
+                        graph.add_edge(parent, child)
                 overlap_report = overlap_check(observed_data, treatment, [adjuster])
-                return bool(adjustment_report.get("supports_adjustment_set")) and bool(
+                return bool(validate_backdoor_criterion(graph, treatment, outcome, [adjuster])) and bool(
                     overlap_report.get("has_overlap")
                 )
 

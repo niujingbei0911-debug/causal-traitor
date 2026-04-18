@@ -44,17 +44,20 @@ def _clip01(value: Any) -> float:
 def _normalize_probability_distribution(
     value: Any,
     *,
-    predicted_label: str,
+    predicted_label: str | None,
     confidence: Any = None,
 ) -> dict[str, float]:
     fallback_confidence = 1.0 if confidence is None else _clip01(confidence)
-    other_labels = [label for label in VERDICT_LABEL_SPACE if label != predicted_label]
-    remainder = max(0.0, 1.0 - fallback_confidence)
-    fallback = {
-        predicted_label: fallback_confidence,
-        other_labels[0]: remainder / 2.0,
-        other_labels[1]: remainder / 2.0,
-    }
+    if predicted_label in VERDICT_LABEL_SPACE:
+        other_labels = [label for label in VERDICT_LABEL_SPACE if label != predicted_label]
+        remainder = max(0.0, 1.0 - fallback_confidence)
+        fallback = {
+            predicted_label: fallback_confidence,
+            other_labels[0]: remainder / 2.0,
+            other_labels[1]: remainder / 2.0,
+        }
+    else:
+        fallback = {label: 0.0 for label in VERDICT_LABEL_SPACE}
 
     if isinstance(value, dict):
         normalized: dict[str, float] = {}
@@ -128,12 +131,12 @@ class CausalMetrics:
     def _paired_labels(
         gold_labels: Sequence[Any],
         predicted_labels: Sequence[Any],
-    ) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
+    ) -> list[tuple[str, str | None]]:
+        pairs: list[tuple[str, str | None]] = []
         for gold, pred in zip(gold_labels, predicted_labels):
             gold_label = _normalize_verdict_label(gold)
             pred_label = _normalize_verdict_label(pred)
-            if gold_label is None or pred_label is None:
+            if gold_label is None:
                 continue
             pairs.append((gold_label, pred_label))
         return pairs
@@ -153,7 +156,7 @@ class CausalMetrics:
         for index, (gold, pred) in enumerate(zip(gold_labels, predicted_labels)):
             gold_label = _normalize_verdict_label(gold)
             pred_label = _normalize_verdict_label(pred)
-            if gold_label is None or pred_label is None:
+            if gold_label is None:
                 continue
 
             record: dict[str, Any] = {
@@ -184,7 +187,7 @@ class CausalMetrics:
                 details={"n": 0, "correct": 0},
                 is_primary=True,
             )
-        correct = sum(1 for gold, pred in pairs if gold == pred)
+        correct = sum(1 for gold, pred in pairs if pred is not None and gold == pred)
         return cls._metric(
             "verdict_accuracy",
             _safe_rate(correct, len(pairs)),
@@ -318,12 +321,14 @@ class CausalMetrics:
                 predicted_label=record["predicted_label"],
                 confidence=record.get("confidence"),
             )
-            if record.get("predicted_probabilities") is not None:
+            if record.get("predicted_label") is None:
+                clipped_confidences.append(0.0)
+            elif record.get("predicted_probabilities") is not None:
                 clipped_confidences.append(probability_distribution[record["predicted_label"]])
             else:
                 clipped_confidences.append(_clip01(record.get("confidence", 0.0)))
         correctness = [
-            1.0 if record["gold_label"] == record["predicted_label"] else 0.0
+            1.0 if record["predicted_label"] is not None and record["gold_label"] == record["predicted_label"] else 0.0
             for record in records
         ]
         bins = np.linspace(0.0, 1.0, max(2, int(n_bins)) + 1)

@@ -286,7 +286,7 @@ class Scorer:
         countermodel_applicable: list[bool] = []
 
         for round_data, round_score in zip(rounds_raw, round_scores):
-            if round_score.gold_label is None or round_score.predicted_label is None:
+            if round_score.gold_label is None:
                 continue
             paired_gold_labels.append(round_score.gold_label)
             paired_predicted_labels.append(round_score.predicted_label)

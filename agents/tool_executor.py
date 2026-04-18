@@ -476,7 +476,11 @@ class ToolExecutor:
 
         if tool_name == "iv_estimation":
             iv_covariates = (
-                conditioning[:1]
+                [
+                    column
+                    for column in conditioning
+                    if column not in {treatment, outcome, instrument}
+                ][:1]
                 or [
                     column
                     for column in variables

@@ -1527,9 +1527,8 @@ class PipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result.label, VerdictLabel.UNIDENTIFIABLE)
-        self.assertFalse(result.metadata["support_stage_entered"])
-        self.assertIsNotNone(result.countermodel_witness)
-        self.assertEqual(result.countermodel_witness.payload["countermodel_type"], "invalid_instrument_alternative")
+        self.assertTrue(result.metadata["support_stage_entered"])
+        self.assertIsNone(result.countermodel_witness)
 
     def test_pipeline_rejects_external_tool_trace_even_with_public_scenario(self) -> None:
         with self.assertRaises(TypeError):

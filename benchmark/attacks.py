@@ -278,9 +278,9 @@ def _association_overclaim(
             )
     else:
         body_options = (
-            f"{treatment} appears to cause {outcome} because the observed relationship stays stable across the measured variables",
-            f"the consistent association between {treatment} and {outcome} may be enough to support a causal conclusion",
-            f"once {treatment} and {outcome} move together this reliably, the causal direction looks difficult to dispute",
+            f"{treatment} causes {outcome} because the observed relationship stays stable across the measured variables",
+            f"the consistent association between {treatment} and {outcome} is enough to support a causal conclusion",
+            f"once {treatment} and {outcome} move together this reliably, the causal direction is difficult to dispute",
         )
     claim = _compose_sentence(
         rng,
@@ -322,9 +322,9 @@ def _hidden_confounder_denial(
             )
         else:
             body_options = (
-                f"there is probably no serious hidden-variable explanation here, so {target} may be identified",
-                f"the observed variables already explain much of the pattern, making hidden confounding for {target} less pressing",
-                f"appeals to omitted variables such as {hidden} seem speculative and may not change the conclusion that {target} is identified",
+                f"there is no serious hidden-variable explanation here, so {target} is identified",
+                f"the observed variables already explain the pattern, making hidden confounding for {target} irrelevant",
+                f"appeals to omitted variables such as {hidden} are speculative and do not change the conclusion that {target} is identified",
             )
     else:
         if label == "invalid":
@@ -335,9 +335,9 @@ def _hidden_confounder_denial(
             )
         else:
             body_options = (
-                f"there is probably no serious hidden-variable explanation here, so the observed relationship between {treatment} and {outcome} may be read causally",
-                f"the observed variables already explain much of the pattern, making latent confounding for {treatment} and {outcome} seem less necessary",
-                f"appeals to omitted variables such as {hidden} seem speculative and may not change the conclusion that the observed association between {treatment} and {outcome} should be read causally",
+                f"there is no serious hidden-variable explanation here, so the observed relationship between {treatment} and {outcome} should be read causally",
+                f"the observed variables already explain the pattern, making latent confounding for {treatment} and {outcome} unnecessary",
+                f"appeals to omitted variables such as {hidden} are speculative and do not change the conclusion that the observed association between {treatment} and {outcome} should be read causally",
             )
     claim = _compose_sentence(
         rng,
@@ -594,8 +594,8 @@ def _counterfactual_overclaim(
     if label == "unidentifiable":
         body_options = (
             f"for an individual with the same observed history, switching {treatment} would change {outcome}",
-            f"the available evidence seems strong enough to evaluate the unit-level counterfactual effect of changing {treatment} on {outcome}",
-            f"we may be able to say what {outcome} would have been under a different value of {treatment} for the same case",
+            f"the available evidence is enough to settle the unit-level counterfactual effect of changing {treatment} on {outcome}",
+            f"we can say what {outcome} would have been under a different value of {treatment} for the same case",
         )
     else:
         body_options = (
