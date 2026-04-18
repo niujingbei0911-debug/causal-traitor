@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
@@ -21,6 +22,33 @@ async def _run_without_evolution(engine: DebateEngine, rounds: int, level: int) 
         use_evolution=False,
         update_difficulty=False,
     )
+
+
+def _result_gold_label(result: dict[str, Any]) -> str | None:
+    scenario = result.get("scenario")
+    if scenario is None:
+        return None
+    gold_label = getattr(scenario, "gold_label", None)
+    if gold_label is not None and hasattr(gold_label, "value"):
+        return str(gold_label.value)
+    if gold_label is not None:
+        return str(gold_label)
+    ground_truth = getattr(scenario, "ground_truth", None)
+    if isinstance(ground_truth, dict) and ground_truth.get("label") is not None:
+        return str(ground_truth["label"])
+    return None
+
+
+def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
+    audit = result.get("audit_verdict", {}) if isinstance(result.get("audit_verdict"), dict) else {}
+    return {
+        "round_id": int(result.get("round_number", 0)),
+        "gold_label": _result_gold_label(result),
+        "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
+        "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
+        "countermodel_witness": audit.get("countermodel_witness"),
+        "deception_succeeded": result.get("deception_succeeded", result.get("deception_success")),
+    }
 
 
 async def run_experiment(
@@ -39,6 +67,7 @@ async def run_experiment(
         use_wandb=bool(config.get("logging", {}).get("use_wandb", False)),
     )
     tracker.init()
+    scorer = Scorer()
 
     no_evolution_engine = DebateEngine(config)
     await no_evolution_engine.initialize()
@@ -57,29 +86,55 @@ async def run_experiment(
     for result in evolution_results:
         tracker.log_round(result["round_number"], {"condition": "with_evolution", **result})
 
+    no_evolution_score = scorer.score_game(
+        {
+            "game_id": "appendix_exp4_without_evolution",
+            "rounds": [_round_for_scoring(result) for result in independent_results],
+        }
+    )
+    evolution_score = scorer.score_game(
+        {
+            "game_id": "appendix_exp4_with_evolution",
+            "rounds": [_round_for_scoring(result) for result in evolution_results],
+        }
+    )
     payload = {
         "without_evolution": {
             "rounds": rounds,
-            "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in independent_results) / rounds,
+            "appendix_only": True,
+            "public_schema_only": True,
+            "verdict_metrics": dict(no_evolution_score.summary.get("core_metrics", {})),
+            "appendix_metrics": {
+                "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in independent_results) / rounds,
+            },
             "results": [
                 {
                     "round_number": result.get("round_number"),
                     "winner": result["winner"],
                     "deception_success": result["deception_success"],
+                    "gold_label": _result_gold_label(result),
+                    "predicted_label": result.get("verdict_label") or result["audit_verdict"].get("verdict_label"),
                 }
                 for result in independent_results
             ],
         },
         "with_evolution": {
             "rounds": rounds,
-            "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in evolution_results) / rounds,
-            "arms_race_index": evolution_engine.evolution_tracker.get_arms_race_index(),
-            "converged": evolution_engine.evolution_tracker.detect_convergence(),
+            "appendix_only": True,
+            "public_schema_only": True,
+            "verdict_metrics": dict(evolution_score.summary.get("core_metrics", {})),
+            "appendix_metrics": {
+                "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in evolution_results) / rounds,
+                "arms_race_index": evolution_engine.evolution_tracker.get_arms_race_index(),
+                "converged": evolution_engine.evolution_tracker.detect_convergence(),
+            },
             "results": [
                 {
                     "winner": result["winner"],
                     "deception_success": result["deception_success"],
                     "snapshot": result["evolution_snapshot"],
+                    "gold_label": _result_gold_label(result),
+                    "predicted_label": result.get("verdict_label") or result["audit_verdict"].get("verdict_label"),
                 }
                 for result in evolution_results
             ],
@@ -87,9 +142,11 @@ async def run_experiment(
     }
     tracker.log_metrics(
         {
-            "without_evolution_agent_a_win_rate": payload["without_evolution"]["agent_a_win_rate"],
-            "with_evolution_agent_a_win_rate": payload["with_evolution"]["agent_a_win_rate"],
-            "with_evolution_arms_race_index": payload["with_evolution"]["arms_race_index"],
+            "without_evolution_verdict_accuracy": payload["without_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
+            "with_evolution_verdict_accuracy": payload["with_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
+            "without_evolution_agent_a_win_rate": payload["without_evolution"]["appendix_metrics"]["agent_a_win_rate"],
+            "with_evolution_agent_a_win_rate": payload["with_evolution"]["appendix_metrics"]["agent_a_win_rate"],
+            "with_evolution_arms_race_index": payload["with_evolution"]["appendix_metrics"]["arms_race_index"],
         },
         step=rounds,
     )
@@ -108,7 +165,7 @@ def _write_exp4_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
     md_path = json_path.with_suffix(".md")
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["condition", "round", "winner", "deception_success"])
+        writer.writerow(["condition", "round", "winner", "deception_success", "predicted_label", "gold_label"])
         for result in payload.get("without_evolution", {}).get("results", []):
             writer.writerow(
                 [
@@ -116,6 +173,8 @@ def _write_exp4_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
                     result.get("round_number", ""),
                     result.get("winner", ""),
                     int(bool(result.get("deception_success", False))),
+                    result.get("predicted_label", ""),
+                    result.get("gold_label", ""),
                 ]
             )
         for index, result in enumerate(payload.get("with_evolution", {}).get("results", []), start=1):
@@ -125,18 +184,22 @@ def _write_exp4_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
                     index,
                     result.get("winner", ""),
                     int(bool(result.get("deception_success", False))),
+                    result.get("predicted_label", ""),
+                    result.get("gold_label", ""),
                 ]
             )
     without = payload.get("without_evolution", {})
     with_evo = payload.get("with_evolution", {})
     lines = [
-        "# Experiment 4 — Evolution vs No Evolution",
+        "# Experiment 4 — Evolution vs No Evolution (Appendix)",
         "",
         f"- Rounds per condition: {without.get('rounds', 0)}",
-        f"- Without evolution — Agent A win rate: {without.get('agent_a_win_rate', 0.0):.3f}",
-        f"- With evolution — Agent A win rate: {with_evo.get('agent_a_win_rate', 0.0):.3f}",
-        f"- Arms race index (with evolution): {with_evo.get('arms_race_index', 0.0):.3f}",
-        f"- Strategy converged (with evolution): {with_evo.get('converged', False)}",
+        f"- Without evolution — Verdict accuracy: {without.get('verdict_metrics', {}).get('verdict_accuracy', 0.0):.3f}",
+        f"- With evolution — Verdict accuracy: {with_evo.get('verdict_metrics', {}).get('verdict_accuracy', 0.0):.3f}",
+        f"- Without evolution — Agent A win rate: {without.get('appendix_metrics', {}).get('agent_a_win_rate', 0.0):.3f}",
+        f"- With evolution — Agent A win rate: {with_evo.get('appendix_metrics', {}).get('agent_a_win_rate', 0.0):.3f}",
+        f"- Arms race index (with evolution): {with_evo.get('appendix_metrics', {}).get('arms_race_index', 0.0):.3f}",
+        f"- Strategy converged (with evolution): {with_evo.get('appendix_metrics', {}).get('converged', False)}",
     ]
     tracking = payload.get("tracking", {})
     if tracking.get("run_dir"):

@@ -28,76 +28,98 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 
 import websockets
 
+from benchmark.schema import PublicCausalInstance, ensure_public_instance
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 from game.evolution import StrategyRecord
-from game.types import CausalScenario
+from verifier.claim_parser import parse_claim
 
 WS_DEFAULT = "ws://localhost:8001/ws/game"
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-def _dag_to_graph(
-    scenario: CausalScenario,
-    discovered_hidden_vars: list[str] | None = None,
-    causal_level: int = 1,
+def _infer_focus_variables(scenario: PublicCausalInstance, claim_text: str) -> tuple[str, str]:
+    variables = list(getattr(scenario, "variables", []) or [])
+    if not variables:
+        return "X", "Y"
+    try:
+        parsed = parse_claim(claim_text)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        treatment = str(getattr(parsed, "treatment", "") or "").strip()
+        outcome = str(getattr(parsed, "outcome", "") or "").strip()
+        if treatment in variables and outcome in variables and treatment != outcome:
+            return treatment, outcome
+    if "X" in variables and "Y" in variables:
+        return "X", "Y"
+    return variables[0], variables[-1]
+
+
+def _public_graph(
+    scenario: PublicCausalInstance,
+    *,
+    claim_text: str,
+    causal_level: int,
 ) -> dict[str, Any]:
-    """CausalScenario.true_dag → 前端 CausalGraphData 格式.
+    """Build a public-evidence graph without leaking gold DAG structure."""
 
-    节点类型:
-      - claimed (红): Agent A 声称的可见因果关系
-      - hidden  (紫): 未被发现的隐藏变量
-      - verified(绿): Agent B 发现的隐藏变量
+    proxy_variables = set(getattr(scenario, "proxy_variables", []) or [])
+    selection_variables = set(getattr(scenario, "selection_variables", []) or [])
+    treatment, outcome = _infer_focus_variables(scenario, claim_text)
 
-    causal_level: 当前回合的 Pearl 因果层级 (1/2/3)，
-                  会写入每个节点/边及图整体，供前端着色。
-    """
-    hidden_set = set(scenario.hidden_variables or [])
-    discovered_set = set(discovered_hidden_vars or [])
-    nodes: list[dict] = []
-    seen: set[str] = set()
+    nodes: list[dict[str, Any]] = []
+    for variable in list(getattr(scenario, "variables", []) or []):
+        node_type = "claimed"
+        if variable in proxy_variables or variable in selection_variables:
+            node_type = "verified"
+        nodes.append(
+            {
+                "id": variable,
+                "label": variable,
+                "type": node_type,
+                "causal_level": causal_level,
+            }
+        )
 
-    def _node_type(v: str) -> str:
-        if v in hidden_set:
-            return "verified" if v in discovered_set else "hidden"
-        return "claimed"
+    links: list[dict[str, Any]] = []
+    seen_links: set[tuple[str, str, str]] = set()
 
-    for v in scenario.variables or []:
-        nodes.append({"id": v, "label": v, "type": _node_type(v), "causal_level": causal_level})
-        seen.add(v)
+    def add_link(source: str, target: str, link_type: str) -> None:
+        if source == target:
+            return
+        key = (source, target, link_type)
+        if key in seen_links:
+            return
+        seen_links.add(key)
+        links.append(
+            {
+                "source": source,
+                "target": target,
+                "type": link_type,
+                "causal_level": causal_level,
+            }
+        )
 
-    for src, targets in (scenario.true_dag or {}).items():
-        if src not in seen:
-            nodes.append({"id": src, "label": src, "type": _node_type(src), "causal_level": causal_level})
-            seen.add(src)
-        for t in targets:
-            if t not in seen:
-                nodes.append({"id": t, "label": t, "type": _node_type(t), "causal_level": causal_level})
-                seen.add(t)
+    if treatment in getattr(scenario, "variables", []) and outcome in getattr(scenario, "variables", []):
+        add_link(treatment, outcome, "claimed")
 
-    # ── 安全网: 确保所有隐藏变量都作为节点出现 ──
-    for hv in scenario.hidden_variables or []:
-        if hv not in seen:
-            nodes.append({"id": hv, "label": hv, "type": _node_type(hv), "causal_level": causal_level})
-            seen.add(hv)
+    for proxy in sorted(proxy_variables):
+        if proxy in getattr(scenario, "variables", []):
+            add_link(proxy, treatment, "verified")
+            add_link(proxy, outcome, "verified")
 
-    links: list[dict] = []
-    for src, targets in (scenario.true_dag or {}).items():
-        for t in targets:
-            src_hidden = src in hidden_set
-            t_hidden = t in hidden_set
-            if src_hidden or t_hidden:
-                all_discovered = (
-                    (not src_hidden or src in discovered_set)
-                    and (not t_hidden or t in discovered_set)
-                )
-                link_type = "verified" if all_discovered else "hidden"
-            else:
-                link_type = "claimed"
-            links.append({"source": src, "target": t, "type": link_type, "causal_level": causal_level})
+    for selection in sorted(selection_variables):
+        if selection in getattr(scenario, "variables", []):
+            add_link(selection, outcome, "verified")
 
-    return {"nodes": nodes, "links": links, "causal_level": causal_level}
+    return {
+        "nodes": nodes,
+        "links": links,
+        "causal_level": causal_level,
+        "schema_view": "public",
+    }
 
 
 def _strategy_diversity(dist: dict[str, float]) -> float:
@@ -190,7 +212,7 @@ def _postprocess_round(
     engine: DebateEngine,
     result: dict[str, Any],
     round_index: int,
-    scenario: CausalScenario,
+    scenario,
     *,
     update_difficulty: bool = True,
 ) -> dict[str, Any]:
@@ -252,25 +274,39 @@ def _postprocess_round(
 async def _push_round_events(ws, result: dict[str, Any], delay: float):
     """Push all WS events for a single completed round."""
     rn: int = result["round_number"]
-    scenario: CausalScenario = result["scenario"]
+    public_scenario = ensure_public_instance(result.get("public_scenario") or result["scenario"])
+    agent_a_claim = result.get("agent_a_claim", {})
+    public_graph = _public_graph(
+        public_scenario,
+        claim_text=str(agent_a_claim.get("causal_claim", "")),
+        causal_level=public_scenario.causal_level,
+    )
 
     # ── round_start + causal graph ──
     await _send(ws, "round_start", rn, {
         "role": "system",
-        "narrative": f"📋 第 {rn} 轮 — 因果层级 L{scenario.causal_level}, 难度 {result.get('difficulty', 0.5):.2f}",
-        "causal_graph": _dag_to_graph(scenario, result.get("agent_b_analysis", {}).get("discovered_hidden_vars", []), causal_level=scenario.causal_level),
-        "causal_level": scenario.causal_level,
+        "narrative": (
+            f"📋 第 {rn} 轮 — Public oversight view | "
+            f"因果层级 L{public_scenario.causal_level}, 难度 {result.get('difficulty', 0.5):.2f}"
+        ),
+        "causal_graph": public_graph,
+        "causal_level": public_scenario.causal_level,
         "difficulty": result.get("difficulty", 0.5),
+        "scenario_id": public_scenario.scenario_id,
+        "variables": list(public_scenario.variables),
+        "proxy_variables": list(public_scenario.proxy_variables),
+        "selection_variables": list(public_scenario.selection_variables),
+        "selection_mechanism": public_scenario.selection_mechanism,
         "game_id": "live",
     }, delay)
 
     # ── claim (Agent A) ──
-    claim = result.get("agent_a_claim", {})
+    claim = agent_a_claim
     await _send(ws, "claim", rn, {
         "role": "traitor",
         "claim": claim.get("causal_claim", ""),
-        "narrative": claim.get("narrative", ""),
-        "strategy": claim.get("strategy", ""),
+        "narrative": claim.get("content", claim.get("narrative", "")),
+        "strategy": claim.get("deception_strategy", claim.get("strategy", "")),
         "game_id": "live",
     }, delay)
 
@@ -294,8 +330,8 @@ async def _push_round_events(ws, result: dict[str, Any], delay: float):
     await _send(ws, "claim", rn, {
         "role": "traitor",
         "claim": reb.get("causal_claim", ""),
-        "narrative": reb.get("narrative", "（反驳阶段）"),
-        "strategy": reb.get("strategy", ""),
+        "narrative": reb.get("content", reb.get("narrative", "（反驳阶段）")),
+        "strategy": reb.get("deception_strategy", reb.get("strategy", "")),
         "game_id": "live",
     }, delay)
 
@@ -327,6 +363,8 @@ async def _push_round_events(ws, result: dict[str, Any], delay: float):
     await _send(ws, "verdict", rn, {
         "role": "auditor",
         "verdict": audit.get("winner", ""),
+        "verdict_label": audit.get("verdict_label"),
+        "verifier_confidence": audit.get("verifier_confidence", 0.0),
         "reasoning": audit.get("reasoning", ""),
         "narrative": audit.get("narrative", ""),
         "causal_validity_score": audit.get("causal_validity_score", 0),

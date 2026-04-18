@@ -57,24 +57,17 @@ evolution:
 # 指标名称与 evaluation/metrics.py CausalMetrics 方法名一一对应
 evaluation:
   metrics:
-    # 欺骗类
+    # 主线 verdict-centric 指标
+    - verdict_accuracy
+    - verdict_macro_f1
+    - invalid_claim_acceptance_rate
+    - unidentifiable_awareness
+    - expected_calibration_error
+    - brier_score
+    - countermodel_coverage
+    # Appendix 指标
     - deception_success_rate          # DSR
-    - causal_sophistication_index     # CSI
-    - hidden_variable_plausibility    # HVP
-    - strategy_diversity_score        # SDS
-    # 检测类
-    - detection_accuracy              # DAcc
-    - false_positive_rate             # FPR
-    - time_to_detection               # TtD
-    - tool_efficiency                 # TEff
-    # 博弈类
-    - game_balance_index              # GBI
-    - nash_equilibrium_distance       # NE_dist
     - evolution_complexity_index      # ECI
-    # 因果类
-    - causal_reasoning_accuracy       # CRA
-    - ladder_transition_performance   # LTP
-    - information_asymmetry_score     # IAS
 
 # --- Visualization ---
 visualization:

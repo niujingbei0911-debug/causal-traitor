@@ -10,6 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
@@ -41,6 +42,33 @@ async def _run_condition(
     )
 
 
+def _result_gold_label(result: dict[str, Any]) -> str | None:
+    scenario = result.get("scenario")
+    if scenario is None:
+        return None
+    gold_label = getattr(scenario, "gold_label", None)
+    if gold_label is not None and hasattr(gold_label, "value"):
+        return str(gold_label.value)
+    if gold_label is not None:
+        return str(gold_label)
+    ground_truth = getattr(scenario, "ground_truth", None)
+    if isinstance(ground_truth, dict) and ground_truth.get("label") is not None:
+        return str(ground_truth["label"])
+    return None
+
+
+def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
+    audit = result.get("audit_verdict", {}) if isinstance(result.get("audit_verdict"), dict) else {}
+    return {
+        "round_id": int(result.get("round_number", 0)),
+        "gold_label": _result_gold_label(result),
+        "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
+        "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
+        "countermodel_witness": audit.get("countermodel_witness"),
+        "deception_succeeded": result.get("deception_succeeded", result.get("deception_success")),
+    }
+
+
 async def run_experiment(
     rounds: int = 30,
     output_path: str | None = None,
@@ -59,24 +87,36 @@ async def run_experiment(
 
     conditions = ["fixed_easy", "fixed_hard", "dynamic"]
     payload: dict[str, Any] = {"conditions": {}}
+    scorer = Scorer()
 
     for condition in conditions:
         results = await _run_condition(base_config, condition, rounds)
         for r in results:
             tracker.log_round(r["round_number"], {"condition": condition, **r})
 
+        score = scorer.score_game(
+            {
+                "game_id": f"appendix_exp3_{condition}",
+                "rounds": [_round_for_scoring(result) for result in results],
+            }
+        )
         wins_a = sum(r["winner"] == "agent_a" for r in results)
         causal_scores = [r["audit_verdict"]["causal_validity_score"] for r in results]
         difficulties = [r["difficulty"] for r in results]
         payload["conditions"][condition] = {
             "rounds": rounds,
-            "agent_a_win_rate": wins_a / rounds,
-            "causal_validity_mean": sum(causal_scores) / len(causal_scores),
-            "difficulty_mean": sum(difficulties) / len(difficulties),
-            "difficulty_std": (
+            "appendix_only": True,
+            "public_schema_only": True,
+            "verdict_metrics": dict(score.summary.get("core_metrics", {})),
+            "appendix_metrics": {
+                "agent_a_win_rate": wins_a / rounds,
+                "causal_validity_mean": sum(causal_scores) / len(causal_scores),
+                "difficulty_mean": sum(difficulties) / len(difficulties),
+                "difficulty_std": (
                 (sum((d - sum(difficulties) / len(difficulties)) ** 2 for d in difficulties) / len(difficulties))
                 ** 0.5
-            ),
+                ),
+            },
             "results": [
                 {
                     "round": r["round_number"],
@@ -84,15 +124,18 @@ async def run_experiment(
                     "deception_success": r["deception_success"],
                     "difficulty": r["difficulty"],
                     "causal_validity": r["audit_verdict"]["causal_validity_score"],
+                    "gold_label": _result_gold_label(r),
+                    "predicted_label": r.get("verdict_label") or r["audit_verdict"].get("verdict_label"),
                 }
                 for r in results
             ],
         }
         tracker.log_metrics(
             {
-                f"{condition}_agent_a_win_rate": payload["conditions"][condition]["agent_a_win_rate"],
-                f"{condition}_causal_validity_mean": payload["conditions"][condition]["causal_validity_mean"],
-                f"{condition}_difficulty_mean": payload["conditions"][condition]["difficulty_mean"],
+                f"{condition}_verdict_accuracy": payload["conditions"][condition]["verdict_metrics"].get("verdict_accuracy", 0.0),
+                f"{condition}_agent_a_win_rate": payload["conditions"][condition]["appendix_metrics"]["agent_a_win_rate"],
+                f"{condition}_causal_validity_mean": payload["conditions"][condition]["appendix_metrics"]["causal_validity_mean"],
+                f"{condition}_difficulty_mean": payload["conditions"][condition]["appendix_metrics"]["difficulty_mean"],
             },
             step=conditions.index(condition),
         )
@@ -112,32 +155,34 @@ def _write_exp3_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow([
-            "condition", "rounds", "agent_a_win_rate",
+            "condition", "rounds", "verdict_accuracy", "agent_a_win_rate",
             "causal_validity_mean", "difficulty_mean", "difficulty_std",
         ])
         for label, cond in payload.get("conditions", {}).items():
             writer.writerow([
                 label,
                 cond["rounds"],
-                f"{cond['agent_a_win_rate']:.4f}",
-                f"{cond['causal_validity_mean']:.4f}",
-                f"{cond['difficulty_mean']:.4f}",
-                f"{cond['difficulty_std']:.4f}",
+                f"{cond['verdict_metrics'].get('verdict_accuracy', 0.0):.4f}",
+                f"{cond['appendix_metrics']['agent_a_win_rate']:.4f}",
+                f"{cond['appendix_metrics']['causal_validity_mean']:.4f}",
+                f"{cond['appendix_metrics']['difficulty_mean']:.4f}",
+                f"{cond['appendix_metrics']['difficulty_std']:.4f}",
             ])
 
     lines = [
-        "# Experiment 3 — Difficulty Comparison",
+        "# Experiment 3 — Difficulty Comparison (Appendix)",
         "",
-        "| Condition | Rounds | A Win Rate | Causal Validity | Diff Mean | Diff Std |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Condition | Rounds | Verdict Acc. | A Win Rate | Causal Validity | Diff Mean | Diff Std |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for label, cond in payload.get("conditions", {}).items():
         lines.append(
             f"| {label} | {cond['rounds']} | "
-            f"{cond['agent_a_win_rate']:.3f} | "
-            f"{cond['causal_validity_mean']:.3f} | "
-            f"{cond['difficulty_mean']:.3f} | "
-            f"{cond['difficulty_std']:.3f} |"
+            f"{cond['verdict_metrics'].get('verdict_accuracy', 0.0):.3f} | "
+            f"{cond['appendix_metrics']['agent_a_win_rate']:.3f} | "
+            f"{cond['appendix_metrics']['causal_validity_mean']:.3f} | "
+            f"{cond['appendix_metrics']['difficulty_mean']:.3f} | "
+            f"{cond['appendix_metrics']['difficulty_std']:.3f} |"
         )
     tracking = payload.get("tracking", {})
     if tracking.get("run_dir"):

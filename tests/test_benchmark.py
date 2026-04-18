@@ -672,6 +672,22 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertNotIn("seed 10", sample.public.description.lower())
         self.assertNotIn("l2_invalid_iv_family", sample.public.scenario_id)
         self.assertTrue(sample.public.scenario_id.startswith("public_case_"))
+        self.assertNotIn("generator_seed", sample.public.difficulty_config)
+        self.assertNotIn("hidden_strength", sample.public.difficulty_config)
+        self.assertNotIn("selection_bias_strength", sample.public.difficulty_config)
+
+    def test_programmatic_public_view_exposes_typed_proxy_and_selection_hints(self) -> None:
+        sample = BenchmarkGenerator(seed=41).generate_benchmark_sample(
+            family_name="l1_selection_bias_family",
+            difficulty=0.4,
+            seed=41,
+        )
+
+        self.assertTrue(sample.public.proxy_variables == sample.claim.proxy_variables)
+        self.assertTrue(sample.public.selection_mechanism)
+        self.assertNotIn("proxy_variables", sample.public.metadata)
+        self.assertNotIn("selection_variables", sample.public.metadata)
+        self.assertNotIn("selection_mechanism", sample.public.metadata)
 
     def test_benchmark_generator_produces_claim_instance_level_sample_bundle(self) -> None:
         generator = BenchmarkGenerator(seed=29)

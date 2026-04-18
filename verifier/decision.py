@@ -216,10 +216,15 @@ def _make_countermodel_witness(
     )
 
 
-def _make_assumption_witness(ledger: AssumptionLedger) -> Witness:
+def _make_assumption_witness(
+    ledger: AssumptionLedger,
+    *,
+    verdict: VerdictLabel = VerdictLabel.UNIDENTIFIABLE,
+    description: str | None = None,
+    stage: str = "assumption_gate",
+) -> Witness:
     unsupported = _unsupported_core_assumptions(ledger)
-    verdict = VerdictLabel.UNIDENTIFIABLE
-    description = (
+    resolved_description = description or (
         "Core identification assumptions remain unsupported after countermodel-free review, so the claim stays under-identified."
     )
     evidence = [
@@ -228,7 +233,7 @@ def _make_assumption_witness(ledger: AssumptionLedger) -> Witness:
     ]
     return Witness(
         witness_type=WitnessKind.ASSUMPTION,
-        description=description,
+        description=resolved_description,
         evidence=evidence,
         assumptions=[entry.name for entry in unsupported],
         payload={
@@ -238,7 +243,7 @@ def _make_assumption_witness(ledger: AssumptionLedger) -> Witness:
             "unresolved_count": ledger.unresolved_count,
         },
         verdict_suggestion=verdict,
-        metadata={"decision_stage": "assumption_gate"},
+        metadata={"decision_stage": stage},
     )
 
 
@@ -373,7 +378,14 @@ def decide_verdict(
     explicitly_contradicted = _explicitly_contradicted_assumptions(adjudicated_ledger)
 
     if explicitly_contradicted:
-        witness = _make_assumption_witness(adjudicated_ledger)
+        witness = _make_assumption_witness(
+            adjudicated_ledger,
+            verdict=VerdictLabel.INVALID,
+            description=(
+                "Tool-backed evidence directly contradicts explicit identifying assumptions asserted by the claim, so the claim is invalid under the current evidence."
+            ),
+            stage="explicit_assumption_contradiction",
+        )
         return VerifierDecision(
             label=VerdictLabel.INVALID,
             confidence=0.76,

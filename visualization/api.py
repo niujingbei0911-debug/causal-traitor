@@ -23,6 +23,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from verifier.claim_parser import parse_claim
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +277,45 @@ class VisualizationAPI:
     # Data formatters
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _latest_claim_text(game: Dict[str, Any]) -> str:
+        for collection_name in ("rounds", "results"):
+            rounds = game.get(collection_name, [])
+            if not isinstance(rounds, list):
+                continue
+            for record in reversed(rounds):
+                if not isinstance(record, dict):
+                    continue
+                agent_a_claim = record.get("agent_a_claim")
+                if not isinstance(agent_a_claim, dict):
+                    continue
+                claim_text = str(
+                    agent_a_claim.get("causal_claim")
+                    or agent_a_claim.get("content")
+                    or ""
+                ).strip()
+                if claim_text:
+                    return claim_text
+        return ""
+
+    @staticmethod
+    def _infer_focus_variables(variables: List[str], claim_text: str) -> tuple[str | None, str | None]:
+        if len(variables) < 2:
+            return (variables[0], variables[0]) if variables else (None, None)
+        if claim_text:
+            try:
+                parsed = parse_claim(claim_text)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                treatment = str(getattr(parsed, "treatment", "") or "").strip()
+                outcome = str(getattr(parsed, "outcome", "") or "").strip()
+                if treatment in variables and outcome in variables and treatment != outcome:
+                    return treatment, outcome
+        if "X" in variables and "Y" in variables:
+            return "X", "Y"
+        return variables[0], variables[-1]
+
     def get_causal_graph_data(self, game_id: str) -> Dict[str, Any]:
         """获取因果图可视化数据 (D3.js force-directed / dagre 格式).
 
@@ -286,44 +326,74 @@ class VisualizationAPI:
             "causal_level": 1,
           }
         """
+        events = self._store.get_events(game_id)
+        for event in reversed(events):
+            graph = event.get("data", {}).get("causal_graph")
+            if isinstance(graph, dict) and graph.get("nodes") is not None:
+                return {"game_id": game_id, **graph}
+
         game = self._store.get_game(game_id)
         if game is None:
             return {"nodes": [], "links": [], "error": "game not found"}
 
         scenario = game.get("scenario", {})
-        variables = scenario.get("variables", [])
-        hidden = set(scenario.get("hidden_variables", []))
-        edges = scenario.get("edges", [])
-        # 场景整体因果层级 (Pearl hierarchy: 1=关联, 2=干预, 3=反事实)
-        causal_level = scenario.get("causal_level", 1)
+        if not isinstance(scenario, dict):
+            return {"nodes": [], "links": [], "error": "game scenario is unavailable"}
 
-        claimed_edges = set()
-        for evt in self._store.get_events(game_id):
-            if evt.get("event_type") == "claim":
-                ce = evt.get("data", {}).get("claimed_edge")
-                if ce:
-                    claimed_edges.add(tuple(ce))
+        variables = [str(item) for item in scenario.get("variables", [])]
+        proxy_variables = {str(item) for item in scenario.get("proxy_variables", [])}
+        selection_variables = {str(item) for item in scenario.get("selection_variables", [])}
+        causal_level = int(scenario.get("causal_level", 1))
+        claim_text = self._latest_claim_text(game)
+        treatment, outcome = self._infer_focus_variables(variables, claim_text)
 
-        nodes = []
-        for v in variables:
-            name = v if isinstance(v, str) else v.get("name", str(v))
-            nodes.append({
-                "id": name,
-                "type": "hidden" if name in hidden else "observed",
+        nodes = [
+            {
+                "id": variable,
+                "label": variable,
+                "type": "verified" if variable in proxy_variables or variable in selection_variables else "claimed",
                 "causal_level": causal_level,
-            })
+            }
+            for variable in variables
+        ]
+        links: List[Dict[str, Any]] = []
+        if treatment in variables and outcome in variables and treatment != outcome:
+            links.append(
+                {
+                    "source": treatment,
+                    "target": outcome,
+                    "type": "claimed",
+                    "causal_level": causal_level,
+                }
+            )
+        for proxy in sorted(proxy_variables):
+            if variables:
+                links.append(
+                    {
+                        "source": proxy,
+                        "target": variables[0],
+                        "type": "verified",
+                        "causal_level": causal_level,
+                    }
+                )
+        for selection in sorted(selection_variables):
+            if variables:
+                links.append(
+                    {
+                        "source": selection,
+                        "target": variables[-1],
+                        "type": "verified",
+                        "causal_level": causal_level,
+                    }
+                )
 
-        links = []
-        for e in edges:
-            src, tgt = (e[0], e[1]) if isinstance(e, (list, tuple)) else (e.get("source"), e.get("target"))
-            style = "verified"
-            if (src, tgt) in claimed_edges:
-                style = "claimed"
-            if src in hidden or tgt in hidden:
-                style = "hidden"
-            links.append({"source": src, "target": tgt, "style": style, "causal_level": causal_level})
-
-        return {"game_id": game_id, "nodes": nodes, "links": links, "causal_level": causal_level}
+        return {
+            "game_id": game_id,
+            "nodes": nodes,
+            "links": links,
+            "causal_level": causal_level,
+            "schema_view": "public",
+        }
 
     def get_evolution_chart_data(self, game_id: str) -> Dict[str, Any]:
         """获取演化趋势图数据 (Recharts 格式).

@@ -708,6 +708,38 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertTrue(decision.metadata["support_stage_entered"])
         self.assertEqual(decision.metadata["decision_stage"], 3)
 
+    def test_stage_3_explicitly_contradicted_assumption_returns_invalid_consistent_witness(self) -> None:
+        parsed = ParsedClaim(
+            query_type="intervention",
+            treatment="exposure",
+            outcome="recovery",
+            claim_polarity="positive",
+            claim_strength="strong",
+            mentioned_assumptions=["valid adjustment set"],
+            implied_assumptions=["positivity"],
+            rhetorical_strategy="adjustment_sufficiency_assertion",
+            needs_abstention_check=True,
+        )
+        ledger = build_assumption_ledger(parsed)
+        countermodel = CountermodelSearchResult(found_countermodel=False, candidates=[])
+        tool_trace = [
+            {
+                "tool_name": "backdoor_adjustment_check",
+                "summary": "The named adjustment set fails the backdoor criterion.",
+                "contradicts_assumptions": ["valid adjustment set"],
+                "supports_claim": False,
+                "confidence": 0.82,
+            }
+        ]
+
+        decision = decide_verdict(parsed, ledger, countermodel, tool_trace=tool_trace)
+
+        self.assertEqual(decision.label, VerdictLabel.INVALID)
+        self.assertIsNotNone(decision.witness)
+        self.assertEqual(decision.witness.witness_type, WitnessKind.ASSUMPTION)
+        self.assertIs(decision.witness.verdict_suggestion, VerdictLabel.INVALID)
+        self.assertEqual(decision.witness.metadata["decision_stage"], "explicit_assumption_contradiction")
+
     def test_stage_4_supportive_tools_return_valid_for_identifiable_l3_claim(self) -> None:
         parsed = ParsedClaim(
             query_type="counterfactual",
@@ -767,6 +799,7 @@ class PipelineTests(unittest.TestCase):
         forwarded_context = mocked_search.call_args.kwargs["context"]
         self.assertNotIn("public_metadata", forwarded_context)
         self.assertIn("observed_data", forwarded_context)
+        self.assertEqual(forwarded_context["proxy_variables"], ["proxy_signal"])
 
     def test_pipeline_can_run_end_to_end_in_one_call(self) -> None:
         tool_runner = FakeToolRunner(

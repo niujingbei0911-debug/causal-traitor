@@ -21,6 +21,9 @@ VERIFIER_VISIBLE_FIELDS: tuple[str, ...] = (
     "scenario_id",
     "description",
     "variables",
+    "proxy_variables",
+    "selection_variables",
+    "selection_mechanism",
     "observed_data",
     "data",
     "causal_level",
@@ -88,6 +91,12 @@ _PUBLIC_METADATA_ALLOWED_KEYS = frozenset(
         "selection_ratio",
         "variable_descriptions",
         "measurement_semantics",
+        "task_level",
+    }
+)
+_PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset(
+    {
+        "difficulty_family",
         "task_level",
     }
 )
@@ -248,6 +257,36 @@ def _sanitize_metadata(value: Any, *, root: bool = False) -> Any:
     return value
 
 
+def _sanitize_difficulty_config(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: _serialize_json_safe(item)
+        for raw_key, item in value.items()
+        for key in (str(raw_key),)
+        if key in _PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS
+    }
+
+
+def _normalize_public_variables(
+    values: list[Any] | tuple[Any, ...] | None,
+    *,
+    observed_variables: list[str],
+) -> list[str]:
+    normalized = _normalize_str_list(values)
+    if not observed_variables:
+        return normalized
+    observed = set(observed_variables)
+    return [value for value in normalized if value in observed]
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 @dataclass(slots=True)
 class VerifierVerdict:
     """Structured verdict for evaluation.
@@ -306,6 +345,9 @@ class PublicCausalInstance:
     scenario_id: str
     description: str
     variables: list[str]
+    proxy_variables: list[str] = field(default_factory=list)
+    selection_variables: list[str] = field(default_factory=list)
+    selection_mechanism: str | None = None
     observed_data: pd.DataFrame | None = None
     data: pd.DataFrame | None = None
     causal_level: int = 1
@@ -325,16 +367,33 @@ class PublicCausalInstance:
             observed = _copy_frame(self.data)
         if not self.variables and not observed.empty:
             self.variables = list(observed.columns)
+        metadata = dict(self.metadata)
+        self.proxy_variables = _normalize_public_variables(
+            list(self.proxy_variables) + list(metadata.pop("proxy_variables", [])),
+            observed_variables=list(self.variables),
+        )
+        self.selection_variables = _normalize_public_variables(
+            list(self.selection_variables) + list(metadata.pop("selection_variables", [])),
+            observed_variables=list(self.variables),
+        )
+        self.selection_mechanism = _coerce_optional_string(
+            self.selection_mechanism
+            if self.selection_mechanism is not None
+            else metadata.pop("selection_mechanism", None)
+        )
         self.observed_data = observed
         self.data = _copy_frame(observed)
-        self.difficulty_config = dict(self.difficulty_config)
-        self.metadata = dict(_sanitize_metadata(dict(self.metadata), root=True))
+        self.difficulty_config = _sanitize_difficulty_config(self.difficulty_config)
+        self.metadata = dict(_sanitize_metadata(metadata, root=True))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "scenario_id": self.scenario_id,
             "description": self.description,
             "variables": list(self.variables),
+            "proxy_variables": list(self.proxy_variables),
+            "selection_variables": list(self.selection_variables),
+            "selection_mechanism": self.selection_mechanism,
             "observed_data": _serialize_frame(self.observed_data),
             "data": _serialize_frame(self.data),
             "causal_level": self.causal_level,
@@ -408,11 +467,14 @@ class GoldCausalInstance:
             scenario_id=str(self.metadata.get("public_scenario_id", self.scenario_id)),
             description=str(self.metadata.get("public_description", self.description)),
             variables=list(self.variables),
+            proxy_variables=list(self.metadata.get("proxy_variables", [])),
+            selection_variables=list(self.metadata.get("selection_variables", [])),
+            selection_mechanism=self.metadata.get("selection_mechanism"),
             observed_data=self.observed_data.copy(deep=True),
             data=self.observed_data.copy(deep=True),
             causal_level=self.causal_level,
             difficulty=self.difficulty,
-            difficulty_config=dict(self.difficulty_config),
+            difficulty_config=_sanitize_difficulty_config(self.difficulty_config),
             metadata=dict(_sanitize_metadata(self.metadata, root=True)),
         )
 

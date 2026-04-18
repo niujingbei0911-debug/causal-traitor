@@ -802,6 +802,10 @@ class BenchmarkGenerator:
         scenario.ground_truth.setdefault("query_types", list(parent_blueprint.query_types))
         scenario.metadata.setdefault("proxy_variables", list(parent_blueprint.proxy_variables))
         scenario.metadata.setdefault("selection_variables", list(parent_blueprint.selection_variables))
+        scenario.metadata.setdefault(
+            "selection_mechanism",
+            parent_blueprint.generator_hints.get("selection_mechanism", "none"),
+        )
         scenario.metadata.setdefault("family_tags", list(parent_blueprint.family_tags))
         scenario.metadata.setdefault("generator_hints", dict(parent_blueprint.generator_hints))
         return scenario
@@ -868,6 +872,7 @@ class BenchmarkGenerator:
                 "identifiability": blueprint.identifiability.value,
                 "proxy_variables": list(blueprint.proxy_variables),
                 "selection_variables": list(blueprint.selection_variables),
+                "selection_mechanism": blueprint.generator_hints.get("selection_mechanism", "none"),
                 "role_bindings": dict(blueprint.role_bindings),
                 "family_tags": list(blueprint.family_tags),
                 "generator_hints": dict(blueprint.generator_hints),

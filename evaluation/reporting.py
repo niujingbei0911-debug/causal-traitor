@@ -313,3 +313,87 @@ def compare_prediction_groups(
         comparisons=comparisons,
         correction_table=correction_table,
     )
+
+
+def _normalize_annotation_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _cohen_kappa(labels_a: Sequence[Any], labels_b: Sequence[Any]) -> float:
+    paired = [
+        (_normalize_annotation_value(left), _normalize_annotation_value(right))
+        for left, right in zip(labels_a, labels_b)
+    ]
+    paired = [(left, right) for left, right in paired if left is not None and right is not None]
+    if not paired:
+        return 0.0
+
+    categories = sorted({label for pair in paired for label in pair})
+    if not categories:
+        return 0.0
+
+    observed = sum(1 for left, right in paired if left == right) / len(paired)
+    distribution_a = {label: 0 for label in categories}
+    distribution_b = {label: 0 for label in categories}
+    for left, right in paired:
+        distribution_a[left] += 1
+        distribution_b[right] += 1
+
+    total = float(len(paired))
+    expected = sum(
+        (distribution_a[label] / total) * (distribution_b[label] / total)
+        for label in categories
+    )
+    if expected >= 1.0:
+        return 1.0
+    return (observed - expected) / max(1e-12, 1.0 - expected)
+
+
+def summarize_human_audit_agreement(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    fields: Sequence[str],
+    annotator_a_prefix: str = "annotator_a_",
+    annotator_b_prefix: str = "annotator_b_",
+) -> Dict[str, Any]:
+    """Summarize double-annotation agreement for one human-audit package."""
+
+    summary: Dict[str, Any] = {"n_records": len(records), "fields": {}}
+    for field_name in fields:
+        labels_a = [
+            _normalize_annotation_value(record.get(f"{annotator_a_prefix}{field_name}"))
+            for record in records
+        ]
+        labels_b = [
+            _normalize_annotation_value(record.get(f"{annotator_b_prefix}{field_name}"))
+            for record in records
+        ]
+        paired = [
+            (left, right)
+            for left, right in zip(labels_a, labels_b)
+            if left is not None and right is not None
+        ]
+        n_scored = len(paired)
+        percent_agreement = (
+            sum(1 for left, right in paired if left == right) / n_scored
+            if n_scored
+            else 0.0
+        )
+        distribution_a: Dict[str, int] = {}
+        distribution_b: Dict[str, int] = {}
+        for left, right in paired:
+            distribution_a[left] = distribution_a.get(left, 0) + 1
+            distribution_b[right] = distribution_b.get(right, 0) + 1
+        summary["fields"][str(field_name)] = {
+            "n_scored": n_scored,
+            "percent_agreement": percent_agreement,
+            "cohen_kappa": _cohen_kappa(labels_a, labels_b),
+            "annotator_a_distribution": distribution_a,
+            "annotator_b_distribution": distribution_b,
+        }
+    return summary

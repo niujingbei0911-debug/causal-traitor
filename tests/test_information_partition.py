@@ -63,11 +63,20 @@ def _build_gold_scenario() -> GoldCausalInstance:
         data=observed_data,
         causal_level=2,
         difficulty=0.6,
-        difficulty_config={"attack_family": "hidden_confounder_denial"},
+        difficulty_config={
+            "attack_family": "hidden_confounder_denial",
+            "hidden_strength": 0.8,
+            "selection_bias_strength": 0.45,
+            "generator_seed": 17,
+            "difficulty_family": "latent_confounding",
+        },
         true_scm={"graph": {"U": ["X", "Y"], "X": ["Y"]}, "weights": {"X->Y": 1.2}},
         gold_label="invalid",
         metadata={
             "scenario_family": "l2_hidden_confounding",
+            "proxy_variables": ["proxy_Z"],
+            "selection_variables": ["proxy_Z"],
+            "selection_mechanism": "conditioning_on_proxy",
             "notes": {
                 "hidden_variables": ["U"],
                 "auditor_hint": "do not leak me",
@@ -133,10 +142,14 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(public.scenario_id, self.gold.scenario_id)
         self.assertEqual(public.description, self.gold.description)
         self.assertEqual(public.variables, self.gold.variables)
+        self.assertEqual(public.proxy_variables, ["proxy_Z"])
+        self.assertEqual(public.selection_variables, ["proxy_Z"])
+        self.assertEqual(public.selection_mechanism, "conditioning_on_proxy")
         self.assertEqual(list(public.observed_data.columns), list(self.observed_data.columns))
         self.assertEqual(list(public.data.columns), list(self.observed_data.columns))
         self.assertFalse(hasattr(public, "verdict"))
         self.assertFalse(hasattr(public, "gold_label"))
+        self.assertEqual(public.difficulty_config, {"difficulty_family": "latent_confounding"})
 
     def test_verifier_input_type_does_not_expose_gold_only_fields(self) -> None:
         public = self.gold.to_public()
@@ -186,6 +199,26 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("generator_hints", public.metadata)
         self.assertNotIn("benchmark_family", public.metadata)
         self.assertEqual(public.metadata["notes"], {"auditor_hint": "keep me"})
+
+    def test_public_schema_promotes_proxy_and_selection_hints_out_of_metadata(self) -> None:
+        public = PublicCausalInstance(
+            scenario_id="public_hint_case",
+            description="Typed public schema should carry proxy and selection hints.",
+            variables=["X", "proxy_Z", "selection_S", "Y"],
+            observed_data=pd.DataFrame({"X": [0, 1], "proxy_Z": [1, 0], "selection_S": [1, 1], "Y": [0.2, 0.8]}),
+            metadata={
+                "proxy_variables": ["proxy_Z"],
+                "selection_variables": ["selection_S"],
+                "selection_mechanism": "conditioning_on_collider",
+            },
+        )
+
+        self.assertEqual(public.proxy_variables, ["proxy_Z"])
+        self.assertEqual(public.selection_variables, ["selection_S"])
+        self.assertEqual(public.selection_mechanism, "conditioning_on_collider")
+        self.assertNotIn("proxy_variables", public.metadata)
+        self.assertNotIn("selection_variables", public.metadata)
+        self.assertNotIn("selection_mechanism", public.metadata)
 
     def test_public_view_uses_data_copies_instead_of_gold_references(self) -> None:
         public = self.gold.to_public()

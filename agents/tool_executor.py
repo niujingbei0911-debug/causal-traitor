@@ -327,7 +327,7 @@ class ToolExecutor:
         context: dict[str, Any],
     ) -> dict[str, Any] | None:
         data = self._get_data(scenario)
-        graph = self._get_graph(context)
+        graph = self._get_graph(context, scenario=scenario)
         variables = self._get_variables(scenario, data)
         treatment, outcome = self._infer_focus_variables(claim, variables, scenario=scenario, context=context)
         conditioning = list(context.get("adjustment_set") or self._get_observed_controls(graph, data, treatment, outcome))
@@ -340,7 +340,7 @@ class ToolExecutor:
         intervention = context.get("intervention")
         if intervention is None and evidence is not None:
             intervention = {treatment: self._flip_value(evidence.get(treatment, 0))}
-        scm = self._get_scm(context)
+        scm = self._get_scm(context, scenario=scenario)
 
         if tool_name in {"correlation_analysis", "compute_correlation"}:
             return {"data": data, "x": treatment, "y": outcome} if data is not None else None
@@ -810,20 +810,26 @@ class ToolExecutor:
             return scenario.observed_data
         return None
 
-    def _get_graph(self, context: dict[str, Any]) -> nx.DiGraph | None:
-        graph = context.get("public_graph")
-        if isinstance(graph, nx.DiGraph):
-            return graph.copy()
-        if isinstance(graph, dict):
-            dag = nx.DiGraph()
-            for source, targets in graph.items():
-                for target in targets:
-                    dag.add_edge(source, target)
-            return dag
+    def _get_graph(
+        self,
+        context: dict[str, Any],
+        *,
+        scenario: PublicCausalInstance | None = None,
+    ) -> nx.DiGraph | None:
+        # Under the Phase 0-3 public contract, verifier-side graph access is not allowed
+        # unless it is carried by an explicitly typed public schema field. The current
+        # public schema does not expose any such field, so arbitrary caller context must
+        # not reintroduce gold DAG access through "public_graph".
         return None
 
-    def _get_scm(self, context: dict[str, Any]):
-        return context.get("public_scm")
+    def _get_scm(
+        self,
+        context: dict[str, Any],
+        *,
+        scenario: PublicCausalInstance | None = None,
+    ):
+        # Same contract as _get_graph: do not trust caller-supplied SCM objects.
+        return None
 
     def _get_variables(self, scenario, data: pd.DataFrame | None) -> list[str]:
         variables = list(getattr(scenario, "variables", []))
@@ -1138,8 +1144,17 @@ class ToolExecutor:
                 merged.setdefault("treatment", parsed_claim.treatment)
             if getattr(parsed_claim, "outcome", ""):
                 merged.setdefault("outcome", parsed_claim.outcome)
-        merged["has_public_graph"] = bool(self._get_graph(merged))
-        merged["has_public_scm"] = self._get_scm(merged) is not None
+        if scenario is not None:
+            if getattr(scenario, "proxy_variables", None):
+                merged.setdefault("proxy_variables", list(scenario.proxy_variables))
+                merged.setdefault("proxy", scenario.proxy_variables[0])
+            if getattr(scenario, "selection_variables", None):
+                merged.setdefault("selection_variables", list(scenario.selection_variables))
+                merged.setdefault("selection", scenario.selection_variables[0])
+            if getattr(scenario, "selection_mechanism", None):
+                merged.setdefault("selection_mechanism", scenario.selection_mechanism)
+        merged["has_public_graph"] = bool(self._get_graph(merged, scenario=scenario))
+        merged["has_public_scm"] = self._get_scm(merged, scenario=scenario) is not None
         merged.setdefault(
             "has_instrument",
             bool(merged.get("instrument")) or any(token in lowered for token in ["iv", "instrument", "工具变量", "出生季度"]),

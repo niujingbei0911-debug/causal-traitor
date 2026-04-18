@@ -17,6 +17,8 @@ load_dotenv()
 
 import pandas as pd
 
+from evaluation.reporting import summarize_metric
+from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
@@ -34,6 +36,76 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_ready(item) for item in value]
     return value
+
+
+def _result_gold_label(result: dict[str, Any]) -> str | None:
+    scenario = result.get("scenario")
+    if scenario is not None:
+        gold_label = getattr(scenario, "gold_label", None)
+        if isinstance(gold_label, Enum):
+            return gold_label.value
+        if gold_label is not None:
+            return str(gold_label)
+        ground_truth = getattr(scenario, "ground_truth", None)
+        if isinstance(ground_truth, dict) and ground_truth.get("label") is not None:
+            return str(ground_truth["label"])
+    return None
+
+
+def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
+    audit = result.get("audit_verdict", {}) if isinstance(result.get("audit_verdict"), dict) else {}
+    jury = result.get("jury_verdict", {}) if isinstance(result.get("jury_verdict"), dict) else {}
+    return {
+        "round_id": int(result.get("round_number", 0)),
+        "gold_label": _result_gold_label(result),
+        "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
+        "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
+        "countermodel_witness": audit.get("countermodel_witness"),
+        "jury_consensus": jury.get("agreement_rate", 0.0),
+        "jury_verdict": jury.get("final_winner"),
+        "deception_succeeded": result.get("deception_succeeded", result.get("deception_success")),
+    }
+
+
+def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[str, Any]:
+    scorer = Scorer()
+    score = scorer.score_game(
+        {
+            "game_id": "main_run",
+            "rounds": [_round_for_scoring(result) for result in results],
+        }
+    )
+    correctness = [
+        1.0 if round_score.verdict_correct else 0.0
+        for round_score in score.round_scores
+        if round_score.gold_label is not None and round_score.predicted_label is not None
+    ]
+    verdict_accuracy_ci = (
+        summarize_metric(
+            "verdict_accuracy",
+            correctness,
+            n_resamples=2000,
+            random_state=0,
+        ).to_dict()
+        if correctness
+        else None
+    )
+    return {
+        "n_rounds": len(results),
+        "scored_rounds": score.summary.get("scored_rounds", 0),
+        "primary_metric": score.summary.get("primary_metric", "verdict_accuracy"),
+        "verdict_metrics": dict(score.summary.get("core_metrics", {})),
+        "verdict_accuracy_ci": verdict_accuracy_ci,
+        "gold_label_distribution": dict(score.summary.get("gold_label_distribution", {})),
+        "predicted_label_distribution": dict(score.summary.get("predicted_label_distribution", {})),
+        "appendix_metrics": dict(score.summary.get("appendix_metrics", {})),
+        "protocol_metrics": {
+            "agent_a_wins": sum(result.get("winner") == "agent_a" for result in results),
+            "agent_b_wins": sum(result.get("winner") == "agent_b" for result in results),
+            "final_difficulty": engine.difficulty_controller.get_difficulty(),
+            "arms_race_index": engine.evolution_tracker.get_arms_race_index(),
+        },
+    }
 
 
 async def run_game(
@@ -63,14 +135,15 @@ async def run_game(
     results = await engine.run_game(num_rounds=num_rounds)
     for result in results:
         tracker.log_round(result["round_number"], result)
-    summary = {
-        "n_rounds": len(results),
-        "agent_a_wins": sum(result["winner"] == "agent_a" for result in results),
-        "agent_b_wins": sum(result["winner"] == "agent_b" for result in results),
-        "final_difficulty": engine.difficulty_controller.get_difficulty(),
-        "arms_race_index": engine.evolution_tracker.get_arms_race_index(),
-    }
-    tracker.log_metrics(summary, step=len(results))
+    summary = _build_summary(results, engine)
+    tracker.log_metrics(
+        {
+            **summary.get("verdict_metrics", {}),
+            "protocol_final_difficulty": summary["protocol_metrics"]["final_difficulty"],
+            "protocol_arms_race_index": summary["protocol_metrics"]["arms_race_index"],
+        },
+        step=len(results),
+    )
     payload = {
         "summary": summary,
         "results": _json_ready(results),

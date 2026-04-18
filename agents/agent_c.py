@@ -157,6 +157,7 @@ class AgentC:
         jury_verdict = await self._resolve_jury_verdict(scenario, debate_context)
         jury_winner, jury_consensus = self._jury_summary(jury_verdict)
         context_flags = self._build_context_flags(
+            scenario=scenario,
             level=level,
             agent_a_text=agent_a_text,
             agent_b_text=agent_b_text,
@@ -180,6 +181,7 @@ class AgentC:
             scenario=scenario,
             transcript=transcript,
             tool_trace=tool_trace,
+            tool_context=context_flags,
         )
         verdict_payload = verifier_verdict.to_dict()
         winner = self._winner_from_verdict_label(verifier_verdict.label.value)
@@ -247,6 +249,7 @@ class AgentC:
         jury_winner, jury_consensus = self._jury_summary(jury_verdict)
 
         context_flags = self._build_context_flags(
+            scenario=scenario,
             level=level,
             agent_a_text=agent_a_text,
             agent_b_text=agent_b_text,
@@ -472,8 +475,8 @@ class AgentC:
                     "tool_name": result.tool_name,
                     "status": "success",
                     "summary": summary,
-                    "supports_assumptions": supports_assumptions if supports_claim else [],
-                    "contradicts_assumptions": contradicts_assumptions if supports_claim else [],
+                    "supports_assumptions": supports_assumptions,
+                    "contradicts_assumptions": contradicts_assumptions,
                     "supports_claim": (
                         supports_claim
                         and result.tool_name in successful_tools
@@ -606,17 +609,26 @@ class AgentC:
 
     def _build_context_flags(
         self,
+        scenario: PublicCausalInstance,
         level: int,
         agent_a_text: str,
         agent_b_text: str,
         transcript: str,
     ) -> dict:
         combined = " ".join([agent_a_text, agent_b_text, transcript]).lower()
+        proxy_variables = list(getattr(scenario, "proxy_variables", []) or [])
+        selection_variables = list(getattr(scenario, "selection_variables", []) or [])
         return {
             "has_instrument": any(token in combined for token in ["iv", "instrument", "工具变量", "出生季度"]),
             "has_mediator": any(token in combined for token in ["mediator", "中介", "frontdoor", "前门"]),
             "needs_full_counterfactual": level >= 3 or any(token in combined for token in ["counterfactual", "反事实"]),
             "suspected_confounders": any(token in combined for token in ["confound", "混杂", "遗漏变量"]),
+            "proxy_variables": proxy_variables,
+            "selection_variables": selection_variables,
+            "selection_mechanism": getattr(scenario, "selection_mechanism", None),
+            "has_proxy": bool(proxy_variables),
+            "has_selection": bool(selection_variables)
+            or str(getattr(scenario, "selection_mechanism", "")).strip().lower() not in {"", "none"},
         }
 
     def _tool_awareness_bonus(self, text: str) -> float:

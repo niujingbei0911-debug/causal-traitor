@@ -1,7 +1,11 @@
 import unittest
 
 from evaluation.metrics import CausalMetrics, MetricResult
-from evaluation.reporting import compare_prediction_groups, summarize_metric
+from evaluation.reporting import (
+    compare_prediction_groups,
+    summarize_human_audit_agreement,
+    summarize_metric,
+)
 from evaluation.scorer import Scorer
 from evaluation.significance import (
     bootstrap_confidence_interval,
@@ -309,6 +313,35 @@ class EvaluationStatisticsTests(unittest.TestCase):
             places=8,
         )
         self.assertTrue(comparison.reject_after_correction)
+
+    def test_human_audit_agreement_summary_reports_percent_and_kappa(self) -> None:
+        summary = summarize_human_audit_agreement(
+            [
+                {
+                    "annotator_a_verifier_label_reasonable": "yes",
+                    "annotator_b_verifier_label_reasonable": "yes",
+                    "annotator_a_witness_persuasive": "no",
+                    "annotator_b_witness_persuasive": "yes",
+                },
+                {
+                    "annotator_a_verifier_label_reasonable": "no",
+                    "annotator_b_verifier_label_reasonable": "no",
+                    "annotator_a_witness_persuasive": "yes",
+                    "annotator_b_witness_persuasive": "yes",
+                },
+            ],
+            fields=["verifier_label_reasonable", "witness_persuasive"],
+        )
+
+        self.assertEqual(summary["n_records"], 2)
+        verifier = summary["fields"]["verifier_label_reasonable"]
+        witness = summary["fields"]["witness_persuasive"]
+        self.assertEqual(verifier["n_scored"], 2)
+        self.assertAlmostEqual(verifier["percent_agreement"], 1.0, places=8)
+        self.assertAlmostEqual(verifier["cohen_kappa"], 1.0, places=8)
+        self.assertEqual(witness["n_scored"], 2)
+        self.assertAlmostEqual(witness["percent_agreement"], 0.5, places=8)
+        self.assertLess(witness["cohen_kappa"], 1.0)
 
 if __name__ == "__main__":
     unittest.main()

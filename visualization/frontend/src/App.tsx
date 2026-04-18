@@ -72,7 +72,10 @@ export default function App() {
     <div className="h-screen w-screen flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
       {/* 顶栏 */}
       <header className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
-        <h1 className="text-base font-bold tracking-wider">🎭 因果叛徒 — 实时可视化</h1>
+        <div>
+          <h1 className="text-base font-bold tracking-wider">因果叛徒 Supplemental Demo</h1>
+          <p className="text-[11px] uppercase tracking-[0.24em] text-gray-400">Public Schema View Only</p>
+        </div>
         <span className={`text-xs px-2 py-0.5 rounded ${connected ? "bg-green-900 text-green-300" : "bg-red-900 text-red-300"}`}>
           {connected ? "● 已连接" : "○ 断开"}
         </span>

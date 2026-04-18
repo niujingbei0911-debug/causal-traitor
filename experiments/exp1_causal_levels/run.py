@@ -9,9 +9,41 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evaluation.reporting import summarize_metric
+from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
+
+
+def _result_gold_label(result: dict[str, Any]) -> str | None:
+    scenario = result.get("scenario")
+    if scenario is None:
+        return None
+    gold_label = getattr(scenario, "gold_label", None)
+    if gold_label is not None and hasattr(gold_label, "value"):
+        return str(gold_label.value)
+    if gold_label is not None:
+        return str(gold_label)
+    ground_truth = getattr(scenario, "ground_truth", None)
+    if isinstance(ground_truth, dict) and ground_truth.get("label") is not None:
+        return str(ground_truth["label"])
+    return None
+
+
+def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
+    audit = result.get("audit_verdict", {}) if isinstance(result.get("audit_verdict"), dict) else {}
+    jury = result.get("jury_verdict", {}) if isinstance(result.get("jury_verdict"), dict) else {}
+    return {
+        "round_id": int(result.get("round_number", 0)),
+        "gold_label": _result_gold_label(result),
+        "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
+        "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
+        "countermodel_witness": audit.get("countermodel_witness"),
+        "jury_consensus": jury.get("agreement_rate", 0.0),
+        "jury_verdict": jury.get("final_winner"),
+        "deception_succeeded": result.get("deception_succeeded", result.get("deception_success")),
+    }
 
 
 async def run_experiment(
@@ -33,8 +65,9 @@ async def run_experiment(
     tracker.init()
 
     summary: dict[str, Any] = {"levels": {}}
+    scorer = Scorer()
     for level in config.get("game", {}).get("causal_levels", [1, 2, 3]):
-        level_results = []
+        raw_rounds: list[dict[str, Any]] = []
         difficulty = config.get("game", {}).get("initial_difficulty", 0.5)
         for round_index in range(1, rounds_per_level + 1):
             scenario = engine.data_generator.generate_scenario(
@@ -47,23 +80,64 @@ async def run_experiment(
                 evolution_context=None,
             )
             tracker.log_round(round_index + (level - 1) * rounds_per_level, result)
-            level_results.append(
-                {
-                    "deception_success": result["deception_success"],
-                    "causal_validity_score": result["audit_verdict"]["causal_validity_score"],
-                    "jury_winner": result["jury_verdict"]["final_winner"],
-                }
-            )
+            raw_rounds.append(result)
+        scored_rounds = [_round_for_scoring(result) for result in raw_rounds]
+        game_score = scorer.score_game(
+            {
+                "game_id": f"exp1_L{level}",
+                "rounds": scored_rounds,
+            }
+        )
+        verdict_correctness = [
+            1.0 if round_score.verdict_correct else 0.0
+            for round_score in game_score.round_scores
+            if round_score.gold_label is not None and round_score.predicted_label is not None
+        ]
+        verdict_accuracy_ci = (
+            summarize_metric(
+                "verdict_accuracy",
+                verdict_correctness,
+                n_resamples=2000,
+                random_state=level,
+            ).to_dict()
+            if verdict_correctness
+            else None
+        )
+        appendix_metrics = dict(game_score.summary.get("appendix_metrics", {}))
+        appendix_metrics["deception_success_rate"] = (
+            sum(1 for result in raw_rounds if result.get("deception_success")) / rounds_per_level
+        )
+        appendix_metrics["causal_validity_mean"] = (
+            sum(float(result["audit_verdict"]["causal_validity_score"]) for result in raw_rounds)
+            / rounds_per_level
+        )
         summary["levels"][f"L{level}"] = {
             "rounds": rounds_per_level,
-            "deception_success_rate": sum(r["deception_success"] for r in level_results) / rounds_per_level,
-            "causal_validity_mean": sum(r["causal_validity_score"] for r in level_results) / rounds_per_level,
-            "results": level_results,
+            "primary_metric": game_score.summary.get("primary_metric", "verdict_accuracy"),
+            "verdict_metrics": dict(game_score.summary.get("core_metrics", {})),
+            "verdict_accuracy_ci": verdict_accuracy_ci,
+            "gold_label_distribution": dict(game_score.summary.get("gold_label_distribution", {})),
+            "predicted_label_distribution": dict(game_score.summary.get("predicted_label_distribution", {})),
+            "appendix_metrics": appendix_metrics,
+            "results": [
+                {
+                    "round_id": round_payload["round_id"],
+                    "gold_label": round_payload["gold_label"],
+                    "predicted_label": round_payload["verdict_label"],
+                    "verifier_confidence": round_payload["verifier_confidence"],
+                    "jury_verdict": round_payload["jury_verdict"],
+                    "jury_consensus": round_payload["jury_consensus"],
+                    "deception_succeeded": round_payload["deception_succeeded"],
+                }
+                for round_payload in scored_rounds
+            ],
         }
         tracker.log_metrics(
             {
-                f"L{level}_deception_success_rate": summary["levels"][f"L{level}"]["deception_success_rate"],
-                f"L{level}_causal_validity_mean": summary["levels"][f"L{level}"]["causal_validity_mean"],
+                **{
+                    f"L{level}_{metric_name}": metric_value
+                    for metric_name, metric_value in summary["levels"][f"L{level}"]["verdict_metrics"].items()
+                },
             },
             step=level,
         )
@@ -86,27 +160,40 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
             [
                 "level",
                 "rounds",
-                "deception_success_rate",
-                "causal_validity_mean",
+                "verdict_accuracy",
+                "macro_f1",
+                "invalid_claim_acceptance_rate",
+                "unidentifiable_awareness",
+                "verdict_accuracy_ci",
             ]
         )
         for level_key, level_summary in summary.get("levels", {}).items():
+            verdict_metrics = level_summary.get("verdict_metrics", {})
+            accuracy_ci = level_summary.get("verdict_accuracy_ci") or {}
             writer.writerow(
                 [
                     level_key,
                     level_summary.get("rounds", 0),
-                    f"{level_summary.get('deception_success_rate', 0.0):.4f}",
-                    f"{level_summary.get('causal_validity_mean', 0.0):.4f}",
+                    f"{verdict_metrics.get('verdict_accuracy', 0.0):.4f}",
+                    f"{verdict_metrics.get('macro_f1', 0.0):.4f}",
+                    f"{verdict_metrics.get('invalid_claim_acceptance_rate', 0.0):.4f}",
+                    f"{verdict_metrics.get('unidentifiable_awareness', 0.0):.4f}",
+                    accuracy_ci.get("formatted", ""),
                 ]
             )
     lines = ["# Experiment 1 — Pearl Ladder Benchmark", ""]
-    lines.append("| Level | Rounds | DSR | CLS mean |")
-    lines.append("| --- | --- | --- | --- |")
+    lines.append("| Level | Rounds | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness | 95% CI |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for level_key, level_summary in summary.get("levels", {}).items():
+        verdict_metrics = level_summary.get("verdict_metrics", {})
+        accuracy_ci = level_summary.get("verdict_accuracy_ci") or {}
         lines.append(
             f"| {level_key} | {level_summary.get('rounds', 0)} | "
-            f"{level_summary.get('deception_success_rate', 0.0):.3f} | "
-            f"{level_summary.get('causal_validity_mean', 0.0):.3f} |"
+            f"{verdict_metrics.get('verdict_accuracy', 0.0):.3f} | "
+            f"{verdict_metrics.get('macro_f1', 0.0):.3f} | "
+            f"{verdict_metrics.get('invalid_claim_acceptance_rate', 0.0):.3f} | "
+            f"{verdict_metrics.get('unidentifiable_awareness', 0.0):.3f} | "
+            f"{accuracy_ci.get('formatted', '')} |"
         )
     tracking = summary.get("tracking", {})
     if tracking.get("run_dir"):

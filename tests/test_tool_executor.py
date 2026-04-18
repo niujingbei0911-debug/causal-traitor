@@ -101,7 +101,10 @@ class ToolExecutorTests(unittest.TestCase):
         self.assertNotIn("ett_computation", scm_leak_report["selected_tools"])
         self.assertNotIn("abduction_action_prediction", scm_leak_report["selected_tools"])
 
-    def test_public_context_can_explicitly_supply_safe_graph_or_scm(self):
+    def test_tool_executor_ignores_caller_supplied_public_graph_or_public_scm(self):
+        self.assertIsNone(self.executor._get_graph({"public_graph": {"Z": ["X"], "X": ["Y"]}}))
+        self.assertIsNone(self.executor._get_scm({"public_scm": {"graph": {"X": ["Y"]}}}))
+
         graph_report = self.executor.execute_for_claim(
             scenario=self.public_scenario,
             claim="Check whether the observed graph is a DAG.",
@@ -120,9 +123,9 @@ class ToolExecutorTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("causal_graph_validator", graph_report["selected_tools"])
-        self.assertIn("counterfactual_inference", scm_report["selected_tools"])
-        self.assertTrue(any(entry["tool_name"] == "counterfactual_inference" for entry in scm_report["tool_trace"]))
+        self.assertNotIn("causal_graph_validator", graph_report["selected_tools"])
+        self.assertNotIn("counterfactual_inference", scm_report["selected_tools"])
+        self.assertNotIn("scm_identification_test", scm_report["selected_tools"])
 
     def test_generated_valid_benchmark_claims_receive_real_support_assumptions(self):
         generator = BenchmarkGenerator(seed=17)

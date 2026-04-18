@@ -55,6 +55,9 @@ class VerifierPipeline:
                 {
                     "public_instance": public_scenario,
                     "observed_data": public_scenario.observed_data.copy(deep=True),
+                    "proxy_variables": list(getattr(public_scenario, "proxy_variables", [])),
+                    "selection_variables": list(getattr(public_scenario, "selection_variables", [])),
+                    "selection_mechanism": getattr(public_scenario, "selection_mechanism", None),
                 }
             )
         countermodel_result = search_countermodels(
