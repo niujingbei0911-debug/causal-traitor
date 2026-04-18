@@ -23,6 +23,8 @@ VERIFIER_VISIBLE_FIELDS: tuple[str, ...] = (
     "description",
     "variables",
     "proxy_variables",
+    "instrument_variables",
+    "mediator_variables",
     "selection_variables",
     "selection_mechanism",
     "observed_data",
@@ -78,6 +80,8 @@ _SANITIZED_METADATA_KEYS = frozenset(
         "family_source",
         "family_tags",
         "proxy_variables",
+        "instrument_variables",
+        "mediator_variables",
         "selection_variables",
         "is_showcase",
         "winner",
@@ -86,18 +90,13 @@ _SANITIZED_METADATA_KEYS = frozenset(
 )
 _PUBLIC_METADATA_ALLOWED_KEYS = frozenset(
     {
-        "notes",
-        "difficulty_family",
         "ood_split",
         "selection_ratio",
-        "variable_descriptions",
-        "measurement_semantics",
         "task_level",
     }
 )
 _PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset(
     {
-        "difficulty_family",
         "task_level",
     }
 )
@@ -383,6 +382,8 @@ class PublicCausalInstance:
     description: str
     variables: list[str]
     proxy_variables: list[str] = field(default_factory=list)
+    instrument_variables: list[str] = field(default_factory=list)
+    mediator_variables: list[str] = field(default_factory=list)
     selection_variables: list[str] = field(default_factory=list)
     selection_mechanism: str | None = None
     observed_data: pd.DataFrame | None = None
@@ -410,6 +411,14 @@ class PublicCausalInstance:
             list(self.proxy_variables) + list(metadata.pop("proxy_variables", [])),
             observed_variables=list(self.variables),
         )
+        self.instrument_variables = _normalize_public_variables(
+            list(self.instrument_variables) + list(metadata.pop("instrument_variables", [])),
+            observed_variables=list(self.variables),
+        )
+        self.mediator_variables = _normalize_public_variables(
+            list(self.mediator_variables) + list(metadata.pop("mediator_variables", [])),
+            observed_variables=list(self.variables),
+        )
         self.selection_variables = _normalize_public_variables(
             list(self.selection_variables) + list(metadata.pop("selection_variables", [])),
             observed_variables=list(self.variables),
@@ -430,6 +439,8 @@ class PublicCausalInstance:
             "description": self.description,
             "variables": list(self.variables),
             "proxy_variables": list(self.proxy_variables),
+            "instrument_variables": list(self.instrument_variables),
+            "mediator_variables": list(self.mediator_variables),
             "selection_variables": list(self.selection_variables),
             "selection_mechanism": self.selection_mechanism,
             "observed_data": _serialize_frame(self.observed_data),
@@ -473,19 +484,23 @@ class GoldCausalInstance:
         observed = _copy_frame(self.observed_data)
         full = _copy_frame(self.full_data)
         data = _copy_frame(self.data)
+        hidden_variable_set = set(self.hidden_variables)
 
         if observed.empty and not data.empty:
             observed = data.copy(deep=True)
         if observed.empty and not full.empty:
             observed = full.drop(columns=self.hidden_variables, errors="ignore").copy(deep=True)
+        if not observed.empty:
+            observed = observed.drop(columns=self.hidden_variables, errors="ignore").copy(deep=True)
         if full.empty:
             full = observed.copy(deep=True)
         if data.empty:
             data = observed.copy(deep=True)
+        elif not data.empty:
+            data = data.drop(columns=self.hidden_variables, errors="ignore").copy(deep=True)
 
         observed_variables = _frame_variable_names(observed)
         provided_variables = _normalize_str_list(self.variables)
-        hidden_variable_set = set(self.hidden_variables)
         self.variables = (
             list(observed_variables)
             if observed_variables
@@ -511,13 +526,11 @@ class GoldCausalInstance:
         """Project the gold scenario into the verifier-visible schema."""
 
         public_scenario_id = _coerce_optional_string(self.metadata.get("public_scenario_id"))
-        public_description = _coerce_optional_string(self.metadata.get("public_description"))
         treatment = _coerce_optional_string(self.ground_truth.get("treatment"))
         outcome = _coerce_optional_string(self.ground_truth.get("outcome"))
         return PublicCausalInstance(
             scenario_id=public_scenario_id or _public_scenario_id(self.scenario_id),
-            description=public_description
-            or _public_description(
+            description=_public_description(
                 observed_variables=list(self.variables),
                 treatment=treatment,
                 outcome=outcome,
@@ -525,6 +538,8 @@ class GoldCausalInstance:
             ),
             variables=list(self.variables),
             proxy_variables=list(self.metadata.get("proxy_variables", [])),
+            instrument_variables=list(self.metadata.get("instrument_variables", [])),
+            mediator_variables=list(self.metadata.get("mediator_variables", [])),
             selection_variables=list(self.metadata.get("selection_variables", [])),
             selection_mechanism=self.metadata.get("selection_mechanism"),
             observed_data=self.observed_data.copy(deep=True),

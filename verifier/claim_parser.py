@@ -867,11 +867,10 @@ class ClaimParser:
         if not normalized_claim:
             raise ValueError("claim_text must be a non-empty string.")
 
-        transcript_text = _normalize_whitespace(_flatten_transcript(transcript))
-        context_text = normalized_claim if not transcript_text else f"{normalized_claim} {transcript_text}"
+        context_text = normalized_claim
 
         query_type = _infer_query_type(context_text)
-        treatment, outcome = _extract_treatment_outcome(normalized_claim, context_text)
+        treatment, outcome = _extract_treatment_outcome(normalized_claim, normalized_claim)
         claim_strength = _infer_claim_strength(context_text)
         claim_polarity = _infer_claim_polarity(context_text)
         mentioned_assumptions = _extract_mentioned_assumptions(context_text)

@@ -152,6 +152,11 @@ def build_split_manifest(
         test_iid_ratio=test_iid_ratio,
     )
 
+    if not test_ood_ids or not split_map["train"] or not split_map["dev"] or not split_map["test_iid"]:
+        raise ValueError(
+            "Unable to satisfy the required non-empty train/dev/test_iid/test_ood protocol with the provided instances and holdout settings."
+        )
+
     id_to_split = {
         **{instance_id: "train" for instance_id in split_map["train"]},
         **{instance_id: "dev" for instance_id in split_map["dev"]},

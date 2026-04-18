@@ -475,12 +475,20 @@ class ToolExecutor:
             }
 
         if tool_name == "iv_estimation":
+            iv_covariates = (
+                conditioning[:1]
+                or [
+                    column
+                    for column in variables
+                    if column not in {treatment, outcome, instrument}
+                ][:1]
+            )
             return {
                 "data": data,
                 "instrument": instrument,
                 "treatment": treatment,
                 "outcome": outcome,
-                "covariates": conditioning[:1],
+                "covariates": iv_covariates,
             } if data is not None and instrument is not None else None
 
         if tool_name == "propensity_score_matching":
@@ -621,6 +629,17 @@ class ToolExecutor:
             rhetorical_strategy = str(getattr(parsed_claim, "rhetorical_strategy", ""))
             query_type_value = getattr(parsed_claim, "query_type", None)
             query_type = getattr(query_type_value, "value", str(query_type_value or "")).strip().lower()
+        if output is not None:
+            supports.extend(
+                str(item)
+                for item in output.get("supports_assumptions", [])
+                if str(item).strip()
+            )
+            contradicts.extend(
+                str(item)
+                for item in output.get("contradicts_assumptions", [])
+                if str(item).strip()
+            )
 
         conservative_adjustment_claim = any(
             phrase in claim_lower
@@ -648,6 +667,8 @@ class ToolExecutor:
                 supports.append("valid adjustment set")
             elif output.get("is_valid_adjustment") is False:
                 contradicts.append("valid adjustment set")
+            elif conservative_adjustment_claim and output.get("supports_adjustment_set") is True:
+                supports.append("valid adjustment set")
             elif (
                 (conservative_adjustment_claim or aggressive_adjustment_claim)
                 and output.get("supports_adjustment_set") is False
@@ -655,23 +676,15 @@ class ToolExecutor:
             ):
                 contradicts.append("valid adjustment set")
 
-        if result.tool_name == "public_semantics_check" and output is not None:
-            supports.extend(
-                str(item)
-                for item in output.get("supports_assumptions", [])
-                if str(item).strip()
-            )
-            contradicts.extend(
-                str(item)
-                for item in output.get("contradicts_assumptions", [])
-                if str(item).strip()
-            )
-
         if result.tool_name == "iv_estimation" and output is not None and is_iv_claim:
             if output.get("is_strong_instrument") is True:
                 supports.append("instrument relevance")
             elif output.get("is_strong_instrument") is False:
                 contradicts.append("instrument relevance")
+            if output.get("supports_exclusion_restriction") is True:
+                supports.append("exclusion restriction")
+            if output.get("supports_instrument_independence") is True:
+                supports.append("instrument independence")
 
         if result.tool_name == "overlap_check" and output is not None:
             if output.get("has_overlap") is True:
@@ -1072,7 +1085,10 @@ class ToolExecutor:
         explicit_instrument = self._extract_named_variable(
             claim,
             remaining,
-            patterns=(r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as an instrument\b",),
+            patterns=(
+                r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as an instrument\b",
+                r"\bwith (?P<name>[A-Za-z][A-Za-z0-9_]*) as an instrument\b",
+            ),
         )
         if explicit_instrument is not None:
             hints["instrument"] = explicit_instrument
@@ -1158,9 +1174,6 @@ class ToolExecutor:
                     continue
                 if has_path_to_treatment and not has_backdoor_to_outcome:
                     return candidate
-        for candidate in variables:
-            if candidate not in {treatment, outcome} and candidate in observed:
-                return candidate
         return None
 
     def _guess_mediator(
@@ -1284,6 +1297,12 @@ class ToolExecutor:
             if getattr(scenario, "proxy_variables", None):
                 merged.setdefault("proxy_variables", list(scenario.proxy_variables))
                 merged.setdefault("proxy", scenario.proxy_variables[0])
+            if getattr(scenario, "instrument_variables", None):
+                merged.setdefault("instrument_variables", list(scenario.instrument_variables))
+                merged.setdefault("instrument", scenario.instrument_variables[0])
+            if getattr(scenario, "mediator_variables", None):
+                merged.setdefault("mediator_variables", list(scenario.mediator_variables))
+                merged.setdefault("mediator", scenario.mediator_variables[0])
             if getattr(scenario, "selection_variables", None):
                 merged.setdefault("selection_variables", list(scenario.selection_variables))
                 merged.setdefault("selection", scenario.selection_variables[0])
@@ -1292,7 +1311,7 @@ class ToolExecutor:
         merged["has_public_graph"] = bool(self._get_graph(merged, scenario=scenario))
         merged["has_public_scm"] = self._get_scm(merged, scenario=scenario) is not None
         has_iv_signal = bool(
-            re.search(r"\biv\b|\binstrument(?:al variable)?\b|\bquarter\b", lowered, flags=re.IGNORECASE)
+            re.search(r"\biv\b|\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|\bquarter\b", lowered, flags=re.IGNORECASE)
         ) or any(token in lowered for token in ["工具变量", "出生季度"])
         merged.setdefault(
             "has_instrument",

@@ -698,21 +698,36 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertNotIn("selection_variables", sample.public.metadata)
         self.assertNotIn("selection_mechanism", sample.public.metadata)
 
-    def test_programmatic_public_view_exposes_public_semantics_metadata(self) -> None:
+    def test_programmatic_public_view_avoids_family_and_semantic_leakage(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l2_valid_iv_family",
             difficulty=0.4,
             seed=0,
         )
 
-        self.assertEqual(sample.public.metadata["difficulty_family"], "l2_valid_iv_family")
         self.assertEqual(sample.public.metadata["task_level"], "L2")
-        self.assertIn("variable_descriptions", sample.public.metadata)
-        self.assertIn("measurement_semantics", sample.public.metadata)
-        self.assertIn(sample.claim.target_variables["treatment"], sample.public.metadata["variable_descriptions"])
-        self.assertIn(sample.claim.target_variables["outcome"], sample.public.metadata["variable_descriptions"])
-        self.assertEqual(sample.public.difficulty_config["difficulty_family"], "l2_valid_iv_family")
         self.assertEqual(sample.public.difficulty_config["task_level"], "L2")
+        self.assertNotIn("difficulty_family", sample.public.metadata)
+        self.assertNotIn("measurement_semantics", sample.public.metadata)
+        self.assertNotIn("variable_descriptions", sample.public.metadata)
+        self.assertNotIn("difficulty_family", sample.public.difficulty_config)
+        self.assertEqual(sample.public.instrument_variables, [sample.blueprint.role_bindings["instrument"]])
+
+    def test_programmatic_public_view_exposes_typed_instrument_and_mediator_hints(self) -> None:
+        iv_sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_iv_family",
+            difficulty=0.4,
+            seed=0,
+        )
+        mediation_sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l3_mediation_abduction_family",
+            difficulty=0.4,
+            seed=0,
+        )
+
+        self.assertTrue(iv_sample.public.instrument_variables)
+        self.assertFalse(iv_sample.public.mediator_variables)
+        self.assertTrue(mediation_sample.public.mediator_variables)
 
     def test_benchmark_generator_variable_renaming_covers_valid_iv_family(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
@@ -999,6 +1014,24 @@ class SplitBuilderTests(unittest.TestCase):
                 observed_variables=["X", "Z", "Y"],
             ),
             _build_claim_instance_for_split(
+                "inst_in_domain_two",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["A", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_three",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["B", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_four",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["C", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
                 "inst_ood_family",
                 graph_family="l2_valid_backdoor_family",
                 language_template_id="tmpl_beta",
@@ -1014,12 +1047,51 @@ class SplitBuilderTests(unittest.TestCase):
             seed=11,
         )
 
-        self.assertEqual(instances[0].meta["ood_split"], "train")
-        self.assertEqual(instances[1].meta["ood_split"], "test_ood")
+        self.assertIn(instances[0].meta["ood_split"], {"train", "dev", "test_iid"})
+        self.assertEqual(instances[4].meta["ood_split"], "test_ood")
         self.assertEqual(
             manifest.metadata["ood_reasons"]["inst_ood_family"],
             ["family_holdout"],
         )
+
+    def test_split_builder_rejects_manifests_without_non_empty_four_way_split(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_train_1",
+                graph_family="fam_a",
+                language_template_id="tmpl",
+                observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_2",
+                graph_family="fam_a",
+                language_template_id="tmpl",
+                observed_variables=["A", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_ood_1",
+                graph_family="fam_a",
+                language_template_id="tmpl",
+                observed_variables=["renamed_x_1", "Z", "Y"],
+                meta={"variable_renaming": True, "rename_map": {"X": "renamed_x_1"}, "original_variables": ["X", "Z", "Y"]},
+            ),
+            _build_claim_instance_for_split(
+                "inst_ood_2",
+                graph_family="fam_a",
+                language_template_id="tmpl",
+                observed_variables=["renamed_x_2", "Z", "Y"],
+                meta={"variable_renaming": True, "rename_map": {"X": "renamed_x_2"}, "original_variables": ["X", "Z", "Y"]},
+            ),
+        ]
+
+        with self.assertRaises(ValueError):
+            build_split_manifest(
+                instances,
+                family_holdout=[],
+                lexical_holdout=[],
+                variable_renaming_holdout=True,
+                seed=0,
+            )
 
     def test_split_builder_alias_and_loader_can_read_manifest(self) -> None:
         instances = [
@@ -1028,6 +1100,18 @@ class SplitBuilderTests(unittest.TestCase):
                 graph_family="l1_latent_confounding_family",
                 language_template_id="tmpl_a",
                 observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_a2",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_a2",
+                observed_variables=["X2", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_a3",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_a3",
+                observed_variables=["X3", "Z", "Y"],
             ),
             _build_claim_instance_for_split(
                 "inst_b",

@@ -27,19 +27,9 @@ from experiments.benchmark_harness import (
 from evaluation.reporting import compare_prediction_groups
 from evaluation.scorer import Scorer
 from evaluation.significance import holm_bonferroni
-from verifier.assumption_ledger import (
-    AssumptionLedger,
-    AssumptionLedgerEntry,
-    AssumptionStatus,
-    build_assumption_ledger,
-)
+from verifier.assumption_ledger import build_assumption_ledger
 from verifier.claim_parser import parse_claim
-from verifier.countermodel_search import (
-    CountermodelCandidate,
-    CountermodelSearchResult,
-    search_countermodels,
-)
-from verifier.decision import VerifierDecision, decide_verdict
+from verifier.decision import VerifierDecision
 from verifier.pipeline import VerifierPipeline
 
 SYSTEMS: tuple[str, str] = ("countermodel_grounded", "oracle_leaking_partition")
@@ -101,16 +91,16 @@ def _verifier_tool_context(
 def _run_clean_partition(sample: BenchmarkSample) -> dict[str, Any]:
     public = sample.public
     tool_context = _verifier_tool_context(sample, public)
-    tool_report = ToolExecutor({}).execute_for_claim(
+    tool_executor = ToolExecutor({})
+    tool_report = tool_executor.execute_for_claim(
         scenario=public,
         claim=sample.claim.claim_text,
         level=int(sample.claim.causal_level[1]),
         context=tool_context,
     )
-    decision = VerifierPipeline().run(
+    decision = VerifierPipeline(tool_runner=tool_executor).run(
         sample.claim.claim_text,
         scenario=public,
-        tool_trace=tool_report["tool_trace"],
         tool_context=tool_context,
     )
     return {
@@ -225,137 +215,20 @@ def _build_oracle_leaking_public_partition(sample: BenchmarkSample) -> PublicCau
     )
 
 
-def _oracle_partition_hint(public: PublicCausalInstance) -> dict[str, Any]:
-    notes = public.metadata.get("notes")
-    if not isinstance(notes, dict):
-        return {}
-    hint = notes.get("oracle_partition_hint")
-    return dict(hint) if isinstance(hint, dict) else {}
-
-
-def _apply_oracle_public_hints(
-    ledger: AssumptionLedger,
-    public: PublicCausalInstance,
-) -> AssumptionLedger:
-    measurement_semantics = dict(public.metadata.get("measurement_semantics", {}))
-    hint = _oracle_partition_hint(public)
-    supported: set[str] = set()
-    contradicted: set[str] = set()
-    for semantics in measurement_semantics.values():
-        if not isinstance(semantics, dict):
-            continue
-        supported.update(
-            str(item).strip()
-            for item in semantics.get("supports_assumptions", [])
-            if str(item).strip()
-        )
-        contradicted.update(
-            str(item).strip()
-            for item in semantics.get("contradicts_assumptions", [])
-            if str(item).strip()
-        )
-    supported.update(
-        str(item).strip()
-        for item in hint.get("supported_assumptions", [])
-        if str(item).strip()
-    )
-    contradicted.update(
-        str(item).strip()
-        for item in hint.get("contradicted_assumptions", [])
-        if str(item).strip()
-    )
-
-    updated_entries: list[AssumptionLedgerEntry] = []
-    for entry in ledger.entries:
-        status = entry.status
-        note = entry.note
-        if entry.name in contradicted:
-            status = AssumptionStatus.CONTRADICTED
-            note = "Oracle-leaking public partition explicitly contradicts this assumption."
-        elif entry.name in supported:
-            status = AssumptionStatus.SUPPORTED
-            note = "Oracle-leaking public partition explicitly supports this assumption."
-        updated_entries.append(
-            AssumptionLedgerEntry(
-                name=entry.name,
-                source=entry.source,
-                category=entry.category,
-                status=status,
-                note=note,
-            )
-        )
-    return AssumptionLedger(updated_entries)
-
-
-def _oracle_countermodel_override(
-    sample: BenchmarkSample,
-    public: PublicCausalInstance,
-    base_result: CountermodelSearchResult,
-) -> CountermodelSearchResult:
-    hint = _oracle_partition_hint(public)
-    gold_verdict = str(hint.get("gold_verdict", "")).strip().lower()
-    if gold_verdict == "invalid":
-        candidate = CountermodelCandidate(
-            countermodel_type="oracle_public_partition_note",
-            causal_level=str(sample.claim.causal_level),
-            observational_match_score=0.995,
-            query_disagreement=True,
-            countermodel_explanation=(
-                "The leaking public partition exposes an oracle note that directly marks "
-                "the claim as failing under the benchmark's withheld assumptions."
-            ),
-            verdict_suggestion="invalid",
-            triggered_assumptions=list(hint.get("contradicted_assumptions", [])),
-            observational_evidence={
-                "used_observed_data": not public.observed_data.empty,
-                "leakage_channel": "notes.oracle_partition_hint",
-            },
-        )
-        return CountermodelSearchResult(
-            found_countermodel=True,
-            countermodel_type=candidate.countermodel_type,
-            observational_match_score=candidate.observational_match_score,
-            query_disagreement=True,
-            countermodel_explanation=candidate.countermodel_explanation,
-            verdict_suggestion="invalid",
-            candidates=[candidate],
-            used_observed_data=not public.observed_data.empty,
-        )
-    if gold_verdict in {"valid", "unidentifiable"}:
-        return CountermodelSearchResult(
-            found_countermodel=False,
-            used_observed_data=not public.observed_data.empty,
-        )
-    return base_result
-
-
 def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
     public = _build_oracle_leaking_public_partition(sample)
-    parsed_claim = parse_claim(sample.claim.claim_text)
-    hinted_ledger = _apply_oracle_public_hints(build_assumption_ledger(parsed_claim), public)
     tool_context = _verifier_tool_context(sample, public)
-    tool_report = ToolExecutor({}).execute_for_claim(
+    tool_executor = ToolExecutor({})
+    tool_report = tool_executor.execute_for_claim(
         scenario=public,
         claim=sample.claim.claim_text,
         level=int(sample.claim.causal_level[1]),
         context=tool_context,
     )
-    countermodel = search_countermodels(
-        parsed_claim,
-        hinted_ledger,
+    decision = VerifierPipeline(tool_runner=tool_executor).run(
+        sample.claim.claim_text,
         scenario=public,
-        context={
-            **tool_context,
-            "public_instance": public,
-            "observed_data": public.observed_data.copy(deep=True),
-        },
-    )
-    countermodel = _oracle_countermodel_override(sample, public, countermodel)
-    decision = decide_verdict(
-        parsed_claim,
-        hinted_ledger,
-        countermodel,
-        tool_trace=tool_report["tool_trace"],
+        tool_context=tool_context,
     )
     verdict = _serialize_verifier_decision(decision)
     verdict["metadata"] = {

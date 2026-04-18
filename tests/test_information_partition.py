@@ -150,7 +150,7 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(list(public.data.columns), list(self.observed_data.columns))
         self.assertFalse(hasattr(public, "verdict"))
         self.assertFalse(hasattr(public, "gold_label"))
-        self.assertEqual(public.difficulty_config, {"difficulty_family": "latent_confounding"})
+        self.assertEqual(public.difficulty_config, {})
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(
@@ -189,6 +189,28 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(gold.variables, ["X", "Y"])
         self.assertEqual(public.variables, ["X", "Y"])
 
+    def test_gold_to_public_strips_hidden_columns_even_if_observed_or_data_include_them(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="hidden_column_case",
+            description="Observed payload must be stripped before projection.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=pd.DataFrame({"X": [0, 1], "Y": [1, 0], "U": [1, 1]}),
+            data=pd.DataFrame({"X": [0, 1], "Y": [1, 0], "U": [1, 1]}),
+            full_data=pd.DataFrame({"X": [0, 1], "Y": [1, 0], "U": [1, 1]}),
+            gold_label="invalid",
+        )
+
+        public = gold.to_public()
+
+        self.assertEqual(gold.variables, ["X", "Y"])
+        self.assertEqual(list(gold.observed_data.columns), ["X", "Y"])
+        self.assertEqual(list(gold.data.columns), ["X", "Y"])
+        self.assertEqual(public.variables, ["X", "Y"])
+        self.assertEqual(list(public.observed_data.columns), ["X", "Y"])
+        self.assertEqual(list(public.data.columns), ["X", "Y"])
+
     def test_verifier_input_type_does_not_expose_gold_only_fields(self) -> None:
         public = self.gold.to_public()
         verifier_fields = _verifier_field_names(public)
@@ -210,8 +232,8 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("identifiability", public.metadata)
         self.assertNotIn("role_bindings", public.metadata)
         self.assertNotIn("generator_hints", public.metadata)
-        self.assertNotIn("hidden_variables", public.metadata["notes"])
-        self.assertEqual(public.metadata["notes"]["auditor_hint"], "do not leak me")
+        self.assertNotIn("notes", public.metadata)
+        self.assertNotIn("difficulty_family", public.metadata)
 
     def test_public_metadata_sanitizer_drops_structural_annotations_from_direct_instances(self) -> None:
         public = PublicCausalInstance(
@@ -236,7 +258,7 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("identifiability", public.metadata)
         self.assertNotIn("generator_hints", public.metadata)
         self.assertNotIn("benchmark_family", public.metadata)
-        self.assertEqual(public.metadata["notes"], {"auditor_hint": "keep me"})
+        self.assertNotIn("notes", public.metadata)
 
     def test_public_schema_promotes_proxy_and_selection_hints_out_of_metadata(self) -> None:
         public = PublicCausalInstance(

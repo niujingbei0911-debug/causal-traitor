@@ -7,14 +7,16 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from random import Random
 from typing import Any
 
 from agents.tool_executor import ToolExecutor
 from benchmark.generator import BenchmarkGenerator, BenchmarkSample, list_supported_benchmark_families
-from benchmark.schema import BenchmarkSplitManifest, PublicCausalInstance, VerdictLabel
+from benchmark.schema import BenchmarkSplitManifest, ClaimInstance, PublicCausalInstance, VerdictLabel
 from benchmark.split_builder import build_benchmark_splits
 from evaluation.reporting import compare_prediction_groups, summarize_metrics
 from evaluation.scorer import Scorer
+from evaluation.significance import holm_bonferroni
 from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import parse_claim
 from verifier.countermodel_search import CountermodelSearchResult, search_countermodels
@@ -51,6 +53,14 @@ SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
 )
 OOD_SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
 MIN_FORMAL_SEED_COUNT = 3
+PAIRWISE_ALPHA = 0.05
+PAIRWISE_RESAMPLES = 2000
+DEFAULT_ATTACKER_FAMILIES: tuple[str, ...] = (
+    "baseline_attacker",
+    "formal_attacker",
+    "hidden_information_attacker",
+)
+SUPPORTED_ATTACKER_FAMILIES = frozenset(DEFAULT_ATTACKER_FAMILIES)
 
 
 @dataclass(slots=True)
@@ -142,6 +152,162 @@ def summarize_protocol_compliance(
     }
 
 
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(float(q), 1.0)) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return float(ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction)
+
+
+def _paired_seed_bootstrap_row(
+    left: list[float],
+    right: list[float],
+    *,
+    comparison_name: str,
+    model_a: str,
+    model_b: str,
+    random_state: int,
+    metric_name: str,
+    estimand: str,
+) -> dict[str, Any]:
+    if len(left) != len(right):
+        raise ValueError("Paired seed bootstrap requires equal numbers of paired seed metrics.")
+    if not left:
+        raise ValueError("Paired seed bootstrap requires at least one paired seed metric.")
+
+    score_a = _mean(left)
+    score_b = _mean(right)
+    differences = [float(r - l) for l, r in zip(left, right)]
+    observed = _mean(differences)
+    centered = [float(diff - observed) for diff in differences]
+    rng = Random(int(random_state))
+    bootstrap_differences: list[float] = []
+    null_differences: list[float] = []
+    for _ in range(PAIRWISE_RESAMPLES):
+        bootstrap_sample = rng.choices(differences, k=len(differences))
+        null_sample = rng.choices(centered, k=len(centered))
+        bootstrap_differences.append(_mean(bootstrap_sample))
+        null_differences.append(_mean(null_sample))
+
+    p_value = float(
+        (
+            sum(abs(sample) >= abs(observed) - 1e-12 for sample in null_differences)
+            + 1
+        )
+        / (len(null_differences) + 1)
+    )
+    return {
+        "comparison": comparison_name,
+        "model_a": model_a,
+        "model_b": model_b,
+        "score_a": score_a,
+        "score_b": score_b,
+        "observed_difference": observed,
+        "p_value": p_value,
+        "ci_lower": _quantile(bootstrap_differences, 0.025),
+        "ci_upper": _quantile(bootstrap_differences, 0.975),
+        "alpha": float(PAIRWISE_ALPHA),
+        "n_pairs": len(differences),
+        "metric_name": metric_name,
+        "estimand": estimand,
+        "correction": "holm-bonferroni",
+    }
+
+
+def build_seed_metric_significance(
+    metric_groups_by_scope: dict[str, dict[str, list[float]]],
+    *,
+    baseline: str,
+    metric_name: str = "verdict_accuracy",
+    estimand: str = "seed_mean_verdict_accuracy",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    significance: dict[str, Any] = {}
+    raw_p_values: dict[str, float] = {}
+    group_order: dict[str, list[str]] = {}
+
+    for scope_index, (scope_name, group_metrics) in enumerate(metric_groups_by_scope.items()):
+        if baseline not in group_metrics:
+            raise ValueError(f"Unknown baseline group {baseline!r} for scope {scope_name!r}.")
+        ordered_groups = list(group_metrics)
+        group_order[scope_name] = ordered_groups
+        if len(ordered_groups) < 2:
+            significance[scope_name] = None
+            continue
+
+        baseline_values = [float(value) for value in group_metrics[baseline]]
+        rows: list[dict[str, Any]] = []
+        for group_index, group_name in enumerate(ordered_groups):
+            if group_name == baseline:
+                continue
+            row = _paired_seed_bootstrap_row(
+                baseline_values,
+                [float(value) for value in group_metrics[group_name]],
+                comparison_name=f"{baseline} vs {group_name}",
+                model_a=baseline,
+                model_b=group_name,
+                random_state=17 + group_index + (10 * scope_index),
+                metric_name=metric_name,
+                estimand=estimand,
+            )
+            hypothesis = f"{scope_name}: {row['comparison']}"
+            raw_p_values[hypothesis] = float(row["p_value"])
+            rows.append(row)
+
+        significance[scope_name] = {
+            "method": "paired_seed_bootstrap",
+            "metric_name": metric_name,
+            "estimand": estimand,
+            "alpha": float(PAIRWISE_ALPHA),
+            "baseline": baseline,
+            "comparisons": rows,
+            "correction": "holm-bonferroni",
+        }
+
+    correction_table = holm_bonferroni(raw_p_values, alpha=PAIRWISE_ALPHA) if raw_p_values else []
+    correction_lookup = {entry.hypothesis: entry for entry in correction_table}
+    for scope_name, report in significance.items():
+        if report is None:
+            continue
+        for row in report["comparisons"]:
+            hypothesis = f"{scope_name}: {row['comparison']}"
+            correction = correction_lookup[hypothesis]
+            row["adjusted_p_value"] = float(correction.adjusted_p_value)
+            row["reject_after_correction"] = bool(correction.reject)
+            row["family_hypothesis"] = hypothesis
+        report["correction_scope"] = {
+            "family_size": len(raw_p_values),
+            "hypotheses": list(raw_p_values),
+        }
+
+    return significance, {
+        "family_size": len(raw_p_values),
+        "alpha": float(PAIRWISE_ALPHA),
+        "correction": "holm-bonferroni",
+        "entries": [
+            {
+                "hypothesis": entry.hypothesis,
+                "p_value": float(entry.raw_p_value),
+                "adjusted_p_value": float(entry.adjusted_p_value),
+                "threshold": float(entry.threshold),
+                "reject": bool(entry.reject),
+            }
+            for entry in correction_table
+        ],
+    }
+
+
 def _stable_sample_seed(seed: int, family_name: str, sample_index: int) -> int:
     material = f"phase4::{int(seed)}::{family_name}::{int(sample_index)}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
@@ -189,6 +355,169 @@ def build_seed_benchmark_run(
     )
 
 
+def _rewrite_claim_instance(
+    sample: BenchmarkSample,
+    *,
+    claim_text: str,
+    attacker_rationale: str | None = None,
+    language_suffix: str | None = None,
+    meta_updates: dict[str, Any] | None = None,
+) -> BenchmarkSample:
+    payload = sample.claim.to_dict()
+    payload["claim_text"] = str(claim_text).strip()
+    if attacker_rationale is not None:
+        payload["attacker_rationale"] = str(attacker_rationale).strip()
+    if language_suffix:
+        payload["language_template_id"] = f"{payload['language_template_id']}::{language_suffix}"
+    payload["meta"] = {
+        **dict(payload.get("meta", {})),
+        **dict(meta_updates or {}),
+    }
+    return BenchmarkSample(
+        claim=ClaimInstance.from_dict(payload),
+        gold=sample.gold,
+        public=sample.public,
+        blueprint=sample.blueprint,
+    )
+
+
+def _private_anchor(sample: BenchmarkSample) -> str:
+    if sample.gold.hidden_variables:
+        return str(sample.gold.hidden_variables[0])
+    if sample.public.selection_variables:
+        return str(sample.public.selection_variables[0])
+    proxy_variables = list(sample.public.proxy_variables)
+    if proxy_variables:
+        return str(proxy_variables[0])
+    return str(sample.claim.target_variables["treatment"])
+
+
+def attack_only_samples(samples: list[BenchmarkSample]) -> list[BenchmarkSample]:
+    return [
+        sample
+        for sample in samples
+        if sample.claim.meta.get("attack_name") is not None
+        or sample.claim.meta.get("claim_mode") == "attack"
+    ]
+
+
+def apply_attack_strength_profile(
+    samples: list[BenchmarkSample],
+    *,
+    strength_name: str,
+) -> list[BenchmarkSample]:
+    rewritten: list[BenchmarkSample] = []
+    for sample in samples:
+        if sample.claim.meta.get("attack_name") is None:
+            rewritten.append(sample)
+            continue
+
+        anchor = _private_anchor(sample)
+        base_text = sample.claim.claim_text.rstrip()
+        base_rationale = sample.claim.attacker_rationale.rstrip()
+        if strength_name == "weak":
+            suffix = " The pattern is suggestive enough that the causal reading is still the most plausible one."
+            rationale_suffix = " Keep the attack understated so it sounds compatible with ordinary observational uncertainty."
+        elif strength_name == "medium":
+            suffix = " The observed pattern already supports taking the causal story at face value."
+            rationale_suffix = " Present the attack as a confident observational reading without overexplaining it."
+        elif strength_name == "strong":
+            suffix = " No credible alternative causal explanation matches the public evidence as well as this claim."
+            rationale_suffix = " State the attack as decisive so the verifier faces a sharper overclaim."
+        elif strength_name == "hidden_information_aware":
+            suffix = (
+                f" Internal details about {anchor} rule out the usual hidden-confounding objection, "
+                "so the causal conclusion should be treated as settled."
+            )
+            rationale_suffix = (
+                " Frame the attack as if the attacker has extra private knowledge that appears to close the main loophole."
+            )
+        else:
+            raise ValueError(f"Unsupported attack strength profile: {strength_name!r}.")
+
+        rewritten.append(
+            _rewrite_claim_instance(
+                sample,
+                claim_text=f"{base_text} {suffix}".strip(),
+                attacker_rationale=f"{base_rationale} {rationale_suffix}".strip(),
+                language_suffix=strength_name,
+                meta_updates={"attack_strength": strength_name},
+            )
+        )
+    return rewritten
+
+
+def validate_attacker_families(
+    attacker_families: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    resolved = list(DEFAULT_ATTACKER_FAMILIES) if not attacker_families else [str(name).strip() for name in attacker_families]
+    if not resolved:
+        raise ValueError("At least one attacker_family is required.")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for family_name in resolved:
+        if family_name in seen and family_name not in duplicates:
+            duplicates.append(family_name)
+        seen.add(family_name)
+    if duplicates:
+        raise ValueError(f"Duplicate attacker families are not allowed: {duplicates!r}.")
+    unsupported = sorted(set(resolved) - SUPPORTED_ATTACKER_FAMILIES)
+    if unsupported:
+        raise ValueError(
+            f"Unsupported attacker_family values: {unsupported!r}. "
+            f"Supported values are: {sorted(SUPPORTED_ATTACKER_FAMILIES)!r}."
+        )
+    return resolved
+
+
+def apply_attacker_family_profile(
+    samples: list[BenchmarkSample],
+    *,
+    attacker_family: str,
+) -> list[BenchmarkSample]:
+    rewritten: list[BenchmarkSample] = []
+    for sample in samples:
+        if sample.claim.meta.get("attack_name") is None:
+            rewritten.append(sample)
+            continue
+
+        anchor = _private_anchor(sample)
+        base_text = sample.claim.claim_text.rstrip()
+        base_rationale = sample.claim.attacker_rationale.rstrip()
+        if attacker_family == "baseline_attacker":
+            rewritten.append(
+                _rewrite_claim_instance(
+                    sample,
+                    claim_text=base_text,
+                    attacker_rationale=base_rationale,
+                    language_suffix=attacker_family,
+                    meta_updates={"attacker_family": attacker_family},
+                )
+            )
+            continue
+        if attacker_family == "formal_attacker":
+            suffix = " A careful analyst would therefore treat the claim as established from the observed evidence."
+            rationale_suffix = " Use more formal language so the attack resembles a methodical statistical conclusion."
+        elif attacker_family == "hidden_information_attacker":
+            suffix = (
+                f" Private operational details tied to {anchor} make the causal explanation look even harder to dispute."
+            )
+            rationale_suffix = " Make the attack sound as if it draws on extra non-public context."
+        else:
+            raise ValueError(f"Unsupported attacker_family: {attacker_family!r}.")
+
+        rewritten.append(
+            _rewrite_claim_instance(
+                sample,
+                claim_text=f"{base_text} {suffix}".strip(),
+                attacker_rationale=f"{base_rationale} {rationale_suffix}".strip(),
+                language_suffix=attacker_family,
+                meta_updates={"attacker_family": attacker_family},
+            )
+        )
+    return rewritten
+
+
 def _verifier_tool_context(sample: BenchmarkSample) -> dict[str, Any]:
     public = sample.public
     return {
@@ -222,10 +551,9 @@ def _run_main_verifier(sample: BenchmarkSample) -> dict[str, Any]:
         level=int(sample.claim.causal_level[1]),
         context=tool_context,
     )
-    decision = VerifierPipeline().run(
+    decision = VerifierPipeline(tool_runner=tool_executor).run(
         sample.claim.claim_text,
         scenario=scenario,
-        tool_trace=tool_report["tool_trace"],
         tool_context=tool_context,
     )
     return {
@@ -251,13 +579,51 @@ def _run_main_verifier(sample: BenchmarkSample) -> dict[str, Any]:
     }
 
 
+def _override_probabilities(
+    probabilities: dict[str, Any] | None,
+    *,
+    forced_label: str,
+    minimum_mass: float = 0.56,
+) -> dict[str, float]:
+    base = {
+        VerdictLabel.VALID.value: 1.0 / 3.0,
+        VerdictLabel.INVALID.value: 1.0 / 3.0,
+        VerdictLabel.UNIDENTIFIABLE.value: 1.0 / 3.0,
+    }
+    if isinstance(probabilities, dict):
+        for label in base:
+            try:
+                base[label] = max(0.0, float(probabilities.get(label, 0.0)))
+            except (TypeError, ValueError):
+                base[label] = 0.0
+
+    labels = list(base)
+    if forced_label not in labels:
+        raise ValueError(f"Unsupported forced label {forced_label!r}.")
+
+    other_labels = [label for label in labels if label != forced_label]
+    other_total = sum(base[label] for label in other_labels)
+    target_mass = max(float(minimum_mass), max(base.values()) + 1e-6)
+    target_mass = min(0.94, target_mass)
+    remainder = max(0.0, 1.0 - target_mass)
+    adjusted = {label: 0.0 for label in labels}
+    adjusted[forced_label] = target_mass
+    if other_total <= 0:
+        share = remainder / len(other_labels)
+        for label in other_labels:
+            adjusted[label] = share
+        return adjusted
+    for label in other_labels:
+        adjusted[label] = remainder * (base[label] / other_total)
+    return adjusted
+
+
 def _run_no_tools_verifier(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
     tool_context = _verifier_tool_context(sample)
-    decision = VerifierPipeline().run(
+    decision = VerifierPipeline(tool_runner=lambda **_: []).run(
         sample.claim.claim_text,
         scenario=scenario,
-        tool_trace=[],
         tool_context=tool_context,
     )
     return {
@@ -370,20 +736,46 @@ def _run_manual_variant(
 def _apply_no_abstention(sample: BenchmarkSample, payload: dict[str, Any]) -> dict[str, Any]:
     adjusted = dict(payload)
     verdict = dict(payload["verdict"])
-    predicted_label = str(payload["predicted_label"])
-    if predicted_label == VerdictLabel.UNIDENTIFIABLE.value:
+    base_label = str(verdict.get("label", payload["predicted_label"]))
+    if base_label == VerdictLabel.UNIDENTIFIABLE.value:
         parsed_claim = parse_claim(sample.claim.claim_text)
         forced_label = (
             VerdictLabel.INVALID.value
             if parsed_claim.claim_polarity is ClaimPolarity.NEGATIVE
             else VerdictLabel.VALID.value
         )
+        base_probabilities = dict(verdict.get("probabilities", {}))
+        base_reasoning_summary = str(verdict.get("reasoning_summary", "")).strip()
+        base_witness = deepcopy(verdict.get("witness"))
+        base_support_witness = deepcopy(verdict.get("support_witness"))
+        base_countermodel_witness = deepcopy(verdict.get("countermodel_witness"))
         verdict["label"] = forced_label
         verdict["confidence"] = max(float(payload["confidence"]), 0.51)
+        verdict["probabilities"] = _override_probabilities(
+            base_probabilities,
+            forced_label=forced_label,
+        )
+        verdict["witness"] = None
+        verdict["support_witness"] = None
+        verdict["countermodel_witness"] = None
+        verdict["reasoning_summary"] = (
+            "No-abstention ablation forced a committed "
+            f"{forced_label} verdict after the base verifier abstained. "
+            f"Base rationale: {base_reasoning_summary}"
+        ).strip()
         verdict["metadata"] = {
             **dict(verdict.get("metadata", {})),
             "ablation": "no_abstention",
-            "forced_from": VerdictLabel.UNIDENTIFIABLE.value,
+            "decision_stage": "no_abstention_override",
+            "forced_from": base_label,
+            "base_verdict": {
+                "label": base_label,
+                "probabilities": base_probabilities,
+                "reasoning_summary": base_reasoning_summary,
+                "witness": base_witness,
+                "support_witness": base_support_witness,
+                "countermodel_witness": base_countermodel_witness,
+            },
         }
         adjusted["predicted_label"] = forced_label
         adjusted["confidence"] = float(verdict["confidence"])
@@ -440,6 +832,7 @@ def _apply_family_postprocessing(
     verdict = dict(adjusted["verdict"])
     label = str(payload["predicted_label"])
     confidence = float(payload["confidence"])
+    base_probabilities = dict(verdict.get("probabilities", {}))
 
     if family_name == "skeptical_family":
         if label == VerdictLabel.VALID.value and confidence < 0.82:
@@ -466,6 +859,10 @@ def _apply_family_postprocessing(
             verdict["reasoning_summary"] = (
                 "Skeptical family override: the base verifier found no decisive countermodel, "
                 "but the remaining support margin is treated as insufficient for a committed valid verdict."
+            )
+            verdict["probabilities"] = _override_probabilities(
+                base_probabilities,
+                forced_label=label,
             )
             adjusted["countermodel_found"] = False
             adjusted["countermodel_type"] = None
@@ -495,6 +892,10 @@ def _apply_family_postprocessing(
             verdict["reasoning_summary"] = (
                 "Optimistic family override: no direct countermodel survived, so the remaining "
                 "uncertainty is resolved in favor of the claim."
+            )
+            verdict["probabilities"] = _override_probabilities(
+                base_probabilities,
+                forced_label=label,
             )
             adjusted["countermodel_found"] = False
             adjusted["countermodel_type"] = None
@@ -573,6 +974,52 @@ def predict_sample(
     raise ValueError(f"Unsupported system_name: {system_name!r}.")
 
 
+def score_prediction_records(
+    predictions: list[dict[str, Any]],
+    *,
+    game_id: str,
+) -> dict[str, Any]:
+    rounds: list[dict[str, Any]] = []
+    for index, record in enumerate(
+        sorted(
+            predictions,
+            key=lambda item: (
+                int(item.get("seed", 0)),
+                str(item.get("split", "")),
+                str(item.get("system_name", "")),
+                str(item.get("instance_id", "")),
+            ),
+        ),
+        start=1,
+    ):
+        verdict = dict(record.get("verdict") or {})
+        rounds.append(
+            {
+                "round_id": index,
+                "gold_label": record["gold_label"],
+                "predicted_label": record["predicted_label"],
+                "verdict_label": record["predicted_label"],
+                "verifier_confidence": record["confidence"],
+                "predicted_probabilities": verdict.get("probabilities"),
+                "countermodel_found": bool(record.get("countermodel_found")),
+                "countermodel_witness": verdict.get("countermodel_witness"),
+            }
+        )
+
+    score = Scorer().score_game(
+        {
+            "game_id": game_id,
+            "rounds": rounds,
+        }
+    )
+    return {
+        "predictions": predictions,
+        "metrics": dict(score.summary["core_metrics"]),
+        "appendix_metrics": dict(score.summary["appendix_metrics"]),
+        "summary": dict(score.summary),
+    }
+
+
 def evaluate_system_on_samples(
     samples: list[BenchmarkSample],
     *,
@@ -582,12 +1029,12 @@ def evaluate_system_on_samples(
     ood_reasons: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     predictions: list[dict[str, Any]] = []
-    rounds: list[dict[str, Any]] = []
     manifest_ood_reasons = dict(ood_reasons or {})
 
     for index, sample in enumerate(sorted(samples, key=lambda item: item.claim.instance_id), start=1):
         payload = predict_sample(sample, system_name=system_name)
         verdict = dict(payload["verdict"])
+        public_payload = sample.public.to_dict()
         record = {
             "seed": int(seed),
             "split": split_name,
@@ -611,34 +1058,30 @@ def evaluate_system_on_samples(
             "selection_variables": list(sample.public.selection_variables),
             "selection_mechanism": sample.public.selection_mechanism,
             "tool_report": dict(payload["tool_report"]),
+            "tool_trace": list(payload["tool_report"].get("tool_trace", [])),
+            "supporting_evidence": list(payload["tool_report"].get("supporting_evidence", [])),
+            "counter_evidence": list(payload["tool_report"].get("counter_evidence", [])),
             "countermodel_found": bool(payload["countermodel_found"]),
             "countermodel_type": payload["countermodel_type"],
+            "predicted_probabilities": dict(verdict.get("probabilities", {})),
+            "public_evidence_summary": {
+                "scenario_id": public_payload["scenario_id"],
+                "description": public_payload["description"],
+                "variables": list(public_payload["variables"]),
+                "proxy_variables": list(public_payload["proxy_variables"]),
+                "selection_variables": list(public_payload["selection_variables"]),
+                "selection_mechanism": public_payload["selection_mechanism"],
+                "causal_level": public_payload["causal_level"],
+            },
+            "observed_data": public_payload["observed_data"],
             "verdict": verdict,
             "system_notes": list(payload["system_notes"]),
         }
         predictions.append(record)
-        rounds.append(
-            {
-                "round_id": index,
-                "gold_label": record["gold_label"],
-                "verdict_label": record["predicted_label"],
-                "verifier_confidence": record["confidence"],
-                "countermodel_witness": verdict.get("countermodel_witness"),
-            }
-        )
-
-    score = Scorer().score_game(
-        {
-            "game_id": f"{system_name}_{split_name}_seed_{seed}",
-            "rounds": rounds,
-        }
+    return score_prediction_records(
+        predictions,
+        game_id=f"{system_name}_{split_name}_seed_{seed}",
     )
-    return {
-        "predictions": predictions,
-        "metrics": dict(score.summary["core_metrics"]),
-        "appendix_metrics": dict(score.summary["appendix_metrics"]),
-        "summary": dict(score.summary),
-    }
 
 
 def aggregate_seed_metrics(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from random import Random
 from typing import Any
 
 from experiments.benchmark_harness import (
@@ -33,131 +32,59 @@ DEFAULT_MAIN_SYSTEMS: tuple[str, ...] = (
 )
 DEFAULT_SAMPLES_PER_FAMILY = 10
 PAIRWISE_ALPHA = 0.05
-PAIRWISE_RESAMPLES = 2000
 
 
-def _mean(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    return float(sum(values) / len(values))
-
-
-def _quantile(values: list[float], q: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(value) for value in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    position = max(0.0, min(float(q), 1.0)) * (len(ordered) - 1)
-    lower = int(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    fraction = position - lower
-    return float(ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction)
-
-
-def _paired_seed_bootstrap_row(
-    left: list[float],
-    right: list[float],
+def _validate_main_benchmark_systems(
+    systems: list[str],
     *,
-    comparison_name: str,
-    model_a: str,
-    model_b: str,
-    random_state: int,
-) -> dict[str, Any]:
-    if len(left) != len(right):
-        raise ValueError("Paired seed bootstrap requires equal numbers of paired seed metrics.")
-    if not left:
-        raise ValueError("Paired seed bootstrap requires at least one paired seed metric.")
-
-    score_a = _mean(left)
-    score_b = _mean(right)
-    differences = [float(r - l) for l, r in zip(left, right)]
-    observed = _mean(differences)
-    centered = [float(diff - observed) for diff in differences]
-    rng = Random(int(random_state))
-    bootstrap_differences: list[float] = []
-    null_differences: list[float] = []
-    for _ in range(PAIRWISE_RESAMPLES):
-        bootstrap_sample = rng.choices(differences, k=len(differences))
-        null_sample = rng.choices(centered, k=len(centered))
-        bootstrap_differences.append(_mean(bootstrap_sample))
-        null_differences.append(_mean(null_sample))
-
-    p_value = float(
-        (
-            sum(abs(sample) >= abs(observed) - 1e-12 for sample in null_differences)
-            + 1
+    forbidden: tuple[str, ...] = ("oracle_leaking_partition",),
+) -> list[str]:
+    disallowed = [system_name for system_name in systems if system_name in set(forbidden)]
+    if disallowed:
+        raise ValueError(
+            "exp_main_benchmark must stay leakage-free. Remove disallowed system(s): "
+            f"{disallowed!r}."
         )
-        / (len(null_differences) + 1)
-    )
-    return {
-        "comparison": comparison_name,
-        "model_a": model_a,
-        "model_b": model_b,
-        "score_a": score_a,
-        "score_b": score_b,
-        "observed_difference": observed,
-        "p_value": p_value,
-        "ci_lower": _quantile(bootstrap_differences, 0.025),
-        "ci_upper": _quantile(bootstrap_differences, 0.975),
-        "alpha": float(PAIRWISE_ALPHA),
-        "n_pairs": len(differences),
-        "estimand": "seed_mean_verdict_accuracy",
-        "correction": "holm-bonferroni",
-    }
+    return list(systems)
 
 
-def _build_seed_mean_significance(
-    per_seed_results: dict[int, dict[str, Any]],
+def _build_formal_paired_significance(
+    raw_predictions: list[dict[str, Any]],
     *,
     systems: list[str],
     baseline: str,
-    metric_name: str = "verdict_accuracy",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     significance: dict[str, Any] = {}
-    comparison_rows: dict[tuple[str, str], dict[str, Any]] = {}
     raw_p_values: dict[str, float] = {}
-    seed_order = sorted(per_seed_results)
 
     for split_name in OOD_SPLITS:
-        rows: list[dict[str, Any]] = []
-        baseline_values = [
-            float(per_seed_results[seed][baseline][split_name]["metrics"][metric_name])
-            for seed in seed_order
-        ]
-        for index, system_name in enumerate(systems):
-            if system_name == baseline:
-                continue
-            system_values = [
-                float(per_seed_results[seed][system_name][split_name]["metrics"][metric_name])
-                for seed in seed_order
+        system_predictions = {
+            system_name: [
+                record
+                for record in raw_predictions
+                if record["system_name"] == system_name and record["split"] == split_name
             ]
-            comparison_name = f"{baseline} vs {system_name}"
-            row = _paired_seed_bootstrap_row(
-                baseline_values,
-                system_values,
-                comparison_name=comparison_name,
-                model_a=baseline,
-                model_b=system_name,
-                random_state=17 + index + len(rows) + (10 * len(significance)),
-            )
-            hypothesis = f"{split_name}: {comparison_name}"
-            comparison_rows[(split_name, system_name)] = row
-            raw_p_values[hypothesis] = float(row["p_value"])
-            rows.append(row)
-        significance[split_name] = {
-            "method": "paired_seed_bootstrap",
-            "metric_name": metric_name,
-            "estimand": "seed_mean_verdict_accuracy",
-            "alpha": float(PAIRWISE_ALPHA),
-            "baseline": baseline,
-            "comparisons": rows,
-            "correction": "holm-bonferroni",
+            for system_name in systems
         }
+        report = compare_system_predictions(
+            system_predictions,
+            baseline=baseline,
+        )
+        if report is None:
+            significance[split_name] = None
+            continue
+        report["estimand"] = "paired_sample_verdict_accuracy"
+        for row in report["comparisons"]:
+            row["split_adjusted_p_value"] = row.get("adjusted_p_value")
+            row["split_reject_after_correction"] = row.get("reject_after_correction")
+            raw_p_values[f"{split_name}: {row['comparison']}"] = float(row["p_value"])
+        significance[split_name] = report
 
     correction_table = holm_bonferroni(raw_p_values, alpha=PAIRWISE_ALPHA) if raw_p_values else []
     correction_lookup = {entry.hypothesis: entry for entry in correction_table}
     for split_name in OOD_SPLITS:
+        if significance.get(split_name) is None:
+            continue
         for row in significance[split_name]["comparisons"]:
             hypothesis = f"{split_name}: {row['comparison']}"
             correction = correction_lookup[hypothesis]
@@ -268,6 +195,7 @@ def run_experiment(
         systems,
         default_systems=DEFAULT_MAIN_SYSTEMS,
     )
+    resolved_systems = _validate_main_benchmark_systems(resolved_systems)
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
     protocol = summarize_protocol_compliance(
@@ -327,8 +255,8 @@ def run_experiment(
             "entries": [],
         }
     else:
-        significance, global_multiple_comparison_correction = _build_seed_mean_significance(
-            per_seed_results,
+        significance, global_multiple_comparison_correction = _build_formal_paired_significance(
+            raw_predictions,
             systems=resolved_systems,
             baseline=resolved_systems[0],
         )

@@ -424,37 +424,6 @@ def decide_verdict(
     supported_identifying = _supported_identifying_assumptions(adjudicated_ledger)
     explicitly_contradicted = _explicitly_contradicted_assumptions(adjudicated_ledger)
 
-    if explicitly_contradicted:
-        witness = _make_assumption_witness(
-            adjudicated_ledger,
-            verdict=VerdictLabel.INVALID,
-            description=(
-                "Tool-backed evidence directly contradicts explicit identifying assumptions asserted by the claim, so the claim is invalid under the current evidence."
-            ),
-            stage="explicit_assumption_contradiction",
-        )
-        contradiction_ratio = _score_ratio(len(explicitly_contradicted), len(adjudicated_ledger.entries))
-        return VerifierDecision(
-            label=VerdictLabel.INVALID,
-            confidence=0.76,
-            assumption_ledger=adjudicated_ledger,
-            probabilities=_probabilities_from_scores(
-                valid_score=0.05,
-                invalid_score=0.7 + (0.3 * contradiction_ratio),
-                unidentifiable_score=0.22,
-            ),
-            witness=witness,
-            tool_trace=normalized_tool_trace,
-            reasoning_summary=(
-                "Stage 3: no decisive countermodel survived, but tool-backed evidence directly contradicts explicit identifying assumptions asserted by the claim."
-            ),
-            metadata={
-                "decision_stage": 3,
-                "support_stage_entered": True,
-                "explicitly_contradicted_assumptions": [entry.name for entry in explicitly_contradicted],
-            },
-        )
-
     # Stage 3: unsupported core assumptions -> unidentifiable
     if unsupported or not tools_support_claim or (
         _needs_explicit_identifying_support(parsed_claim, adjudicated_ledger) and not supported_identifying

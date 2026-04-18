@@ -863,10 +863,7 @@ class CausalMetrics:
                 countermodel_applicable.append(
                     round_data.get("countermodel_applicable")
                     if "countermodel_applicable" in round_data
-                    else (
-                        _normalize_verdict_label(round_data.get("gold_label")) in {"invalid", "unidentifiable"}
-                        or _normalize_verdict_label(round_data.get("verdict_label")) in {"invalid", "unidentifiable"}
-                    )
+                    else _normalize_verdict_label(round_data.get("gold_label")) in {"invalid", "unidentifiable"}
                 )
 
         if gold_labels and predicted_labels:

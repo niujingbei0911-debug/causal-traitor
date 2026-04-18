@@ -1,6 +1,8 @@
 import unittest
+from types import SimpleNamespace
 
 from experiments.benchmark_harness import (
+    _apply_no_abstention,
     _apply_family_postprocessing,
     aggregate_seed_metrics,
     compare_system_predictions,
@@ -186,6 +188,11 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 "verdict": {
                     "label": "valid",
                     "confidence": 0.73,
+                    "probabilities": {
+                        "valid": 0.76,
+                        "invalid": 0.09,
+                        "unidentifiable": 0.15,
+                    },
                     "witness": {"witness_type": "support"},
                     "support_witness": {"witness_type": "support"},
                     "countermodel_witness": None,
@@ -201,6 +208,10 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertIsNone(skeptical["verdict"].get("support_witness"))
         self.assertIsNone(skeptical["verdict"].get("countermodel_witness"))
         self.assertIn("Skeptical family override", skeptical["verdict"].get("reasoning_summary", ""))
+        self.assertEqual(
+            max(skeptical["verdict"]["probabilities"], key=skeptical["verdict"]["probabilities"].get),
+            skeptical["predicted_label"],
+        )
 
         optimistic = _apply_family_postprocessing(
             "optimistic_family",
@@ -210,6 +221,11 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 "verdict": {
                     "label": "unidentifiable",
                     "confidence": 0.58,
+                    "probabilities": {
+                        "valid": 0.16,
+                        "invalid": 0.11,
+                        "unidentifiable": 0.73,
+                    },
                     "witness": {"witness_type": "assumption"},
                     "support_witness": None,
                     "countermodel_witness": None,
@@ -225,6 +241,42 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertIsNotNone(optimistic["verdict"].get("support_witness"))
         self.assertIsNone(optimistic["verdict"].get("countermodel_witness"))
         self.assertIn("Optimistic family override", optimistic["verdict"].get("reasoning_summary", ""))
+        self.assertEqual(
+            max(optimistic["verdict"]["probabilities"], key=optimistic["verdict"]["probabilities"].get),
+            optimistic["predicted_label"],
+        )
+
+    def test_no_abstention_forces_probabilities_and_reasoning_to_match_forced_label(self) -> None:
+        sample = SimpleNamespace(claim=SimpleNamespace(claim_text="X causes Y"))
+        adjusted = _apply_no_abstention(
+            sample,
+            {
+                "predicted_label": "valid",
+                "confidence": 0.62,
+                "verdict": {
+                    "label": "unidentifiable",
+                    "confidence": 0.62,
+                    "probabilities": {
+                        "valid": 0.14,
+                        "invalid": 0.19,
+                        "unidentifiable": 0.67,
+                    },
+                    "witness": {"witness_type": "countermodel"},
+                    "support_witness": None,
+                    "countermodel_witness": {"witness_type": "countermodel"},
+                    "reasoning_summary": (
+                        "Stage 2: the verifier found observationally compatible alternatives "
+                        "that disagree on the target query."
+                    ),
+                    "metadata": {"decision_stage": 2},
+                },
+                "system_notes": [],
+            },
+        )
+
+        self.assertEqual(max(adjusted["verdict"]["probabilities"], key=adjusted["verdict"]["probabilities"].get), adjusted["predicted_label"])
+        self.assertIn("no-abstention", adjusted["verdict"]["reasoning_summary"].lower())
+        self.assertEqual(adjusted["verdict"]["metadata"]["forced_from"], "unidentifiable")
 
 
 if __name__ == "__main__":

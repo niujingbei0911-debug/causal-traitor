@@ -285,6 +285,21 @@ def iv_estimation(
 
     effect = second_stage_fit["coefficients"]["predicted_treatment"]
     error = second_stage_fit["standard_errors"]["predicted_treatment"]
+    direct_path_check = _linear_effect(frame, instrument, outcome, [treatment, *covariates])
+    covariate_balance: dict[str, dict[str, float]] = {}
+    covariate_independence_flags: list[bool] = []
+    for covariate in covariates:
+        statistic, p_value = _association_signal(frame, instrument, covariate)
+        covariate_balance[covariate] = {
+            "association": float(statistic),
+            "p_value": float(p_value),
+        }
+        covariate_independence_flags.append(bool(p_value >= 0.1 or abs(statistic) <= 0.1))
+    supports_exclusion = bool(
+        direct_path_check["p_value"] >= 0.1
+        or abs(direct_path_check["causal_effect"]) <= 0.1
+    )
+    supports_independence = bool(covariate_independence_flags) and all(covariate_independence_flags)
     return {
         "causal_effect": float(effect),
         "std_error": float(error),
@@ -292,6 +307,11 @@ def iv_estimation(
         "first_stage_f": float(first_stage_f),
         "first_stage_r2": float(first_stage_fit["r_squared"]),
         "is_strong_instrument": bool(first_stage_f >= 10.0),
+        "direct_path_check_effect": float(direct_path_check["causal_effect"]),
+        "direct_path_check_p_value": float(direct_path_check["p_value"]),
+        "covariate_balance": covariate_balance,
+        "supports_exclusion_restriction": supports_exclusion,
+        "supports_instrument_independence": supports_independence,
         "n_samples": int(len(frame)),
     }
 

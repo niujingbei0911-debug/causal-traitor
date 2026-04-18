@@ -180,7 +180,7 @@ class ToolExecutorTests(unittest.TestCase):
         }
         self.assertIn("valid adjustment set", contradicts)
 
-    def test_backdoor_adjustment_check_without_public_graph_does_not_promote_heuristic_support(self):
+    def test_backdoor_adjustment_check_without_public_graph_only_promotes_conservative_claim_support(self):
         parsed_claim = parse_claim(
             "After controlling for pretest_score, the causal effect of exposure on recovery is identified."
         )
@@ -200,8 +200,27 @@ class ToolExecutorTests(unittest.TestCase):
             parsed_claim=parsed_claim,
         )
 
-        self.assertNotIn("valid adjustment set", supports)
+        self.assertIn("valid adjustment set", supports)
         self.assertNotIn("valid adjustment set", contradicts)
+
+    def test_public_measurement_semantics_are_not_upgraded_into_tool_trace_evidence(self):
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_iv_family",
+            difficulty=0.4,
+            seed=0,
+        )
+
+        report = self.executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=2,
+            context={"claim_stance": "pro_causal"},
+        )
+
+        self.assertNotIn(
+            "public_semantics_check",
+            {entry["tool_name"] for entry in report["tool_trace"]},
+        )
 
     def test_sensitivity_analysis_is_not_promoted_to_no_unobserved_confounding_support(self):
         report = self.executor.execute_for_claim(

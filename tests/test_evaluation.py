@@ -233,6 +233,23 @@ class EvaluationTests(unittest.TestCase):
             )
         )
 
+    def test_metrics_compute_all_uses_gold_only_countermodel_applicability(self) -> None:
+        results = CausalMetrics.compute_all(
+            {
+                "rounds": [
+                    {
+                        "gold_label": "valid",
+                        "verdict_label": "invalid",
+                        "countermodel_found": True,
+                    }
+                ]
+            }
+        )
+
+        lookup = {result.name: result for result in results}
+        self.assertEqual(lookup["countermodel_coverage"].value, 0.0)
+        self.assertEqual(lookup["countermodel_coverage"].details["applicable"], 0)
+
 
 class EvaluationStatisticsTests(unittest.TestCase):
     def test_bootstrap_confidence_interval_is_exact_for_constant_values(self) -> None:

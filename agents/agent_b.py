@@ -273,7 +273,10 @@ class AgentB:
                 f"在已观测协变量范围内仍值得优先考虑因果解释。"
             )
         elif level == 2:
-            instrument = self._find_instrument_variable(scenario_text, variables, treatment, outcome)
+            instrument = (
+                list(getattr(scenario, "instrument_variables", []) or [None])[0]
+                or self._find_instrument_variable(scenario_text, variables, treatment, outcome)
+            )
             instrument_text = f"，并可进一步借助工具变量 {instrument} 识别" if instrument else ""
             content = (
                 f"当前证据支持 {treatment} 对 {outcome} 存在正向干预效应，"
@@ -282,7 +285,10 @@ class AgentB:
             if instrument:
                 evidence.append(f"候选工具变量为 {instrument}")
         else:
-            mediator = self._find_mediator_variable(scenario_text, variables, treatment, outcome)
+            mediator = (
+                list(getattr(scenario, "mediator_variables", []) or [None])[0]
+                or self._find_mediator_variable(scenario_text, variables, treatment, outcome)
+            )
             mediator_text = f"，尤其需要结合中介 {mediator} 与反事实推断" if mediator else ""
             content = (
                 f"当前结构证据表明 {treatment} 很可能影响 {outcome}，"
@@ -423,9 +429,6 @@ class AgentB:
             if variable in {treatment, outcome}:
                 continue
             if variable.lower() in claim.lower():
-                return variable
-        for variable in variables:
-            if variable not in {treatment, outcome}:
                 return variable
         return None
 

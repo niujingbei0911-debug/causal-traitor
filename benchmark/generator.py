@@ -472,27 +472,6 @@ class BenchmarkGenerator:
                 {"roles": [], "variable_kind": role_kind.get(role, "observed_variable")},
             )
             entry["roles"] = list(dict.fromkeys([*entry.get("roles", []), role]))
-            support_assumptions: list[str] = []
-            if role in {"backdoor_adjuster", "observed_adjuster"} and "backdoor" in blueprint.family_tags:
-                support_assumptions = ["valid adjustment set", "no unobserved confounding"]
-            elif role == "proxy" and blueprint.family_name == "l1_proxy_disambiguation_family":
-                support_assumptions = ["proxy sufficiency"]
-            elif role == "instrument" and "valid_iv" in blueprint.family_tags:
-                support_assumptions = [
-                    "instrument relevance",
-                    "exclusion restriction",
-                    "instrument independence",
-                ]
-            elif role == "mediator" and blueprint.family_name == "l3_mediation_abduction_family":
-                support_assumptions = [
-                    "stable mediation structure",
-                    "cross-world consistency",
-                    "counterfactual model uniqueness",
-                ]
-            if support_assumptions:
-                entry["supports_assumptions"] = list(
-                    dict.fromkeys([*entry.get("supports_assumptions", []), *support_assumptions])
-                )
         return semantics
 
     def _public_metadata_payload(
@@ -500,10 +479,7 @@ class BenchmarkGenerator:
         blueprint: GraphFamilyBlueprint,
     ) -> dict[str, Any]:
         return {
-            "difficulty_family": blueprint.family_name,
             "task_level": blueprint.causal_level,
-            "variable_descriptions": self._public_variable_descriptions(blueprint),
-            "measurement_semantics": self._public_measurement_semantics(blueprint),
         }
 
     def _build_variable_rename_map(
@@ -898,18 +874,18 @@ class BenchmarkGenerator:
         )
         scenario.metadata.setdefault("family_tags", list(parent_blueprint.family_tags))
         scenario.metadata.setdefault("generator_hints", dict(parent_blueprint.generator_hints))
-        scenario.metadata.setdefault("difficulty_family", parent_blueprint.family_name)
         scenario.metadata.setdefault("task_level", parent_blueprint.causal_level)
-        scenario.metadata.setdefault(
-            "variable_descriptions",
-            self._public_variable_descriptions(parent_blueprint),
-        )
-        scenario.metadata.setdefault(
-            "measurement_semantics",
-            self._public_measurement_semantics(parent_blueprint),
-        )
-        scenario.difficulty_config.setdefault("difficulty_family", parent_blueprint.family_name)
         scenario.difficulty_config.setdefault("task_level", parent_blueprint.causal_level)
+        if parent_blueprint.role_bindings.get("instrument"):
+            scenario.metadata.setdefault(
+                "instrument_variables",
+                [str(parent_blueprint.role_bindings["instrument"])],
+            )
+        if parent_blueprint.role_bindings.get("mediator"):
+            scenario.metadata.setdefault(
+                "mediator_variables",
+                [str(parent_blueprint.role_bindings["mediator"])],
+            )
         return scenario
 
     def _generate_programmatic_instance(
@@ -921,16 +897,31 @@ class BenchmarkGenerator:
         seed: int,
         renaming_meta: dict[str, Any] | None = None,
     ) -> GoldCausalInstance:
-        full_data, true_scm = self._sample_programmatic_data(
-            blueprint=blueprint,
-            difficulty=difficulty,
-            n_samples=n_samples,
-            seed=seed,
-        )
-        observed_data = full_data.loc[:, blueprint.observed_variables].copy()
+        gold_label = VerdictLabel(str(self._select_gold_label(blueprint, seed)).strip().lower())
+        query_type = self._select_query_type(blueprint, seed)
+        sample_seed = seed
+        for attempt in range(12):
+            full_data, true_scm = self._sample_programmatic_data(
+                blueprint=blueprint,
+                difficulty=difficulty,
+                n_samples=n_samples,
+                seed=sample_seed,
+            )
+            observed_data = full_data.loc[:, blueprint.observed_variables].copy()
+            if gold_label != VerdictLabel.VALID or self._supports_public_validity_contract(
+                blueprint=blueprint,
+                observed_data=observed_data,
+                query_type=query_type,
+            ):
+                break
+            sample_seed += 7919
+        else:
+            raise ValueError(
+                f"Unable to generate a public-self-consistent valid sample for {blueprint.family_name} with seed {seed}."
+            )
+
         treatment = blueprint.target_variables["treatment"]
         outcome = blueprint.target_variables["outcome"]
-        gold_label = self._select_gold_label(blueprint, seed)
         effect_summary = self._estimate_effect_summary(observed_data, treatment, outcome)
         difficulty_profile = self._difficulty_profile(difficulty)
         renaming_meta = dict(renaming_meta or {})
@@ -960,7 +951,6 @@ class BenchmarkGenerator:
             difficulty=difficulty,
             difficulty_config={
                 **difficulty_profile,
-                "difficulty_family": blueprint.family_name,
                 "task_level": blueprint.causal_level,
                 "generator_mode": "programmatic",
                 "generator_seed": seed,
@@ -974,8 +964,19 @@ class BenchmarkGenerator:
                 "family_source": "programmatic",
                 "is_showcase": False,
                 "seed": seed,
+                "sampling_seed": sample_seed,
                 "identifiability": blueprint.identifiability.value,
                 "proxy_variables": list(blueprint.proxy_variables),
+                "instrument_variables": (
+                    [str(blueprint.role_bindings["instrument"])]
+                    if blueprint.role_bindings.get("instrument")
+                    else []
+                ),
+                "mediator_variables": (
+                    [str(blueprint.role_bindings["mediator"])]
+                    if blueprint.role_bindings.get("mediator")
+                    else []
+                ),
                 "selection_variables": list(blueprint.selection_variables),
                 "selection_mechanism": blueprint.generator_hints.get("selection_mechanism", "none"),
                 "role_bindings": dict(blueprint.role_bindings),
@@ -1105,6 +1106,90 @@ class BenchmarkGenerator:
             "observational_difference": float(0.0 if pd.isna(correlation) else correlation),
             "approx_effect": float(0.0 if pd.isna(correlation) else correlation),
         }
+
+    def _supports_public_validity_contract(
+        self,
+        *,
+        blueprint: GraphFamilyBlueprint,
+        observed_data: pd.DataFrame,
+        query_type: str,
+    ) -> bool:
+        treatment = blueprint.target_variables["treatment"]
+        outcome = blueprint.target_variables["outcome"]
+        try:
+            if blueprint.family_name == "l1_proxy_disambiguation_family":
+                from causal_tools.l1_association import proxy_support_check
+
+                proxy = blueprint.role_bindings.get("proxy") or (
+                    blueprint.proxy_variables[0] if blueprint.proxy_variables else None
+                )
+                if proxy is None:
+                    return False
+                report = proxy_support_check(observed_data, treatment, outcome, proxy, controls=[])
+                return bool(report.get("supports_proxy_sufficiency"))
+
+            if blueprint.family_name == "l2_valid_backdoor_family":
+                from causal_tools.l2_intervention import backdoor_adjustment_check, overlap_check
+
+                adjuster = (
+                    blueprint.role_bindings.get("backdoor_adjuster")
+                    or blueprint.role_bindings.get("observed_adjuster")
+                )
+                if adjuster is None:
+                    return False
+                adjustment_report = backdoor_adjustment_check(
+                    observed_data,
+                    treatment,
+                    outcome,
+                    [adjuster],
+                    graph=None,
+                )
+                overlap_report = overlap_check(observed_data, treatment, [adjuster])
+                return bool(adjustment_report.get("supports_adjustment_set")) and bool(
+                    overlap_report.get("has_overlap")
+                )
+
+            if blueprint.family_name == "l2_valid_iv_family":
+                from causal_tools.l2_intervention import iv_estimation
+
+                instrument = blueprint.role_bindings.get("instrument")
+                if instrument is None:
+                    return False
+                covariates = [
+                    variable
+                    for variable in blueprint.observed_variables
+                    if variable not in {treatment, outcome, instrument}
+                ][:1]
+                report = iv_estimation(observed_data, instrument, treatment, outcome, covariates)
+                return bool(report.get("is_strong_instrument")) and bool(
+                    report.get("supports_exclusion_restriction")
+                ) and bool(report.get("supports_instrument_independence"))
+
+            if blueprint.family_name == "l3_mediation_abduction_family":
+                from causal_tools.l3_counterfactual import counterfactual_bridge_check
+
+                mediator = blueprint.role_bindings.get("mediator")
+                if mediator is None:
+                    return False
+                covariates = [
+                    variable
+                    for variable in blueprint.observed_variables
+                    if variable not in {treatment, outcome, mediator}
+                ][:2]
+                report = counterfactual_bridge_check(
+                    observed_data,
+                    treatment,
+                    mediator,
+                    outcome,
+                    covariates,
+                )
+                return bool(report.get("supports_cross_world_consistency")) and bool(
+                    report.get("supports_counterfactual_model_uniqueness")
+                )
+        except Exception:
+            return False
+
+        return True
 
     def _select_gold_label(self, blueprint: GraphFamilyBlueprint, seed: int) -> str:
         labels = list(blueprint.supported_gold_labels)

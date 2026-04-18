@@ -128,6 +128,8 @@ class VerifierPipeline:
 
         if scenario is not None:
             sanitized["proxy_variables"] = list(getattr(scenario, "proxy_variables", []))
+            sanitized["instrument_variables"] = list(getattr(scenario, "instrument_variables", []))
+            sanitized["mediator_variables"] = list(getattr(scenario, "mediator_variables", []))
             sanitized["selection_variables"] = list(getattr(scenario, "selection_variables", []))
             sanitized["selection_mechanism"] = getattr(scenario, "selection_mechanism", None)
 
@@ -142,11 +144,13 @@ class VerifierPipeline:
         tool_trace: list[Any] | tuple[Any, ...] | None = None,
         tool_context: dict[str, Any] | None = None,
     ) -> VerifierDecision:
-        public_scenario = None if scenario is None else require_public_instance(scenario)
-        if public_scenario is None and (tool_trace is not None or self.tool_runner is not None):
+        if scenario is None:
+            raise TypeError("VerifierPipeline requires PublicCausalInstance for all verifier entrypoints.")
+        public_scenario = require_public_instance(scenario)
+        if tool_trace is not None:
             raise TypeError(
-                "Support-stage verifier inputs require PublicCausalInstance. "
-                "Do not provide tool_trace or tool_runner without a public scenario."
+                "VerifierPipeline does not accept externally supplied tool_trace. "
+                "Use tool_runner or the built-in ToolExecutor with a public scenario."
             )
         sanitized_tool_context = self._sanitize_tool_context(
             tool_context,
@@ -166,6 +170,8 @@ class VerifierPipeline:
                     "public_instance": public_scenario,
                     "observed_data": public_scenario.observed_data.copy(deep=True),
                     "proxy_variables": list(getattr(public_scenario, "proxy_variables", [])),
+                    "instrument_variables": list(getattr(public_scenario, "instrument_variables", [])),
+                    "mediator_variables": list(getattr(public_scenario, "mediator_variables", [])),
                     "selection_variables": list(getattr(public_scenario, "selection_variables", [])),
                     "selection_mechanism": getattr(public_scenario, "selection_mechanism", None),
                 }
@@ -205,8 +211,6 @@ class VerifierPipeline:
         tool_trace: list[Any] | tuple[Any, ...] | None = None,
         tool_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        if tool_trace is not None:
-            return self._normalize_tool_trace(tool_trace)
         runner = self.tool_runner
         if runner is None:
             if scenario is None:

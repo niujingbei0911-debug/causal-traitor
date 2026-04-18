@@ -658,6 +658,48 @@ class CountermodelSearchTests(unittest.TestCase):
         self.assertFalse(result.found_countermodel)
         self.assertEqual(result.candidates, [])
 
+    def test_countermodel_search_does_not_treat_public_measurement_semantics_as_assumption_support(self) -> None:
+        observed_data = pd.DataFrame(
+            {
+                "assignment_lottery": [0, 0, 1, 1, 0, 1, 0, 1],
+                "exposure": [0, 0, 1, 0, 1, 1, 1, 0],
+                "recovery": [0.1, 0.2, 0.6, 0.3, 0.8, 1.0, 0.9, 0.2],
+            }
+        )
+        scenario = PublicCausalInstance(
+            scenario_id="public_semantic_leak_case",
+            description="Injected public semantics must not settle IV assumptions.",
+            variables=list(observed_data.columns),
+            observed_data=observed_data,
+            causal_level=2,
+            metadata={
+                "measurement_semantics": {
+                    "assignment_lottery": {
+                        "roles": ["instrument"],
+                        "variable_kind": "instrument",
+                        "supports_assumptions": [
+                            "instrument relevance",
+                            "exclusion restriction",
+                            "instrument independence",
+                        ],
+                    }
+                }
+            },
+        )
+        claim = "Using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+        parsed = parse_claim(claim)
+        ledger = build_assumption_ledger(parsed)
+
+        result = search_countermodels(
+            parsed,
+            ledger,
+            scenario=scenario,
+            context={"claim_text": claim},
+        )
+
+        self.assertTrue(result.found_countermodel)
+        self.assertEqual(result.countermodel_type, "invalid_instrument_alternative")
+
 
 class DecisionRuleTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -789,7 +831,7 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertTrue(decision.metadata["support_stage_entered"])
         self.assertEqual(decision.metadata["decision_stage"], 3)
 
-    def test_stage_3_explicitly_contradicted_assumption_returns_invalid_consistent_witness(self) -> None:
+    def test_stage_3_explicitly_contradicted_assumption_stays_unidentifiable_without_countermodel(self) -> None:
         parsed = ParsedClaim(
             query_type="intervention",
             treatment="exposure",
@@ -815,11 +857,10 @@ class DecisionRuleTests(unittest.TestCase):
 
         decision = decide_verdict(parsed, ledger, countermodel, tool_trace=tool_trace)
 
-        self.assertEqual(decision.label, VerdictLabel.INVALID)
+        self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
         self.assertIsNotNone(decision.witness)
         self.assertEqual(decision.witness.witness_type, WitnessKind.ASSUMPTION)
-        self.assertIs(decision.witness.verdict_suggestion, VerdictLabel.INVALID)
-        self.assertEqual(decision.witness.metadata["decision_stage"], "explicit_assumption_contradiction")
+        self.assertIs(decision.witness.verdict_suggestion, VerdictLabel.UNIDENTIFIABLE)
 
     def test_stage_4_supportive_tools_return_valid_for_identifiable_l3_claim(self) -> None:
         parsed = ParsedClaim(
@@ -929,28 +970,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(forwarded_context["proxy_variables"], ["proxy_signal"])
 
     def test_pipeline_ignores_injected_observed_data_in_tool_context_without_public_scenario(self) -> None:
-        result = VerifierPipeline().run(
-            "Using assignment_lottery as an instrument is enough to recover the causal effect of X on Y.",
-            tool_context={
-                "observed_data": pd.DataFrame(
-                    {
-                        "X": [0, 0, 1, 1],
-                        "Y": [0.0, 0.1, 0.9, 1.0],
-                        "assignment_lottery": [0, 1, 0, 1],
-                    }
-                ),
-                "instrument": "assignment_lottery",
-            },
-        )
-
-        self.assertIsNotNone(result.countermodel_witness)
-        payload = result.countermodel_witness.payload
-        self.assertFalse(payload["used_observed_data"])
-        self.assertTrue(payload["candidates"])
-        evidence = payload["candidates"][0]["observational_evidence"]
-        self.assertFalse(evidence["used_observed_data"])
-        self.assertEqual(evidence.get("first_stage_strength"), 0.0)
-        self.assertEqual(evidence.get("within_treatment_outcome_gap"), 0.0)
+        with self.assertRaises(TypeError):
+            VerifierPipeline().run(
+                "Using assignment_lottery as an instrument is enough to recover the causal effect of X on Y.",
+                tool_context={
+                    "observed_data": pd.DataFrame(
+                        {
+                            "X": [0, 0, 1, 1],
+                            "Y": [0.0, 0.1, 0.9, 1.0],
+                            "assignment_lottery": [0, 1, 0, 1],
+                        }
+                    ),
+                    "instrument": "assignment_lottery",
+                },
+            )
 
     def test_pipeline_can_run_end_to_end_in_one_call(self) -> None:
         tool_runner = FakeToolRunner(
@@ -1090,7 +1123,7 @@ class PipelineTests(unittest.TestCase):
                 result = run_verifier_pipeline(
                     sample.claim.claim_text,
                     scenario=sample.public,
-                    tool_trace=tool_trace,
+                    tool_runner=FakeToolRunner(tool_trace),
                 )
 
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
@@ -1124,7 +1157,7 @@ class PipelineTests(unittest.TestCase):
                 result = run_verifier_pipeline(
                     sample.claim.claim_text,
                     scenario=sample.public,
-                    tool_trace=report["tool_trace"],
+                    tool_runner=FakeToolRunner(report["tool_trace"]),
                 )
 
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
@@ -1158,7 +1191,7 @@ class PipelineTests(unittest.TestCase):
                 result = run_verifier_pipeline(
                     sample.claim.claim_text,
                     scenario=sample.public,
-                    tool_trace=report["tool_trace"],
+                    tool_runner=FakeToolRunner(report["tool_trace"]),
                 )
 
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
@@ -1183,12 +1216,46 @@ class PipelineTests(unittest.TestCase):
         result = run_verifier_pipeline(
             sample.claim.claim_text,
             scenario=sample.public,
-            tool_trace=report["tool_trace"],
+            tool_runner=FakeToolRunner(report["tool_trace"]),
         )
 
         self.assertIs(sample.claim.gold_label, VerdictLabel.INVALID)
         self.assertEqual(sample.claim.meta.get("attack_name"), "association_overclaim")
         self.assertEqual(result.label, VerdictLabel.INVALID)
+
+    def test_pipeline_valid_family_regression_seeds_stay_on_valid_path(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        executor = ToolExecutor({})
+        cases = (
+            ("l1_proxy_disambiguation_family", 104),
+            ("l2_valid_backdoor_family", 40),
+            ("l2_valid_iv_family", 60),
+            ("l2_valid_iv_family", 144),
+            ("l2_valid_iv_family", 156),
+        )
+
+        for family_name, seed in cases:
+            with self.subTest(family_name=family_name, seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name=family_name,
+                    difficulty=0.4,
+                    seed=seed,
+                )
+                level = int(str(sample.claim.causal_level).replace("L", ""))
+                report = executor.execute_for_claim(
+                    scenario=sample.public,
+                    claim=sample.claim.claim_text,
+                    level=level,
+                    context={"claim_stance": "pro_causal"},
+                )
+                result = run_verifier_pipeline(
+                    sample.claim.claim_text,
+                    scenario=sample.public,
+                    tool_runner=FakeToolRunner(report["tool_trace"]),
+                )
+
+                self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
+                self.assertEqual(result.label, VerdictLabel.VALID)
 
     def test_pipeline_with_real_tool_executor_keeps_invalid_adjustment_claim_off_valid_path(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
@@ -1206,7 +1273,7 @@ class PipelineTests(unittest.TestCase):
         result = run_verifier_pipeline(
             sample.claim.claim_text,
             scenario=sample.public,
-            tool_trace=report["tool_trace"],
+            tool_runner=FakeToolRunner(report["tool_trace"]),
         )
 
         self.assertIs(sample.claim.gold_label, VerdictLabel.INVALID)
@@ -1233,7 +1300,7 @@ class PipelineTests(unittest.TestCase):
         result = run_verifier_pipeline(
             sample.claim.claim_text,
             scenario=sample.public,
-            tool_trace=report["tool_trace"],
+            tool_runner=FakeToolRunner(report["tool_trace"]),
         )
 
         self.assertIs(sample.claim.gold_label, VerdictLabel.UNIDENTIFIABLE)
@@ -1276,20 +1343,21 @@ class PipelineTests(unittest.TestCase):
                 result = run_verifier_pipeline(
                     sample.claim.claim_text,
                     scenario=sample.public,
-                    tool_trace=report["tool_trace"],
+                    tool_runner=FakeToolRunner(report["tool_trace"]),
                 )
 
                 self.assertIs(sample.claim.gold_label, expected_label)
                 self.assertEqual(result.label, expected_label)
 
     def test_pipeline_keeps_generated_iv_attack_sample_on_intervention_path(self) -> None:
-        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l2_invalid_iv_family",
             difficulty=0.4,
             seed=2,
         )
+        claim = sample.claim
         parsed = parse_claim(claim.claim_text)
-        result = run_verifier_pipeline(claim.claim_text)
+        result = run_verifier_pipeline(claim.claim_text, scenario=sample.public)
 
         self.assertEqual(claim.query_type, "instrumental_variable_claim")
         self.assertIs(claim.gold_label, VerdictLabel.INVALID)
@@ -1301,13 +1369,14 @@ class PipelineTests(unittest.TestCase):
         )
 
     def test_pipeline_keeps_generated_l3_attack_sample_on_counterfactual_path(self) -> None:
-        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l3_counterfactual_ambiguity_family",
             difficulty=0.4,
             seed=2,
         )
+        claim = sample.claim
         parsed = parse_claim(claim.claim_text)
-        result = run_verifier_pipeline(claim.claim_text)
+        result = run_verifier_pipeline(claim.claim_text, scenario=sample.public)
 
         self.assertEqual(claim.query_type, "effect_of_treatment_on_treated")
         self.assertIs(claim.gold_label, VerdictLabel.UNIDENTIFIABLE)
@@ -1330,14 +1399,15 @@ class PipelineTests(unittest.TestCase):
 
         for family_name in families:
             for seed in range(24):
-                claim = generator.generate_claim_instance(
+                sample = generator.generate_benchmark_sample(
                     family_name=family_name,
                     difficulty=0.4,
                     seed=seed,
                 )
+                claim = sample.claim
                 if claim.gold_label is not VerdictLabel.UNIDENTIFIABLE:
                     continue
-                result = run_verifier_pipeline(claim.claim_text)
+                result = run_verifier_pipeline(claim.claim_text, scenario=sample.public)
                 if result.label is VerdictLabel.INVALID:
                     mismatches.append(
                         (
@@ -1363,12 +1433,13 @@ class PipelineTests(unittest.TestCase):
 
         for family_name, seed, attack_name in cases:
             with self.subTest(family_name=family_name, seed=seed):
-                claim = generator.generate_claim_instance(
+                sample = generator.generate_benchmark_sample(
                     family_name=family_name,
                     difficulty=0.4,
                     seed=seed,
                 )
-                result = run_verifier_pipeline(claim.claim_text)
+                claim = sample.claim
+                result = run_verifier_pipeline(claim.claim_text, scenario=sample.public)
 
                 self.assertIs(claim.gold_label, VerdictLabel.UNIDENTIFIABLE)
                 self.assertEqual(claim.meta.get("attack_name"), attack_name)
@@ -1392,18 +1463,15 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(result.countermodel_witness.payload["used_observed_data"])
 
     def test_pipeline_only_enters_support_stage_when_no_countermodel_exists(self) -> None:
-        invalid_result = run_verifier_pipeline(
-            "For an individual with the same observed history, switching therapy_flag would definitely change recovery, so the unit-level counterfactual is uniquely identified.",
-            transcript=[
-                {"speaker": "agent_a", "content": "No extra assumptions are needed."},
-                {"speaker": "agent_b", "content": "The answer is uniquely pinned down."},
-            ],
-        )
         scenario = _build_public_intervention_scenario()
+        invalid_result = run_verifier_pipeline(
+            "assignment_lottery affects recovery only through exposure, so using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery.",
+            scenario=scenario,
+        )
         valid_result = run_verifier_pipeline(
             "After controlling for pretest_score, the causal effect of exposure on recovery is identified.",
             scenario=scenario,
-            tool_trace=[
+            tool_runner=FakeToolRunner([
                 {
                     "tool_name": "backdoor_check",
                     "summary": "The observed adjustment set blocks the relevant backdoor paths.",
@@ -1411,11 +1479,11 @@ class PipelineTests(unittest.TestCase):
                     "supports_claim": True,
                     "confidence": 0.8,
                 }
-            ],
+            ]),
         )
 
         self.assertFalse(invalid_result.metadata["support_stage_entered"])
-        self.assertEqual(invalid_result.label, VerdictLabel.INVALID)
+        self.assertEqual(invalid_result.label, VerdictLabel.UNIDENTIFIABLE)
         self.assertTrue(valid_result.metadata["support_stage_entered"])
         self.assertEqual(valid_result.label, VerdictLabel.VALID)
 
@@ -1450,9 +1518,11 @@ class PipelineTests(unittest.TestCase):
                 "content": "Using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery.",
             }
         ]
+        scenario = _build_public_intervention_scenario()
         pipeline = VerifierPipeline()
         result = pipeline.run(
             "Estimate the causal effect of exposure on recovery.",
+            scenario=scenario,
             transcript=transcript,
         )
 
@@ -1461,10 +1531,11 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNotNone(result.countermodel_witness)
         self.assertEqual(result.countermodel_witness.payload["countermodel_type"], "invalid_instrument_alternative")
 
-    def test_pipeline_rejects_external_tool_trace_without_public_scenario(self) -> None:
+    def test_pipeline_rejects_external_tool_trace_even_with_public_scenario(self) -> None:
         with self.assertRaises(TypeError):
             run_verifier_pipeline(
                 "The causal effect of X on Y is identified.",
+                scenario=_build_public_intervention_scenario(),
                 tool_trace=[
                     {
                         "tool_name": "oracle_trace",

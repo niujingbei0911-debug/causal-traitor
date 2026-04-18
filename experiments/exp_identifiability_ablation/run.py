@@ -8,13 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
-    DEFAULT_SEEDS,
+    MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
     aggregate_seed_metrics,
+    build_seed_metric_significance,
     build_seed_benchmark_run,
-    compare_system_predictions,
     evaluate_system_on_samples,
     manifest_metadata,
+    normalize_benchmark_difficulty,
+    normalize_benchmark_samples_per_family,
+    normalize_experiment_seeds,
+    summarize_protocol_compliance,
     write_artifacts,
 )
 
@@ -25,13 +29,6 @@ SYSTEMS: tuple[str, ...] = (
     "no_abstention",
     "no_tools",
 )
-
-
-def _normalize_seeds(seeds: list[int] | tuple[int, ...] | None) -> list[int]:
-    if not seeds:
-        return list(DEFAULT_SEEDS)
-    return [int(seed) for seed in seeds]
-
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
@@ -71,9 +68,21 @@ def run_experiment(
     seeds: list[int] | tuple[int, ...] | None = None,
     samples_per_family: int = 2,
     difficulty: float = 0.55,
+    allow_protocol_violations: bool = False,
     output_path: str | None = None,
 ) -> dict[str, Any]:
-    resolved_seeds = _normalize_seeds(seeds)
+    resolved_seeds = normalize_experiment_seeds(
+        seeds,
+        minimum_count=MIN_FORMAL_SEED_COUNT,
+        allow_protocol_violations=allow_protocol_violations,
+    )
+    resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    resolved_difficulty = normalize_benchmark_difficulty(difficulty)
+    protocol = summarize_protocol_compliance(
+        resolved_seeds,
+        minimum_count=MIN_FORMAL_SEED_COUNT,
+        allow_protocol_violations=allow_protocol_violations,
+    )
     raw_predictions: list[dict[str, Any]] = []
     per_seed_results: dict[int, dict[str, Any]] = {}
     manifests: dict[int, dict[str, Any]] = {}
@@ -81,8 +90,8 @@ def run_experiment(
     for seed in resolved_seeds:
         run = build_seed_benchmark_run(
             seed=seed,
-            difficulty=difficulty,
-            samples_per_family=samples_per_family,
+            difficulty=resolved_difficulty,
+            samples_per_family=resolved_samples_per_family,
         )
         manifests[seed] = manifest_metadata(run)
         ood_reasons = dict(run.manifest.metadata.get("ood_reasons", {}))
@@ -114,33 +123,41 @@ def run_experiment(
                 split_name=split_name,
             )
 
-    significance = {
-        split_name: compare_system_predictions(
-            {
+    significance, global_multiple_comparison_correction = build_seed_metric_significance(
+        {
+            split_name: {
                 system_name: [
-                    record
-                    for record in raw_predictions
-                    if record["system_name"] == system_name and record["split"] == split_name
+                    float(per_seed_results[seed][system_name][split_name]["metrics"]["verdict_accuracy"])
+                    for seed in sorted(resolved_seeds)
                 ]
                 for system_name in SYSTEMS
-            },
-            baseline=SYSTEMS[0],
-        )
-        for split_name in OOD_SPLITS
-    }
+            }
+            for split_name in OOD_SPLITS
+        },
+        baseline=SYSTEMS[0],
+        metric_name="verdict_accuracy",
+        estimand="seed_mean_verdict_accuracy",
+    )
 
     payload = {
         "experiment_id": "exp_identifiability_ablation",
         "config": {
+            "samples_per_family": int(resolved_samples_per_family),
+            "difficulty": float(resolved_difficulty),
+        },
+        "requested_config": {
             "samples_per_family": int(samples_per_family),
             "difficulty": float(difficulty),
+            "allow_protocol_violations": bool(allow_protocol_violations),
         },
         "systems": list(SYSTEMS),
         "seeds": resolved_seeds,
+        "protocol": protocol,
         "manifests": manifests,
         "per_seed_results": per_seed_results,
         "aggregated_metrics": aggregated_metrics,
         "significance": significance,
+        "global_multiple_comparison_correction": global_multiple_comparison_correction,
         "raw_predictions": raw_predictions,
     }
 
@@ -161,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
     parser.add_argument("--samples-per-family", type=int, default=2, help="Samples generated per benchmark family.")
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
+    parser.add_argument(
+        "--allow-protocol-violations",
+        action="store_true",
+        help="Allow exploratory runs that violate the formal >=3-seed Phase 4 protocol.",
+    )
     parser.add_argument("--output", default=None, help="Optional JSON output path.")
     return parser
 
@@ -171,6 +193,7 @@ def main() -> None:
         seeds=args.seeds,
         samples_per_family=args.samples_per_family,
         difficulty=args.difficulty,
+        allow_protocol_violations=args.allow_protocol_violations,
         output_path=args.output,
     )
     print(json.dumps(payload["aggregated_metrics"], ensure_ascii=False, indent=2))

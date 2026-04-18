@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agents.tool_executor import ToolExecutor
 from benchmark.schema import ensure_public_instance
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
+from experiments.benchmark_harness import build_seed_benchmark_run
 from experiments.exp_adversarial_robustness.run import run_experiment as run_adversarial_robustness
 from experiments.exp1_causal_levels.run import run_experiment
 from experiments.exp2_jury_ablation.run import run_experiment as run_exp2_jury_ablation
@@ -17,6 +19,9 @@ from experiments.exp_human_audit.run import run_experiment as run_human_audit
 from experiments.exp_identifiability_ablation.run import run_experiment as run_identifiability_ablation
 from experiments.exp_leakage_study.run import (
     DEFAULT_SAMPLES_PER_FAMILY as LEAKAGE_DEFAULT_SAMPLES_PER_FAMILY,
+    _build_oracle_leaking_public_partition,
+    _run_oracle_leaking_partition,
+    _verifier_tool_context,
     run_experiment as run_leakage_study,
 )
 from experiments.exp_main_benchmark.run import run_experiment as run_main_benchmark
@@ -27,6 +32,7 @@ from game.debate_engine import DebateEngine
 from game.difficulty import DifficultyController
 from main import run_game
 from run_live_game import _public_graph
+from verifier.pipeline import VerifierPipeline
 from visualization.api import VisualizationAPI
 
 
@@ -142,27 +148,32 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             ablation_payload = run_identifiability_ablation(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_identifiability_ablation.json"),
             )
             robustness_payload = run_adversarial_robustness(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_adversarial_robustness.json"),
             )
             ood_payload = run_ood_generalization(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_ood_generalization.json"),
             )
             transfer_payload = run_cross_model_transfer(
                 seeds=[0],
                 samples_per_family=1,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer.json"),
             )
             human_payload = run_human_audit(
                 seeds=[0],
                 samples_per_family=1,
                 audit_subset_size=4,
+                allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_human_audit.json"),
             )
 
@@ -203,16 +214,65 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 metrics = ablation_payload["aggregated_metrics"][system_name]["test_iid"]
                 self.assertIn("invalid_claim_acceptance_rate", metrics)
                 self.assertIn("unidentifiable_awareness", metrics)
+            self.assertFalse(ablation_payload["protocol"]["compliant"])
+            self.assertTrue(ablation_payload["protocol"]["override_used"])
+            self.assertEqual(
+                ablation_payload["significance"]["test_iid"]["estimand"],
+                "seed_mean_verdict_accuracy",
+            )
 
-            self.assertEqual(sorted(robustness_payload["aggregated_metrics"].keys()), ["medium", "strong", "weak"])
-            self.assertIn("ood_gap", ood_payload)
+            self.assertEqual(
+                sorted(robustness_payload["aggregated_metrics"].keys()),
+                ["hidden_information_aware", "medium", "strong", "weak"],
+            )
+            self.assertFalse(robustness_payload["protocol"]["compliant"])
+            self.assertTrue(robustness_payload["protocol"]["override_used"])
+            self.assertTrue(robustness_payload["raw_predictions"])
+            self.assertTrue(all(record["attack_name"] is not None for record in robustness_payload["raw_predictions"]))
+            attack_texts_by_instance: dict[tuple[str, str], set[str]] = {}
+            strengths_by_instance: dict[tuple[str, str], set[str]] = {}
+            for record in robustness_payload["raw_predictions"]:
+                key = (record["split"], record["instance_id"])
+                attack_texts_by_instance.setdefault(key, set()).add(record["claim_text"])
+                strengths_by_instance.setdefault(key, set()).add(record["attack_strength"])
+            self.assertTrue(
+                any(
+                    len(strengths_by_instance[key]) >= 2 and len(attack_texts_by_instance[key]) >= 2
+                    for key in attack_texts_by_instance
+                )
+            )
+
+            for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood"):
+                self.assertIn(bucket_name, ood_payload["aggregated_metrics"])
+                self.assertIn(bucket_name, ood_payload["ood_gap"])
+                self.assertIn(bucket_name, ood_payload["significance"])
+            self.assertFalse(ood_payload["protocol"]["compliant"])
+            self.assertTrue(ood_payload["protocol"]["override_used"])
+
             self.assertGreaterEqual(len(transfer_payload["systems"]), 2)
+            self.assertGreaterEqual(len(transfer_payload["attacker_families"]), 2)
+            self.assertTrue(transfer_payload["raw_predictions"])
+            self.assertIn(
+                "attacker_family",
+                transfer_payload["raw_predictions"][0],
+            )
+            self.assertFalse(transfer_payload["protocol"]["compliant"])
+            self.assertTrue(transfer_payload["protocol"]["override_used"])
 
             self.assertIn("aggregated_metrics", human_payload)
             self.assertIn("test_iid", human_payload["aggregated_metrics"])
             self.assertIn("test_ood", human_payload["aggregated_metrics"])
             self.assertTrue(human_payload["annotation_package"])
             self.assertTrue(all(record["supports_public_only"] for record in human_payload["annotation_package"]))
+            for field_name in (
+                "public_evidence_summary",
+                "observed_data",
+                "supporting_evidence",
+                "counter_evidence",
+                "tool_trace",
+                "verifier_probabilities",
+            ):
+                self.assertIn(field_name, human_payload["annotation_package"][0])
             for artifact_path in human_payload["artifacts"].values():
                 self.assertTrue(Path(artifact_path).exists())
 
@@ -244,16 +304,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(main_payload["significance"][split_name]["comparisons"])
                 self.assertEqual(
                     main_payload["significance"][split_name]["estimand"],
-                    "seed_mean_verdict_accuracy",
+                    "paired_sample_verdict_accuracy",
                 )
-                baseline_name = main_payload["significance"][split_name]["baseline"]
-                comparison = main_payload["significance"][split_name]["comparisons"][0]
-                candidate_name = comparison["model_b"]
-                expected_delta = (
-                    main_payload["aggregated_metrics"][candidate_name][split_name]["verdict_accuracy"]["mean"]
-                    - main_payload["aggregated_metrics"][baseline_name][split_name]["verdict_accuracy"]["mean"]
+                self.assertEqual(main_payload["significance"][split_name]["method"], "paired_bootstrap")
+                self.assertEqual(
+                    main_payload["significance"][split_name]["metric_name"],
+                    "verdict_accuracy",
                 )
-                self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
             self.assertGreaterEqual(len(leakage_payload["seeds"]), 3)
             self.assertGreaterEqual(
@@ -286,6 +343,46 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 expected_delta = leakage_payload["inflation"][split_name]["accuracy"]["delta_mean"]
                 self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
+    def test_phase4_leakage_control_matches_direct_verifier_pipeline_rerun(self) -> None:
+        run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
+        sample = next(
+            candidate
+            for candidate in run.split_samples["test_iid"]
+            if candidate.claim.graph_family == "l2_invalid_iv_family"
+        )
+        leaked_public = _build_oracle_leaking_public_partition(sample)
+        tool_context = _verifier_tool_context(sample, leaked_public)
+        direct = VerifierPipeline(tool_runner=ToolExecutor({})).run(
+            sample.claim.claim_text,
+            scenario=leaked_public,
+            tool_context=tool_context,
+        )
+        study = _run_oracle_leaking_partition(sample)
+
+        self.assertEqual(study["predicted_label"], direct.label.value)
+        self.assertAlmostEqual(float(study["confidence"]), float(direct.confidence))
+        self.assertEqual(study["verdict"]["label"], direct.label.value)
+
+    def test_phase4_main_benchmark_rejects_oracle_leaking_system(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_main_benchmark(
+                    systems=["countermodel_grounded", "oracle_leaking_partition"],
+                    output_path=str(Path(tmp_dir) / "exp_main_benchmark_oracle.json"),
+                )
+
+    def test_phase4_main_benchmark_uses_formal_paired_bootstrap_significance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_main_benchmark(
+                output_path=str(Path(tmp_dir) / "exp_main_benchmark_significance.json"),
+            )
+
+            for split_name in ("test_iid", "test_ood"):
+                report = payload["significance"][split_name]
+                self.assertEqual(report["method"], "paired_bootstrap")
+                self.assertEqual(report["metric_name"], "verdict_accuracy")
+                self.assertEqual(report["estimand"], "paired_sample_verdict_accuracy")
+
     def test_phase4_main_and_leakage_reject_noncompliant_seed_lists_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with self.assertRaises(ValueError):
@@ -297,6 +394,34 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 run_leakage_study(
                     seeds=[0],
                     output_path=str(Path(tmp_dir) / "exp_leakage_study_invalid.json"),
+                )
+
+    def test_phase4_s3_s5_runners_reject_noncompliant_seed_lists_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_identifiability_ablation(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_identifiability_ablation_invalid.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_adversarial_robustness(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_adversarial_robustness_invalid.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_ood_generalization(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_ood_generalization_invalid.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_cross_model_transfer(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_invalid.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_human_audit(
+                    seeds=[0],
+                    output_path=str(Path(tmp_dir) / "exp_human_audit_invalid.json"),
                 )
 
     def test_phase4_payload_records_effective_config_separately_from_requested_config(self) -> None:
@@ -315,6 +440,41 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_leakage_study_effective.json"),
             )
+            ablation_payload = run_identifiability_ablation(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_identifiability_ablation_effective.json"),
+            )
+            robustness_payload = run_adversarial_robustness(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_adversarial_robustness_effective.json"),
+            )
+            ood_payload = run_ood_generalization(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_ood_generalization_effective.json"),
+            )
+            transfer_payload = run_cross_model_transfer(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_effective.json"),
+            )
+            human_payload = run_human_audit(
+                seeds=[0],
+                samples_per_family=0,
+                difficulty=1.5,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_human_audit_effective.json"),
+            )
 
             self.assertEqual(main_payload["config"]["samples_per_family"], 1)
             self.assertEqual(main_payload["config"]["difficulty"], 1.0)
@@ -325,6 +485,18 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(leakage_payload["config"]["difficulty"], 1.0)
             self.assertEqual(leakage_payload["requested_config"]["samples_per_family"], 0)
             self.assertEqual(leakage_payload["requested_config"]["difficulty"], 1.5)
+
+            for payload in (
+                ablation_payload,
+                robustness_payload,
+                ood_payload,
+                transfer_payload,
+                human_payload,
+            ):
+                self.assertEqual(payload["config"]["samples_per_family"], 1)
+                self.assertEqual(payload["config"]["difficulty"], 1.0)
+                self.assertEqual(payload["requested_config"]["samples_per_family"], 0)
+                self.assertEqual(payload["requested_config"]["difficulty"], 1.5)
 
     def test_phase4_main_runner_rejects_duplicate_systems_early(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -347,6 +519,83 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     seeds=[0, 0, 1],
                     allow_protocol_violations=True,
                     output_path=str(Path(tmp_dir) / "exp_leakage_study_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_identifiability_ablation(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_identifiability_ablation_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_adversarial_robustness(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_adversarial_robustness_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_ood_generalization(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_ood_generalization_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_cross_model_transfer(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_duplicate_seeds.json"),
+                )
+            with self.assertRaises(ValueError):
+                run_human_audit(
+                    seeds=[0, 0, 1],
+                    allow_protocol_violations=True,
+                    output_path=str(Path(tmp_dir) / "exp_human_audit_duplicate_seeds.json"),
+                )
+
+    def test_human_audit_round_trips_csv_and_rejects_misaligned_annotations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_path = Path(tmp_dir) / "exp_human_audit_base.json"
+            payload = run_human_audit(
+                seeds=[0],
+                samples_per_family=1,
+                audit_subset_size=4,
+                allow_protocol_violations=True,
+                output_path=str(base_path),
+            )
+
+            csv_payload = run_human_audit(
+                seeds=[0],
+                samples_per_family=1,
+                audit_subset_size=4,
+                allow_protocol_violations=True,
+                annotations_path=payload["artifacts"]["annotation_package_csv"],
+                output_path=str(Path(tmp_dir) / "exp_human_audit_from_csv.json"),
+            )
+            self.assertIsNotNone(csv_payload["agreement_stats"])
+
+            fake_annotations = [
+                {
+                    "audit_id": "fake::case",
+                    "annotator_a_gold_label_reasonable": "yes",
+                    "annotator_b_gold_label_reasonable": "yes",
+                    "annotator_a_verifier_label_reasonable": "yes",
+                    "annotator_b_verifier_label_reasonable": "yes",
+                    "annotator_a_witness_persuasive": "yes",
+                    "annotator_b_witness_persuasive": "yes",
+                    "annotator_a_explanation_faithful": "yes",
+                    "annotator_b_explanation_faithful": "yes",
+                }
+            ]
+            fake_path = Path(tmp_dir) / "fake_annotations.json"
+            fake_path.write_text(json.dumps(fake_annotations), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                run_human_audit(
+                    seeds=[0],
+                    samples_per_family=1,
+                    audit_subset_size=4,
+                    allow_protocol_violations=True,
+                    annotations_path=str(fake_path),
+                    output_path=str(Path(tmp_dir) / "exp_human_audit_fake.json"),
                 )
 
     async def test_phase5_appendix_and_demo_stay_on_public_schema(self) -> None:

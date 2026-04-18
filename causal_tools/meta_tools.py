@@ -61,7 +61,7 @@ TOOL_REGISTRY: dict[str, dict[str, str]] = {
 def _has_iv_signal(text: str) -> bool:
     lowered = str(text or "").lower()
     return bool(
-        re.search(r"\biv\b|\binstrument(?:al variable)?\b|\bquarter\b", lowered, flags=re.IGNORECASE)
+        re.search(r"\biv\b|\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|\bquarter\b", lowered, flags=re.IGNORECASE)
     ) or any(token in lowered for token in ("工具变量", "出生季度"))
 
 

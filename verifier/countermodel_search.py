@@ -230,9 +230,19 @@ def _resolve_role_hints(
     explicit_instrument = None if context is None else context.get("instrument")
     instrument = _normalize_public_hint(explicit_instrument, observed_columns=observed_columns)
     if instrument is None:
+        explicit_instrument_variables = _resolve_named_variables(context, "instrument_variables")
+        if explicit_instrument_variables:
+            instrument = _normalize_public_hint(
+                explicit_instrument_variables[0],
+                observed_columns=observed_columns,
+            )
+    if instrument is None:
         instrument = _extract_named_variable(
             context_text,
-            patterns=(r"\busing\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument\b",),
+            patterns=(
+                r"\busing\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument\b",
+                r"\bwith\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument\b",
+            ),
         )
         instrument = _normalize_public_hint(instrument, observed_columns=observed_columns)
     if instrument is None:
@@ -242,6 +252,13 @@ def _resolve_role_hints(
 
     explicit_mediator = None if context is None else context.get("mediator")
     mediator = _normalize_public_hint(explicit_mediator, observed_columns=observed_columns)
+    if mediator is None:
+        explicit_mediator_variables = _resolve_named_variables(context, "mediator_variables")
+        if explicit_mediator_variables:
+            mediator = _normalize_public_hint(
+                explicit_mediator_variables[0],
+                observed_columns=observed_columns,
+            )
     if mediator is None:
         mediator = _extract_named_variable(
             context_text,
@@ -553,42 +570,6 @@ def _status_lookup(ledger: AssumptionLedger) -> dict[str, AssumptionLedgerEntry]
     return ledger.by_name()
 
 
-def _apply_public_semantic_support(
-    statuses: dict[str, AssumptionLedgerEntry],
-    scenario: PublicCausalInstance | None,
-) -> dict[str, AssumptionLedgerEntry]:
-    if scenario is None:
-        return dict(statuses)
-    metadata = dict(getattr(scenario, "metadata", {}) or {})
-    measurement_semantics = metadata.get("measurement_semantics")
-    if not isinstance(measurement_semantics, dict):
-        return dict(statuses)
-
-    supported_assumptions: set[str] = set()
-    for semantics in measurement_semantics.values():
-        if not isinstance(semantics, dict):
-            continue
-        supported_assumptions.update(
-            str(item).strip()
-            for item in semantics.get("supports_assumptions", [])
-            if str(item).strip()
-        )
-
-    updated = dict(statuses)
-    for assumption_name in supported_assumptions:
-        entry = updated.get(assumption_name)
-        if entry is None or entry.status is AssumptionStatus.CONTRADICTED:
-            continue
-        updated[assumption_name] = AssumptionLedgerEntry(
-            name=entry.name,
-            source=entry.source,
-            category=entry.category,
-            status=AssumptionStatus.SUPPORTED,
-            note="Public benchmark semantics explicitly support this assumption.",
-        )
-    return updated
-
-
 def _status_of(
     statuses: dict[str, AssumptionLedgerEntry],
     name: str,
@@ -801,10 +782,51 @@ def _l2_candidates(
         parsed_claim.outcome,
         claimed_adjuster,
     )
+    claimed_adjustment_report = None
+    if claimed_adjuster and not observed_data.empty:
+        try:
+            from causal_tools.l2_intervention import backdoor_adjustment_check
+
+            claimed_adjustment_report = backdoor_adjustment_check(
+                observed_data,
+                parsed_claim.treatment,
+                parsed_claim.outcome,
+                [claimed_adjuster],
+                graph=None,
+            )
+        except Exception:
+            claimed_adjustment_report = None
+    claimed_adjuster_supported = (
+        None
+        if claimed_adjustment_report is None
+        else bool(claimed_adjustment_report.get("supports_adjustment_set"))
+    )
     instrument = role_bindings.get("instrument") or _extract_named_variable(
         context_text,
-        patterns=(r"\busing\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument",),
+        patterns=(
+            r"\busing\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument",
+            r"\bwith\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as an instrument",
+        ),
     )
+    iv_covariates = [
+        column
+        for column in observed_data.columns
+        if column not in {parsed_claim.treatment, parsed_claim.outcome, instrument}
+    ][:1]
+    iv_diagnostics = None
+    if instrument and not observed_data.empty:
+        try:
+            from causal_tools.l2_intervention import iv_estimation
+
+            iv_diagnostics = iv_estimation(
+                observed_data,
+                instrument,
+                parsed_claim.treatment,
+                parsed_claim.outcome,
+                iv_covariates,
+            )
+        except Exception:
+            iv_diagnostics = None
     first_stage_strength = _association_strength(observed_data, instrument or "", parsed_claim.treatment)
     within_treatment_gap = _within_treatment_outcome_gap(
         observed_data,
@@ -815,7 +837,10 @@ def _l2_candidates(
     proxy = role_bindings.get("proxy")
     proxy_fit = _proxy_alignment(observed_data, proxy, parsed_claim.treatment, parsed_claim.outcome)
     used_observed_data = not observed_data.empty
-    has_explicit_adjustment_overclaim = any(
+    has_explicit_adjustment_overclaim = (
+        parsed_claim.rhetorical_strategy == "adjustment_sufficiency_assertion"
+        and claimed_adjuster_supported is False
+    ) or any(
         phrase in context_text
         for phrase in (
             "only adjustment needed",
@@ -943,11 +968,17 @@ def _l2_candidates(
             "fully valid",
         )
     )
+    iv_diagnostics_support = bool(
+        iv_diagnostics is not None
+        and iv_diagnostics.get("is_strong_instrument") is True
+        and iv_diagnostics.get("supports_exclusion_restriction") is True
+        and iv_diagnostics.get("supports_instrument_independence") is True
+    )
     iv_semantics_resolved = (
         relevance_status is AssumptionStatus.SUPPORTED
         and exclusion_status is AssumptionStatus.SUPPORTED
         and independence_status is AssumptionStatus.SUPPORTED
-    )
+    ) or iv_diagnostics_support
     if has_iv_story and has_explicit_iv_overclaim and not iv_semantics_resolved:
         iv_statuses = [status for status in (exclusion_status, independence_status) if status is not None]
         strongest = (
@@ -1209,7 +1240,7 @@ def search_countermodels(
     """Search for countermodel families suggested by the parsed claim and ledger."""
 
     resolved_ledger = ledger if ledger is not None else build_assumption_ledger(parsed_claim)
-    statuses = _apply_public_semantic_support(_status_lookup(resolved_ledger), scenario)
+    statuses = _status_lookup(resolved_ledger)
     context_text = _context_text(context)
     resolved_data = _resolve_observed_data(
         scenario=scenario,
