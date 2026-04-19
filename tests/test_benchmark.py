@@ -1129,6 +1129,45 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertIn("inst_preferred_lexical", manifest.test_ood)
         self.assertNotIn("inst_last_sorted", manifest.test_ood)
 
+    def test_split_builder_stratifies_in_domain_label_distribution_when_possible(self) -> None:
+        instances: list[ClaimInstance] = []
+        for label, family in (
+            ("valid", "l1_latent_confounding_family"),
+            ("invalid", "l1_proxy_disambiguation_family"),
+            ("unidentifiable", "l2_valid_backdoor_family"),
+        ):
+            for index in range(6):
+                claim = _build_claim_instance_for_split(
+                    f"{label}_{index}",
+                    graph_family=family,
+                    language_template_id=f"tmpl_{label}_{index % 2}",
+                    observed_variables=[f"{label}_T_{index}", f"{label}_Z_{index}", f"{label}_Y_{index}"],
+                )
+                payload = claim.to_dict()
+                payload["gold_label"] = label
+                instances.append(ClaimInstance.from_dict(payload))
+        instances.append(
+            _build_claim_instance_for_split(
+                "ood_family_holdout",
+                graph_family="l3_counterfactual_ambiguity_family",
+                language_template_id="tmpl_ood",
+                observed_variables=["Q", "R", "S"],
+            )
+        )
+
+        manifest = build_split_manifest(
+            instances,
+            family_holdout=["l3_counterfactual_ambiguity_family"],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            seed=29,
+        )
+
+        label_distribution = manifest.metadata["label_distribution"]["test_iid"]
+        self.assertGreaterEqual(label_distribution.get("valid", 0), 1)
+        self.assertGreaterEqual(label_distribution.get("invalid", 0), 1)
+        self.assertGreaterEqual(label_distribution.get("unidentifiable", 0), 1)
+
     def test_split_builder_rejects_manifests_without_non_empty_four_way_split(self) -> None:
         instances = [
             _build_claim_instance_for_split(

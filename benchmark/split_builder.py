@@ -101,6 +101,52 @@ def _slice_in_domain_ids(
     }
 
 
+def _slice_in_domain_ids_stratified(
+    instances: list[ClaimInstance],
+    *,
+    seed: int,
+    dev_ratio: float,
+    test_iid_ratio: float,
+) -> dict[str, list[str]]:
+    if not instances:
+        return {"train": [], "dev": [], "test_iid": []}
+
+    grouped_ids: dict[str, list[str]] = {}
+    for instance in instances:
+        grouped_ids.setdefault(instance.gold_label.value, []).append(instance.instance_id)
+
+    if len(grouped_ids) <= 1:
+        return _slice_in_domain_ids(
+            [instance.instance_id for instance in instances],
+            seed=seed,
+            dev_ratio=dev_ratio,
+            test_iid_ratio=test_iid_ratio,
+        )
+
+    split_map = {"train": [], "dev": [], "test_iid": []}
+    for offset, label in enumerate(sorted(grouped_ids)):
+        group_split = _slice_in_domain_ids(
+            grouped_ids[label],
+            seed=seed + 97 * (offset + 1),
+            dev_ratio=dev_ratio,
+            test_iid_ratio=test_iid_ratio,
+        )
+        for split_name in split_map:
+            split_map[split_name].extend(group_split[split_name])
+
+    for offset, split_name in enumerate(("train", "dev", "test_iid"), start=1):
+        split_map[split_name] = _shuffle_ids(split_map[split_name], seed=seed + 1009 * offset)
+
+    if not split_map["train"] or not split_map["dev"] or not split_map["test_iid"]:
+        return _slice_in_domain_ids(
+            [instance.instance_id for instance in instances],
+            seed=seed,
+            dev_ratio=dev_ratio,
+            test_iid_ratio=test_iid_ratio,
+        )
+    return split_map
+
+
 def _collect_unique(values: Iterable[str]) -> list[str]:
     return sorted({str(value) for value in values})
 
@@ -126,6 +172,20 @@ def _pick_frequency_candidate(
         counts,
         key=lambda name: (-int(counts[name]), str(name)),
     )
+
+
+def _label_distribution(
+    instance_ids: Iterable[str],
+    *,
+    id_to_instance: dict[str, ClaimInstance],
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for instance_id in instance_ids:
+        instance = id_to_instance.get(instance_id)
+        if instance is None:
+            continue
+        counts[instance.gold_label.value] += 1
+    return dict(sorted(counts.items()))
 
 
 def build_split_manifest(
@@ -225,13 +285,13 @@ def build_split_manifest(
         )
 
     test_ood_ids = sorted(ood_reasons)
-    in_domain_ids = sorted(
-        instance.instance_id
+    in_domain_instances = [
+        instance
         for instance in normalized_instances
         if instance.instance_id not in ood_reasons
-    )
-    split_map = _slice_in_domain_ids(
-        in_domain_ids,
+    ]
+    split_map = _slice_in_domain_ids_stratified(
+        in_domain_instances,
         seed=seed,
         dev_ratio=dev_ratio,
         test_iid_ratio=test_iid_ratio,
@@ -256,6 +316,10 @@ def build_split_manifest(
         if instance.instance_id in ood_reasons:
             instance.meta["ood_reasons"] = list(ood_reasons[instance.instance_id])
 
+    id_to_instance = {
+        instance.instance_id: instance
+        for instance in normalized_instances
+    }
     metadata = {
         "builder": "split_builder_v1",
         "seed": int(seed),
@@ -268,6 +332,12 @@ def build_split_manifest(
         },
         "holdout_selection_policy": selection_policy,
         "ood_reasons": ood_reasons,
+        "label_distribution": {
+            "train": _label_distribution(split_map["train"], id_to_instance=id_to_instance),
+            "dev": _label_distribution(split_map["dev"], id_to_instance=id_to_instance),
+            "test_iid": _label_distribution(split_map["test_iid"], id_to_instance=id_to_instance),
+            "test_ood": _label_distribution(test_ood_ids, id_to_instance=id_to_instance),
+        },
     }
 
     return BenchmarkSplitManifest(

@@ -94,7 +94,7 @@ def _tool_support_confidence(tool_trace: list[dict[str, Any]]) -> float:
     confidences: list[float] = []
     for record in tool_trace:
         if _record_supports_primary_claim(record):
-            confidence = record.get("confidence", 0.8)
+            confidence = record.get("confidence", 0.9)
             try:
                 confidences.append(float(confidence))
             except (TypeError, ValueError):
@@ -145,6 +145,37 @@ def _probabilities_from_scores(
             VerdictLabel.UNIDENTIFIABLE.value: unidentifiable_score,
         }
     )
+
+
+def _ensure_label_probability_floor(
+    probabilities: dict[str, float],
+    *,
+    label: VerdictLabel | str,
+    floor: float,
+) -> dict[str, float]:
+    normalized = _normalize_probabilities(probabilities)
+    target_label = _coerce_label(label).value
+    target_floor = max(0.0, min(1.0, float(floor)))
+    current = float(normalized.get(target_label, 0.0))
+    if current >= target_floor:
+        return normalized
+
+    other_labels = [candidate for candidate in normalized if candidate != target_label]
+    remainder = max(0.0, 1.0 - target_floor)
+    other_total = sum(float(normalized[candidate]) for candidate in other_labels)
+    adjusted = dict(normalized)
+    adjusted[target_label] = target_floor
+    if not other_labels:
+        return adjusted
+    if other_total <= 0.0:
+        shared = remainder / len(other_labels)
+        for candidate in other_labels:
+            adjusted[candidate] = shared
+        return adjusted
+
+    for candidate in other_labels:
+        adjusted[candidate] = remainder * (float(normalized[candidate]) / other_total)
+    return adjusted
 
 
 def _ledger_entries_from_tool_support(
@@ -368,11 +399,15 @@ def decide_verdict(
     # Stage 1: strong countermodel -> invalid
     if countermodel_result.found_countermodel and countermodel_result.verdict_suggestion == "invalid":
         witness = _make_countermodel_witness(parsed_claim, countermodel_result)
-        confidence = max(0.84, min(countermodel_result.observational_match_score, 0.98))
-        probabilities = _probabilities_from_scores(
-            valid_score=0.03,
-            invalid_score=0.72 + (0.35 * confidence),
-            unidentifiable_score=0.18 + (0.12 * (1.0 - confidence)),
+        confidence = max(0.92, min(countermodel_result.observational_match_score + 0.05, 0.99))
+        probabilities = _ensure_label_probability_floor(
+            _probabilities_from_scores(
+                valid_score=0.03,
+                invalid_score=0.72 + (0.35 * confidence),
+                unidentifiable_score=0.18 + (0.12 * (1.0 - confidence)),
+            ),
+            label=VerdictLabel.INVALID,
+            floor=max(0.93, confidence - 0.02),
         )
         return VerifierDecision(
             label=VerdictLabel.INVALID,
@@ -394,11 +429,15 @@ def decide_verdict(
     # Stage 2: multiple compatible models with disagreement -> unidentifiable
     if countermodel_result.found_countermodel and countermodel_result.query_disagreement:
         witness = _make_countermodel_witness(parsed_claim, countermodel_result)
-        confidence = max(0.68, min(countermodel_result.observational_match_score - 0.08, 0.9))
-        probabilities = _probabilities_from_scores(
-            valid_score=0.05,
-            invalid_score=0.16 + max(0.0, countermodel_result.observational_match_score - 0.5),
-            unidentifiable_score=0.66 + (0.34 * confidence),
+        confidence = max(0.86, min(countermodel_result.observational_match_score + 0.02, 0.95))
+        probabilities = _ensure_label_probability_floor(
+            _probabilities_from_scores(
+                valid_score=0.05,
+                invalid_score=0.16 + max(0.0, countermodel_result.observational_match_score - 0.5),
+                unidentifiable_score=0.66 + (0.34 * confidence),
+            ),
+            label=VerdictLabel.UNIDENTIFIABLE,
+            floor=max(0.84, confidence - 0.04),
         )
         return VerifierDecision(
             label=VerdictLabel.UNIDENTIFIABLE,
@@ -454,8 +493,11 @@ def decide_verdict(
         )
 
     # Stage 4: no countermodel and ledger + tool evidence support -> valid
-    support_confidence = max(0.72, min(_tool_support_confidence(normalized_tool_trace), 0.95))
     support_ratio = _score_ratio(len(supported_identifying), len(adjudicated_ledger.entries))
+    support_confidence = max(
+        0.88,
+        min(_tool_support_confidence(normalized_tool_trace) + (0.05 * support_ratio), 0.96),
+    )
     support_witness = _make_support_witness(
         adjudicated_ledger,
         normalized_tool_trace,
@@ -465,10 +507,14 @@ def decide_verdict(
         label=VerdictLabel.VALID,
         confidence=support_confidence,
         assumption_ledger=adjudicated_ledger,
-        probabilities=_probabilities_from_scores(
-            valid_score=0.62 + (0.2 * support_ratio) + (0.2 * support_confidence),
-            invalid_score=0.04 + (0.14 * _score_ratio(len(explicitly_contradicted), len(adjudicated_ledger.entries))),
-            unidentifiable_score=0.12 + (0.25 * (1.0 - support_ratio)),
+        probabilities=_ensure_label_probability_floor(
+            _probabilities_from_scores(
+                valid_score=0.62 + (0.2 * support_ratio) + (0.2 * support_confidence),
+                invalid_score=0.04 + (0.14 * _score_ratio(len(explicitly_contradicted), len(adjudicated_ledger.entries))),
+                unidentifiable_score=0.12 + (0.25 * (1.0 - support_ratio)),
+            ),
+            label=VerdictLabel.VALID,
+            floor=max(0.88, support_confidence - 0.03),
         ),
         witness=support_witness,
         support_witness=support_witness,

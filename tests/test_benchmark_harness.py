@@ -8,6 +8,7 @@ from unittest.mock import patch
 from experiments.benchmark_harness import (
     _apply_no_abstention,
     _apply_family_postprocessing,
+    _run_claim_only_family,
     aggregate_seed_metrics,
     build_seed_benchmark_run,
     build_seed_attack_benchmark_run,
@@ -432,6 +433,25 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertEqual(max(adjusted["verdict"]["probabilities"], key=adjusted["verdict"]["probabilities"].get), adjusted["predicted_label"])
         self.assertIn("no-abstention", adjusted["verdict"]["reasoning_summary"].lower())
         self.assertEqual(adjusted["verdict"]["metadata"]["forced_from"], "unidentifiable")
+
+    def test_claim_only_family_is_surface_credulous_on_strong_positive_claims(self) -> None:
+        sample = SimpleNamespace(
+            claim=SimpleNamespace(
+                claim_text=(
+                    "The evidence clearly shows that treatment definitely causes outcome "
+                    "because the observed relationship stays stable across the measured variables."
+                )
+            )
+        )
+
+        payload = _run_claim_only_family(sample)
+
+        self.assertEqual(payload["predicted_label"], "valid")
+        self.assertGreater(payload["confidence"], 0.6)
+        self.assertEqual(
+            max(payload["verdict"]["probabilities"], key=payload["verdict"]["probabilities"].get),
+            "valid",
+        )
 
 
 if __name__ == "__main__":

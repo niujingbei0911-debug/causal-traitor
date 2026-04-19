@@ -22,7 +22,7 @@ from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import parse_claim
 from verifier.countermodel_search import CountermodelSearchResult, search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
-from verifier.outputs import ClaimPolarity
+from verifier.outputs import ClaimPolarity, ClaimStrength, QueryType
 from verifier.pipeline import VerifierPipeline
 
 DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
@@ -952,24 +952,35 @@ def _run_claim_only_family(sample: BenchmarkSample) -> dict[str, Any]:
     if parsed_claim.claim_polarity is ClaimPolarity.NEGATIVE:
         label = VerdictLabel.INVALID.value
         confidence = 0.67
-    elif parsed_claim.needs_abstention_check:
+    elif (
+        parsed_claim.claim_strength is ClaimStrength.TENTATIVE
+        and parsed_claim.query_type is not QueryType.COUNTERFACTUAL
+    ):
         label = VerdictLabel.UNIDENTIFIABLE.value
-        confidence = 0.58
+        confidence = 0.57
     else:
         label = VerdictLabel.VALID.value
-        confidence = 0.64
+        confidence = 0.72 if parsed_claim.claim_strength is ClaimStrength.ABSOLUTE else 0.68
     return {
         "predicted_label": label,
         "confidence": confidence,
         "verdict": {
             "label": label,
             "confidence": confidence,
+            "probabilities": {
+                VerdictLabel.VALID.value: 0.72 if label == VerdictLabel.VALID.value else 0.14,
+                VerdictLabel.INVALID.value: 0.67 if label == VerdictLabel.INVALID.value else 0.09,
+                VerdictLabel.UNIDENTIFIABLE.value: 0.57 if label == VerdictLabel.UNIDENTIFIABLE.value else 0.14,
+            },
             "assumption_ledger": [],
             "witness": None,
             "support_witness": None,
             "countermodel_witness": None,
             "tool_trace": [],
-            "reasoning_summary": "Claim-only family ignores the public benchmark tools and judges only from the surface claim text.",
+            "reasoning_summary": (
+                "Claim-only family ignores the public benchmark tools and defaults to the surface rhetorical force "
+                "of the claim text, so strong positive claims are usually endorsed without an identifiability check."
+            ),
             "metadata": {"predictor_family": "claim_only_family"},
         },
         "tool_report": {

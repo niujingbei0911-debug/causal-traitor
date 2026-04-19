@@ -16,7 +16,9 @@ from experiments.benchmark_harness import (
     OOD_SPLITS,
     aggregate_seed_metrics,
     align_prediction_records,
+    apply_attack_strength_profile,
     build_seed_benchmark_run,
+    build_seed_attack_benchmark_run,
     manifest_metadata,
     normalize_benchmark_difficulty,
     normalize_benchmark_samples_per_family,
@@ -36,6 +38,7 @@ SYSTEMS: tuple[str, str] = ("countermodel_grounded", "oracle_leaking_partition")
 DEFAULT_SAMPLES_PER_FAMILY = 60
 LEAKAGE_ALPHA = 0.05
 PAIRWISE_RESAMPLES = 2000
+LEAKAGE_ATTACK_PROFILE = "hidden_information_aware"
 LEAKAGE_METRICS: tuple[tuple[str, str, bool], ...] = (
     ("accuracy", "verdict_accuracy", True),
     ("macro_f1", "macro_f1", True),
@@ -217,49 +220,67 @@ def _build_oracle_leaking_public_partition(sample: BenchmarkSample) -> PublicCau
 
 def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
     public = _build_oracle_leaking_public_partition(sample)
-    tool_context = _verifier_tool_context(sample, public)
-    tool_executor = ToolExecutor({})
-    tool_report = tool_executor.execute_for_claim(
-        scenario=public,
-        claim=sample.claim.claim_text,
-        level=int(sample.claim.causal_level[1]),
-        context=tool_context,
-    )
-    decision = VerifierPipeline(tool_runner=tool_executor).run(
-        sample.claim.claim_text,
-        scenario=public,
-        tool_context=tool_context,
-    )
-    verdict = _serialize_verifier_decision(decision)
-    verdict["metadata"] = {
-        **dict(verdict.get("metadata", {})),
-        "leakage_mode": "oracle_public_partition_rerun",
-        "oracle_channels": ["notes.oracle_partition_hint", "measurement_semantics"],
-        "control_interpretation": "oracle_leaking_public_partition",
-        "same_verifier_pipeline": True,
+    metadata = dict(public.metadata)
+    notes = metadata.get("notes") if isinstance(metadata.get("notes"), dict) else {}
+    oracle_hint = notes.get("oracle_partition_hint") if isinstance(notes, dict) else {}
+    oracle_hint = oracle_hint if isinstance(oracle_hint, dict) else {}
+    leaked_label = str(oracle_hint.get("gold_verdict", sample.claim.gold_label.value)).strip().lower()
+    verdict = {
+        "label": leaked_label,
+        "confidence": 0.999,
+        "probabilities": {
+            "valid": 1.0 if leaked_label == "valid" else 0.0,
+            "invalid": 1.0 if leaked_label == "invalid" else 0.0,
+            "unidentifiable": 1.0 if leaked_label == "unidentifiable" else 0.0,
+        },
+        "assumption_ledger": [],
+        "witness": None,
+        "support_witness": None,
+        "countermodel_witness": None,
+        "tool_trace": [
+            {
+                "tool_name": "oracle_metadata_readout",
+                "status": "success",
+                "summary": "Benchmark answer supervision was leaked through public metadata and read directly.",
+                "supports_claim": leaked_label == "valid",
+                "supports_primary_claim": leaked_label == "valid",
+                "claim_stance": "pro_causal",
+                "evidence_direction": (
+                    "supports" if leaked_label == "valid" else "contradicts"
+                ),
+                "supports_assumptions": [],
+                "contradicts_assumptions": [],
+            }
+        ],
+        "reasoning_summary": (
+            "Oracle-leaking partition decoded benchmark answer supervision from public metadata. "
+            "This is a deliberate leakage positive control, not a valid causal verifier."
+        ),
+        "metadata": {
+            "leakage_mode": "oracle_metadata_readout",
+            "oracle_channels": ["notes.oracle_partition_hint.gold_verdict"],
+            "control_interpretation": "oracle_leaking_public_partition",
+            "same_verifier_pipeline": False,
+        },
     }
     return {
-        "predicted_label": decision.label.value,
-        "confidence": float(decision.confidence),
+        "predicted_label": leaked_label,
+        "confidence": 0.999,
         "verdict": verdict,
         "tool_report": {
-            "selected_tools": list(tool_report["selected_tools"]),
-            "claim_stance": tool_report["claim_stance"],
-            "identified_issues": list(tool_report["identified_issues"]),
-            "supporting_evidence": list(tool_report["supporting_evidence"]),
-            "counter_evidence": list(tool_report["counter_evidence"]),
-            "tool_trace": list(tool_report["tool_trace"]),
+            "selected_tools": ["oracle_metadata_readout"],
+            "claim_stance": "pro_causal",
+            "identified_issues": ["oracle_leakage"],
+            "supporting_evidence": ["Decoded leaked gold verdict from public metadata."],
+            "counter_evidence": [],
+            "tool_trace": list(verdict["tool_trace"]),
         },
-        "countermodel_found": decision.countermodel_witness is not None,
-        "countermodel_type": (
-            decision.countermodel_witness.payload.get("countermodel_type")
-            if decision.countermodel_witness is not None
-            else None
-        ),
-        "supports_public_only": True,
+        "countermodel_found": leaked_label in {"invalid", "unidentifiable"},
+        "countermodel_type": "oracle_metadata_readout",
+        "supports_public_only": False,
         "system_notes": [
             "oracle_leaking_public_partition",
-            "same_verifier_pipeline",
+            "oracle_metadata_readout",
         ],
         "public_scenario": public,
     }
@@ -635,9 +656,9 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
         "# Leakage Study",
         "",
-        "This experiment contrasts the clean public partition against an oracle-leaking public partition rerun.",
+        "This experiment contrasts a clean public verifier against a deliberate oracle-leaking positive control.",
         "",
-        "Both conditions keep verifier inputs public-only. The leaking control exposes benchmark answers through visible public metadata and reruns the same verifier stages instead of copying `gold_label` into predictions.",
+        "Both conditions run on a dedicated attack-only benchmark with the `hidden_information_aware` attack profile. The leaking control decodes benchmark-answer supervision from public metadata, so any score increase is by definition leakage inflation rather than genuine oversight ability.",
         "",
         "## Accuracy Test",
         "",
@@ -732,12 +753,13 @@ def run_experiment(
         allow_protocol_violations=allow_protocol_violations,
     )
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    effective_samples_per_family = max(2, resolved_samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
     protocol = summarize_protocol_compliance(
         resolved_seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
         minimum_samples_per_family=DEFAULT_SAMPLES_PER_FAMILY,
-        observed_samples_per_family=resolved_samples_per_family,
+        observed_samples_per_family=effective_samples_per_family,
         allow_protocol_violations=allow_protocol_violations,
     )
 
@@ -745,20 +767,29 @@ def run_experiment(
     per_seed_results: dict[int, dict[str, Any]] = {}
     manifests: dict[int, dict[str, Any]] = {}
 
-    for seed in resolved_seeds:
-        run = build_seed_benchmark_run(
+    base_runs = {
+        seed: build_seed_attack_benchmark_run(
             seed=seed,
             difficulty=resolved_difficulty,
-            samples_per_family=resolved_samples_per_family,
+            samples_per_family=effective_samples_per_family,
         )
+        for seed in resolved_seeds
+    }
+
+    for seed in resolved_seeds:
+        run = base_runs[seed]
         manifests[seed] = manifest_metadata(run)
         ood_reasons = dict(run.manifest.metadata.get("ood_reasons", {}))
         seed_payload: dict[str, Any] = {}
         for system_name in SYSTEMS:
             system_payload: dict[str, Any] = {}
             for split_name in OOD_SPLITS:
-                evaluated = _evaluate_partition_on_samples(
+                profiled_samples = apply_attack_strength_profile(
                     run.split_samples[split_name],
+                    strength_name=LEAKAGE_ATTACK_PROFILE,
+                )
+                evaluated = _evaluate_partition_on_samples(
+                    profiled_samples,
                     seed=seed,
                     split_name=split_name,
                     system_name=system_name,
@@ -795,14 +826,16 @@ def run_experiment(
         inflation=inflation,
         significance=significance,
         mcnemar_significance=mcnemar_significance,
-        samples_per_family=int(resolved_samples_per_family),
+        samples_per_family=int(effective_samples_per_family),
     )
 
     payload = {
         "experiment_id": "exp_leakage_study",
         "config": {
-            "samples_per_family": int(resolved_samples_per_family),
+            "samples_per_family": int(effective_samples_per_family),
             "difficulty": float(resolved_difficulty),
+            "attack_split_protocol": "dedicated_attack_only_benchmark",
+            "attack_profile": LEAKAGE_ATTACK_PROFILE,
         },
         "requested_config": {
             "samples_per_family": int(samples_per_family),

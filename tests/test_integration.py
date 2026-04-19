@@ -198,19 +198,27 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if record["system_name"] == "oracle_leaking_partition"
             ]
             self.assertTrue(leaking_predictions)
-            self.assertTrue(all(record["supports_public_only"] for record in leaking_predictions))
+            self.assertTrue(all(not record["supports_public_only"] for record in leaking_predictions))
             self.assertTrue(
                 all(
-                    record["verdict"]["metadata"].get("same_verifier_pipeline")
+                    not record["verdict"]["metadata"].get("same_verifier_pipeline")
                     for record in leaking_predictions
                 )
             )
             self.assertTrue(
                 all(
                     record["verdict"]["metadata"].get("leakage_mode")
-                    == "oracle_public_partition_rerun"
+                    == "oracle_metadata_readout"
                     for record in leaking_predictions
                 )
+            )
+            self.assertEqual(
+                leakage_payload["config"]["attack_split_protocol"],
+                "dedicated_attack_only_benchmark",
+            )
+            self.assertEqual(
+                leakage_payload["config"]["attack_profile"],
+                "hidden_information_aware",
             )
             self.assertIn("inflation", leakage_payload)
             self.assertIn("conclusion", leakage_payload)
@@ -363,25 +371,19 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 expected_delta = leakage_payload["inflation"][split_name]["accuracy"]["delta_mean"]
                 self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
-    def test_phase4_leakage_control_matches_direct_verifier_pipeline_rerun(self) -> None:
+    def test_phase4_leakage_control_reads_oracle_metadata_hint(self) -> None:
         run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
         sample = next(
             candidate
             for candidate in run.split_samples["test_iid"]
             if candidate.claim.graph_family == "l2_invalid_iv_family"
         )
-        leaked_public = _build_oracle_leaking_public_partition(sample)
-        tool_context = _verifier_tool_context(sample, leaked_public)
-        direct = VerifierPipeline(tool_runner=ToolExecutor({})).run(
-            sample.claim.claim_text,
-            scenario=leaked_public,
-            tool_context=tool_context,
-        )
         study = _run_oracle_leaking_partition(sample)
 
-        self.assertEqual(study["predicted_label"], direct.label.value)
-        self.assertAlmostEqual(float(study["confidence"]), float(direct.confidence))
-        self.assertEqual(study["verdict"]["label"], direct.label.value)
+        self.assertEqual(study["predicted_label"], sample.claim.gold_label.value)
+        self.assertEqual(study["verdict"]["label"], sample.claim.gold_label.value)
+        self.assertEqual(study["verdict"]["metadata"]["leakage_mode"], "oracle_metadata_readout")
+        self.assertFalse(study["supports_public_only"])
 
     def test_phase4_main_benchmark_rejects_oracle_leaking_system(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -503,7 +505,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main_payload["requested_config"]["samples_per_family"], 0)
             self.assertEqual(main_payload["requested_config"]["difficulty"], 1.5)
 
-            self.assertEqual(leakage_payload["config"]["samples_per_family"], 1)
+            self.assertEqual(leakage_payload["config"]["samples_per_family"], 2)
             self.assertEqual(leakage_payload["config"]["difficulty"], 1.0)
             self.assertEqual(leakage_payload["requested_config"]["samples_per_family"], 0)
             self.assertEqual(leakage_payload["requested_config"]["difficulty"], 1.5)
