@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import fields
 
@@ -13,8 +14,11 @@ from agents.jury import JuryVerdict, JuryVote
 from agents.tool_executor import ToolExecutor
 from benchmark.schema import (
     GoldCausalInstance,
+    IdentificationStatus,
+    MissingInformationSpec,
     OversightExample,
     PublicCausalInstance,
+    VerifierVerdict,
     VerifierScenario,
     VerdictLabel,
     ATTACKER_VISIBLE_FIELDS,
@@ -156,6 +160,42 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("selection_variables", public.verifier_visible_fields)
         self.assertNotIn("instrument_variables", public.to_dict())
         self.assertNotIn("selection_variables", public.to_dict())
+
+    def test_gold_verdict_selective_fields_round_trip_without_leaking_to_public_view(self) -> None:
+        self.gold.verdict = VerifierVerdict(
+            label="unidentifiable",
+            confidence=0.63,
+            reasoning_summary="Public evidence does not uniquely identify the target query.",
+            identification_status="underdetermined",
+            refusal_reason="missing_identifying_support",
+            missing_information_spec=MissingInformationSpec(
+                missing_assumptions=["valid adjustment set", "no unobserved confounding"],
+                required_evidence=["public support for the claimed identifying bridge"],
+                note="Need public identification evidence before endorsing the claim.",
+            ),
+            metadata={"decision_stage": 3},
+        )
+
+        payload = self.gold.verdict.to_dict()
+        public = self.gold.to_public()
+        public_payload = public.to_dict()
+        serialized_public = json.dumps(public_payload, ensure_ascii=False)
+
+        self.assertIs(self.gold.verdict.identification_status, IdentificationStatus.UNDERDETERMINED)
+        self.assertEqual(payload["identification_status"], "underdetermined")
+        self.assertEqual(payload["refusal_reason"], "missing_identifying_support")
+        self.assertEqual(
+            payload["missing_information_spec"],
+            {
+                "missing_assumptions": ["valid adjustment set", "no unobserved confounding"],
+                "required_evidence": ["public support for the claimed identifying bridge"],
+                "note": "Need public identification evidence before endorsing the claim.",
+            },
+        )
+        self.assertFalse(hasattr(public, "verdict"))
+        self.assertNotIn("verdict", public_payload)
+        self.assertNotIn("missing_identifying_support", serialized_public)
+        self.assertNotIn("valid adjustment set", serialized_public)
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(

@@ -26,7 +26,7 @@ Use for paper-facing outputs from the active research track:
 - `exp_human_audit*`
 
 These correspond to the main experiment family defined in
-[FINAL_CONSTRUCTION_BLUEPRINT.md](FINAL_CONSTRUCTION_BLUEPRINT.md).
+[FINAL_CONSTRUCTION_BLUEPRINT_V2.md](FINAL_CONSTRUCTION_BLUEPRINT_V2.md).
 
 ### `outputs/supplemental/`
 

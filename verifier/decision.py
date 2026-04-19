@@ -245,6 +245,113 @@ def _contradicted_assumptions(ledger: AssumptionLedger) -> list[AssumptionLedger
     ]
 
 
+def _primary_supporting_records(tool_trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(record) for record in tool_trace if _record_supports_primary_claim(record)]
+
+
+def _primary_supported_assumptions(tool_trace: list[dict[str, Any]]) -> set[str]:
+    return _tool_supported_assumptions(_primary_supporting_records(tool_trace))
+
+
+def _abstention_gate_reasons(
+    parsed_claim: ParsedClaim,
+    ledger: AssumptionLedger,
+    tool_trace: list[dict[str, Any]],
+) -> list[str]:
+    if not getattr(parsed_claim, "needs_abstention_check", False):
+        return []
+
+    primary_records = _primary_supporting_records(tool_trace)
+    if not primary_records:
+        return ["missing primary supporting trace for abstention-sensitive claim"]
+
+    primary_supported = _tool_supported_assumptions(primary_records)
+    reasons: list[str] = []
+    ledger_names = {entry.name for entry in ledger.entries}
+    primary_identifying = {
+        entry.name
+        for entry in ledger.entries
+        if entry.status is AssumptionStatus.SUPPORTED
+        and entry.name not in _BASELINE_ASSUMPTIONS
+        and entry.name in primary_supported
+    }
+
+    if parsed_claim.rhetorical_strategy == "adjustment_sufficiency_assertion":
+        if "valid adjustment set" not in primary_supported:
+            reasons.append("missing primary-trace support for valid adjustment set")
+        if "positivity" not in primary_supported:
+            reasons.append("missing primary-trace support for positivity")
+
+    if parsed_claim.rhetorical_strategy == "instrumental_variable_appeal":
+        for assumption in (
+            "instrument relevance",
+            "exclusion restriction",
+            "instrument independence",
+        ):
+            if assumption not in primary_supported:
+                reasons.append(f"missing primary-trace support for {assumption}")
+
+    if "proxy sufficiency" in ledger_names and "proxy sufficiency" not in primary_supported:
+        reasons.append("missing primary-trace support for proxy sufficiency")
+
+    if parsed_claim.query_type.value == "counterfactual":
+        counterfactual_support = {
+            "stable mediation structure",
+            "cross-world consistency",
+            "counterfactual model uniqueness",
+        }
+        if not (primary_supported & counterfactual_support):
+            reasons.append(
+                "missing primary-trace support for any counterfactual identifying assumption"
+            )
+
+    if not primary_identifying:
+        reasons.append("missing primary-trace support for non-baseline identifying assumptions")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        normalized = str(reason).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
+
+
+def _make_abstention_gate_witness(
+    ledger: AssumptionLedger,
+    *,
+    reasons: list[str],
+    primary_supported_assumptions: set[str],
+) -> Witness:
+    identifying_assumptions = [
+        entry.name
+        for entry in ledger.entries
+        if entry.name not in _BASELINE_ASSUMPTIONS
+    ]
+    evidence = list(reasons)
+    if primary_supported_assumptions:
+        evidence.extend(
+            f"primary_trace_support={assumption}"
+            for assumption in sorted(primary_supported_assumptions)[:4]
+        )
+    return Witness(
+        witness_type=WitnessKind.ASSUMPTION,
+        description=(
+            "Stage 3: the abstention-aware gate blocked a valid endorsement because the high-risk claim lacks direct primary-trace identifying support."
+        ),
+        evidence=evidence,
+        assumptions=identifying_assumptions,
+        payload={
+            "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
+            "primary_supported_assumptions": sorted(primary_supported_assumptions),
+            "abstention_reasons": list(reasons),
+        },
+        verdict_suggestion=VerdictLabel.UNIDENTIFIABLE,
+        metadata={"decision_stage": "abstention_gate"},
+    )
+
+
 def _needs_explicit_identifying_support(
     parsed_claim: ParsedClaim,
     ledger: AssumptionLedger,
@@ -540,6 +647,44 @@ def decide_verdict(
         0.88,
         min(_tool_support_confidence(normalized_tool_trace) + (0.05 * support_ratio), 0.96),
     )
+    abstention_reasons = _abstention_gate_reasons(
+        parsed_claim,
+        adjudicated_ledger,
+        normalized_tool_trace,
+    )
+    primary_supported_assumptions = _primary_supported_assumptions(normalized_tool_trace)
+    if abstention_reasons:
+        witness = _make_abstention_gate_witness(
+            adjudicated_ledger,
+            reasons=abstention_reasons,
+            primary_supported_assumptions=primary_supported_assumptions,
+        )
+        confidence = max(0.58, min(support_confidence - 0.08, 0.78))
+        supported_ratio = _score_ratio(len(supported_identifying), len(adjudicated_ledger.entries))
+        return VerifierDecision(
+            label=VerdictLabel.UNIDENTIFIABLE,
+            confidence=confidence,
+            assumption_ledger=adjudicated_ledger,
+            probabilities=_probabilities_from_scores(
+                valid_score=0.08 + (0.14 * supported_ratio),
+                invalid_score=0.08 + (0.14 * _score_ratio(len(contradicted), len(adjudicated_ledger.entries))),
+                unidentifiable_score=0.68 + (0.18 * _score_ratio(len(abstention_reasons), 4)),
+            ),
+            witness=witness,
+            tool_trace=normalized_tool_trace,
+            reasoning_summary=(
+                "Stage 3: the abstention-aware gate kept this high-risk claim on the unidentifiable path because direct primary-trace identifying support was insufficient."
+            ),
+            metadata={
+                "decision_stage": 3,
+                "support_stage_entered": True,
+                "stage_variant": "abstention_gate",
+                "abstention_gate_triggered": True,
+                "abstention_reasons": list(abstention_reasons),
+                "supported_identifying_assumptions": [entry.name for entry in supported_identifying],
+                "primary_supported_assumptions": sorted(primary_supported_assumptions),
+            },
+        )
     support_witness = _make_support_witness(
         adjudicated_ledger,
         normalized_tool_trace,
@@ -567,5 +712,8 @@ def decide_verdict(
         metadata={
             "decision_stage": 4,
             "support_stage_entered": True,
+            "abstention_gate_triggered": False,
+            "abstention_gate_considered": bool(parsed_claim.needs_abstention_check),
+            "primary_supported_assumptions": sorted(primary_supported_assumptions),
         },
     )

@@ -1,9 +1,15 @@
 # The Causal Traitor v3
 ## AI Agent 执行手册
 
+> **Superseded for new work as of 2026-04-20.**
+> Use [FINAL_CONSTRUCTION_BLUEPRINT_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md),
+> [ENGINEERING_EXECUTION_PLAN_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/ENGINEERING_EXECUTION_PLAN_V2.md),
+> and [PHASE_TASK_CARDS_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/PHASE_TASK_CARDS_V2.md)
+> as the active execution baseline for all new work.
+
 > 目的：为 AI agent 系统提供可直接执行的工程实施说明  
-> 依赖文档：[FINAL_CONSTRUCTION_BLUEPRINT.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT.md)  
-> 使用方式：先读本手册，再按阶段派发 agent 任务  
+> 历史依赖文档：[FINAL_CONSTRUCTION_BLUEPRINT.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT.md)  
+> 历史使用方式：先读本手册，再按阶段派发 agent 任务  
 > 适用策略：顺序执行主线，局部并行，严格控制写集冲突
 
 ---

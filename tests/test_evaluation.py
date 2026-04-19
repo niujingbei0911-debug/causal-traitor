@@ -123,6 +123,10 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score_a.final_scores["macro_f1"], 0.5556)
         self.assertEqual(score_a.final_scores["invalid_claim_acceptance_rate"], 1.0)
         self.assertEqual(score_a.final_scores["unidentifiable_awareness"], 1.0)
+        self.assertEqual(score_a.final_scores["wise_refusal_recall"], 1.0)
+        self.assertEqual(score_a.final_scores["wise_refusal_precision"], 1.0)
+        self.assertEqual(score_a.final_scores["over_commitment_rate"], 0.0)
+        self.assertEqual(score_a.final_scores["over_refusal_rate"], 0.0)
         self.assertEqual(score_a.final_scores["ece"], 0.4)
         self.assertEqual(score_a.final_scores["brier"], 0.1789)
         self.assertEqual(score_a.final_scores["countermodel_coverage"], 0.5)
@@ -200,6 +204,29 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(lookup["brier"].is_primary)
         self.assertFalse(lookup["brier"].higher_is_better)
         self.assertAlmostEqual(lookup["brier"].value, 0.1789, places=4)
+
+    def test_compute_all_emits_wise_refusal_and_over_commitment_metrics(self) -> None:
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all(
+                {
+                    "gold_labels": ["valid", "invalid", "unidentifiable", "valid"],
+                    "predicted_labels": ["valid", "unidentifiable", "invalid", "unidentifiable"],
+                    "confidences": [0.9, 0.8, 0.7, 0.6],
+                    "countermodel_hits": [False, True, True, False],
+                    "countermodel_applicable": [False, True, True, False],
+                }
+            )
+        }
+
+        self.assertEqual(lookup["wise_refusal_recall"].value, 0.0)
+        self.assertEqual(lookup["wise_refusal_precision"].value, 0.0)
+        self.assertEqual(lookup["over_commitment_rate"].value, 1.0)
+        self.assertEqual(lookup["over_refusal_rate"].value, 0.6667)
+        self.assertTrue(lookup["wise_refusal_recall"].is_primary)
+        self.assertTrue(lookup["wise_refusal_precision"].is_primary)
+        self.assertFalse(lookup["over_commitment_rate"].higher_is_better)
+        self.assertFalse(lookup["over_refusal_rate"].higher_is_better)
 
     def test_score_game_uses_explicit_verdict_probabilities_for_calibration_metrics(self) -> None:
         score = self.scorer.score_game(

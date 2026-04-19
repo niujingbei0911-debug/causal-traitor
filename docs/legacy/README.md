@@ -7,9 +7,13 @@ active research direction of the repository.
 
 For the current project scope, always start with:
 
-- [../FINAL_CONSTRUCTION_BLUEPRINT.md](../FINAL_CONSTRUCTION_BLUEPRINT.md)
-- [../AGENT_EXECUTION_MANUAL.md](../AGENT_EXECUTION_MANUAL.md)
+- [../FINAL_CONSTRUCTION_BLUEPRINT_V2.md](../FINAL_CONSTRUCTION_BLUEPRINT_V2.md)
+- [../ENGINEERING_EXECUTION_PLAN_V2.md](../ENGINEERING_EXECUTION_PLAN_V2.md)
+- [../PHASE_TASK_CARDS_V2.md](../PHASE_TASK_CARDS_V2.md)
 - [../PROJECT_MAP.md](../PROJECT_MAP.md)
+
+The older v3 blueprint and execution manual remain archived for traceability,
+but they are superseded for all new work.
 
 ## What This Folder Is For
 

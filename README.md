@@ -1,10 +1,11 @@
-# The Causal Traitor v3
+# The Causal Traitor v4
 
-> Current canonical research direction: **Adversarial Causal Oversight under Information Asymmetry**
+> Current canonical research direction: **Selective Adversarial Causal Oversight under Information Asymmetry**
 >
 > Repository note: the project has fully transitioned to the paper-oriented plan defined in
-> [docs/FINAL_CONSTRUCTION_BLUEPRINT.md](docs/FINAL_CONSTRUCTION_BLUEPRINT.md) and
-> [docs/AGENT_EXECUTION_MANUAL.md](docs/AGENT_EXECUTION_MANUAL.md).
+> [docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md](docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md),
+> [docs/ENGINEERING_EXECUTION_PLAN_V2.md](docs/ENGINEERING_EXECUTION_PLAN_V2.md), and
+> [docs/PHASE_TASK_CARDS_V2.md](docs/PHASE_TASK_CARDS_V2.md).
 > Older multi-agent game materials are retained only for appendix/demo support and
 > historical traceability.
 
@@ -12,15 +13,17 @@
 
 This repository now centers on three paper-level deliverables:
 
-1. `Adversarial Causal Oversight`
+1. `Selective Adversarial Causal Oversight`
    A task where a verifier judges whether a natural-language causal claim is
-   `valid`, `invalid`, or `unidentifiable` under information asymmetry.
+   `valid`, `invalid`, or `unidentifiable` under information asymmetry, with
+   explicit support for wise refusal when public evidence is insufficient.
 2. `Leakage-free benchmark`
    Programmatically generated benchmark instances with strict public/gold
-   separation, witness annotations, and IID/OOD splits.
-3. `Countermodel-Grounded Verification`
+   separation, witness annotations, IID/OOD splits, and a real-grounded subset.
+3. `Countermodel-Grounded Selective Verification`
    A verifier pipeline built around claim parsing, assumption ledger construction,
-   countermodel search, and tool-backed adjudication.
+   countermodel search, tool-backed adjudication, and refusal-aware decision
+   making.
 
 The older "multi-agent deception game" framing is no longer the primary research
 story of the repository. It remains only as supplemental demo / appendix
@@ -30,11 +33,13 @@ infrastructure.
 
 Read these first:
 
-- [docs/FINAL_CONSTRUCTION_BLUEPRINT.md](docs/FINAL_CONSTRUCTION_BLUEPRINT.md)
-  Final paper blueprint, task definition, benchmark scope, verifier design, and
-  experiment matrix.
-- [docs/AGENT_EXECUTION_MANUAL.md](docs/AGENT_EXECUTION_MANUAL.md)
-  Engineering execution handbook aligned to the blueprint phases.
+- [docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md](docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md)
+  Current paper blueprint, task definition, benchmark scope, verifier design,
+  experiment matrix, and quality bar.
+- [docs/ENGINEERING_EXECUTION_PLAN_V2.md](docs/ENGINEERING_EXECUTION_PLAN_V2.md)
+  Current engineering rollout aligned to the v2 blueprint.
+- [docs/PHASE_TASK_CARDS_V2.md](docs/PHASE_TASK_CARDS_V2.md)
+  Directly dispatchable task cards for phase-by-phase execution.
 - [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md)
   Repository navigation guide: what is mainline, what is appendix/demo, and what
   is historical archive.
@@ -48,7 +53,8 @@ Read these first:
 Historical materials:
 
 - [docs/legacy/README.md](docs/legacy/README.md)
-  Index for superseded planning, design, review, and progress documents.
+  Index for superseded planning, design, review, and progress documents,
+  including the retained v3 blueprint and execution manual.
 
 ## Repository Layout
 

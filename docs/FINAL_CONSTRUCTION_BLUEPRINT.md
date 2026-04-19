@@ -1,6 +1,12 @@
 # The Causal Traitor v3
 ## 最终论文与施工总蓝图
 
+> **Superseded for new work as of 2026-04-20.**
+> Use [FINAL_CONSTRUCTION_BLUEPRINT_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md),
+> [ENGINEERING_EXECUTION_PLAN_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/ENGINEERING_EXECUTION_PLAN_V2.md),
+> and [PHASE_TASK_CARDS_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/PHASE_TASK_CARDS_V2.md)
+> as the active source of truth for all new planning, implementation, and paper writing.
+
 > 版本：v3 Final  
 > 形成日期：2026-04-16  
 > 面向目标：ICML / NeurIPS / ICLR 主会级研究项目  

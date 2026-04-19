@@ -110,6 +110,17 @@ class VerdictLabel(str, Enum):
 
 
 VERDICT_LABEL_SPACE: tuple[str, ...] = tuple(label.value for label in VerdictLabel)
+
+
+class IdentificationStatus(str, Enum):
+    """Verifier-side identification state used by selective outputs."""
+
+    IDENTIFIED = "identified"
+    CONTRADICTED = "contradicted"
+    UNDERDETERMINED = "underdetermined"
+
+
+IDENTIFICATION_STATUS_SPACE: tuple[str, ...] = tuple(status.value for status in IdentificationStatus)
 CAUSAL_LEVEL_SPACE: tuple[str, ...] = ("L1", "L2", "L3")
 CLAIM_INSTANCE_REQUIRED_FIELDS: tuple[str, ...] = (
     "instance_id",
@@ -168,6 +179,23 @@ def _coerce_causal_level(value: int | str, *, field_name: str) -> str:
     raise ValueError(
         f"{field_name} must be one of {CAUSAL_LEVEL_SPACE} or 1/2/3, got {value!r}."
     )
+
+
+def _coerce_identification_status(
+    value: IdentificationStatus | str | None,
+    *,
+    field_name: str,
+) -> IdentificationStatus | None:
+    if value is None:
+        return None
+    if isinstance(value, IdentificationStatus):
+        return value
+    try:
+        return IdentificationStatus(str(value).strip().lower())
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} must be one of {IDENTIFICATION_STATUS_SPACE}, got {value!r}."
+        ) from exc
 
 
 def _coerce_witness_kind(value: WitnessKind | str, *, field_name: str) -> WitnessKind:
@@ -411,6 +439,67 @@ def _coerce_optional_string(value: Any) -> str | None:
     return normalized or None
 
 
+def default_identification_status(
+    label: VerdictLabel | str | None,
+) -> IdentificationStatus | None:
+    normalized_label = _coerce_label(label, field_name="label") if label is not None else None
+    if normalized_label is VerdictLabel.VALID:
+        return IdentificationStatus.IDENTIFIED
+    if normalized_label is VerdictLabel.INVALID:
+        return IdentificationStatus.CONTRADICTED
+    if normalized_label is VerdictLabel.UNIDENTIFIABLE:
+        return IdentificationStatus.UNDERDETERMINED
+    return None
+
+
+@dataclass(slots=True)
+class MissingInformationSpec:
+    """Structured description of what public evidence is still missing."""
+
+    missing_assumptions: list[str] = field(default_factory=list)
+    required_evidence: list[str] = field(default_factory=list)
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        self.missing_assumptions = _normalize_str_list(self.missing_assumptions)
+        self.required_evidence = _normalize_str_list(self.required_evidence)
+        self.note = str(self.note).strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "missing_assumptions": list(self.missing_assumptions),
+            "required_evidence": list(self.required_evidence),
+            "note": self.note,
+        }
+
+
+def _normalize_missing_information_spec(
+    value: MissingInformationSpec | dict[str, Any] | None,
+) -> MissingInformationSpec:
+    if value is None:
+        return MissingInformationSpec()
+    if isinstance(value, MissingInformationSpec):
+        return MissingInformationSpec(
+            missing_assumptions=list(value.missing_assumptions),
+            required_evidence=list(value.required_evidence),
+            note=value.note,
+        )
+    if isinstance(value, dict):
+        raw_note = value.get("note")
+        if raw_note is None:
+            raw_note = value.get("reasoning_summary", "")
+        return MissingInformationSpec(
+            missing_assumptions=list(
+                value.get("missing_assumptions", value.get("unresolved_assumptions", [])) or []
+            ),
+            required_evidence=list(
+                value.get("required_evidence", value.get("required_observations", [])) or []
+            ),
+            note=_coerce_optional_string(raw_note) or "",
+        )
+    raise TypeError(f"Unsupported missing_information_spec type: {type(value)!r}")
+
+
 @dataclass(slots=True)
 class VerifierVerdict:
     """Structured verdict for evaluation.
@@ -421,12 +510,29 @@ class VerifierVerdict:
     """
 
     label: VerdictLabel | str | None = None
+    identification_status: IdentificationStatus | str | None = None
+    refusal_reason: str | None = None
+    missing_information_spec: MissingInformationSpec | dict[str, Any] | None = None
     confidence: float | None = None
     reasoning_summary: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.label = _coerce_label(self.label, field_name="verdict.label")
+        self.identification_status = _coerce_identification_status(
+            self.identification_status,
+            field_name="verdict.identification_status",
+        ) or default_identification_status(self.label)
+        self.missing_information_spec = _normalize_missing_information_spec(
+            self.missing_information_spec
+        )
+        self.refusal_reason = _coerce_optional_string(self.refusal_reason)
+        if (
+            self.label is VerdictLabel.UNIDENTIFIABLE
+            and self.refusal_reason is None
+            and self.missing_information_spec.missing_assumptions
+        ):
+            self.refusal_reason = "missing_identifying_support"
         if self.confidence is not None:
             self.confidence = float(self.confidence)
         self.metadata = dict(self.metadata)
@@ -434,6 +540,11 @@ class VerifierVerdict:
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label.value if self.label is not None else None,
+            "identification_status": (
+                self.identification_status.value if self.identification_status is not None else None
+            ),
+            "refusal_reason": self.refusal_reason,
+            "missing_information_spec": self.missing_information_spec.to_dict(),
             "confidence": self.confidence,
             "reasoning_summary": self.reasoning_summary,
             "metadata": dict(self.metadata),
@@ -448,6 +559,9 @@ def _normalize_verdict(
     if isinstance(value, VerifierVerdict):
         return VerifierVerdict(
             label=value.label,
+            identification_status=value.identification_status,
+            refusal_reason=value.refusal_reason,
+            missing_information_spec=value.missing_information_spec,
             confidence=value.confidence,
             reasoning_summary=value.reasoning_summary,
             metadata=dict(value.metadata),
@@ -455,6 +569,9 @@ def _normalize_verdict(
     if isinstance(value, dict):
         return VerifierVerdict(
             label=value.get("label"),
+            identification_status=value.get("identification_status"),
+            refusal_reason=value.get("refusal_reason"),
+            missing_information_spec=value.get("missing_information_spec"),
             confidence=value.get("confidence"),
             reasoning_summary=str(value.get("reasoning_summary", "")),
             metadata=dict(value.get("metadata", {})),

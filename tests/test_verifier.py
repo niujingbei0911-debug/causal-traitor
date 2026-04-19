@@ -7,13 +7,19 @@ import pandas as pd
 from agents.tool_executor import ToolExecutor
 from benchmark.attacks import ATTACK_TEMPLATE_REGISTRY, generate_attack_sample
 from benchmark.generator import BenchmarkGenerator
-from benchmark.schema import PublicCausalInstance, VerdictLabel, WitnessKind
+from benchmark.schema import IdentificationStatus, PublicCausalInstance, VerdictLabel, WitnessKind
 from benchmark.graph_families import generate_graph_family, list_graph_families
 from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import ClaimParser, parse_claim
 from verifier.countermodel_search import CountermodelSearchResult, search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
-from verifier.outputs import ClaimPolarity, ClaimStrength, ParsedClaim, QueryType
+from verifier.outputs import (
+    ClaimPolarity,
+    ClaimStrength,
+    ParsedClaim,
+    QueryType,
+    SelectiveVerifierOutput,
+)
 from verifier.pipeline import VerifierPipeline, run_verifier_pipeline
 
 
@@ -838,6 +844,120 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertGreater(payload["probabilities"]["valid"], payload["probabilities"]["invalid"])
         self.assertIn("valid adjustment set", decision.support_witness.assumptions)
         json.dumps(payload)
+
+    def test_selective_output_upgrade_derives_identification_status_from_legacy_valid_payload(self) -> None:
+        parsed = parse_claim("After controlling for pretest_score, the causal effect of exposure on recovery is identified.")
+        ledger = build_assumption_ledger(parsed)
+        countermodel = search_countermodels(
+            parsed,
+            ledger,
+            context={"claim_text": "After controlling for pretest_score, the causal effect of exposure on recovery is identified."},
+        )
+        decision = decide_verdict(
+            parsed,
+            ledger,
+            countermodel,
+            tool_trace=[
+                {
+                    "tool_name": "backdoor_check",
+                    "summary": "The observed adjustment set blocks the relevant backdoor paths.",
+                    "supports_assumptions": ["valid adjustment set", "no unobserved confounding", "positivity"],
+                    "supports_claim": True,
+                    "confidence": 0.87,
+                }
+            ],
+        )
+
+        selective_output = SelectiveVerifierOutput.from_decision_payload(decision.to_dict())
+        payload = selective_output.to_dict()
+
+        self.assertEqual(payload["label"], "valid")
+        self.assertEqual(payload["identification_status"], "identified")
+        self.assertIs(selective_output.identification_status, IdentificationStatus.IDENTIFIED)
+        self.assertIsNone(payload["refusal_reason"])
+        self.assertEqual(
+            payload["missing_information_spec"],
+            {
+                "missing_assumptions": [],
+                "required_evidence": [],
+                "note": "",
+            },
+        )
+        json.dumps(payload)
+
+    def test_selective_output_upgrade_derives_missing_information_for_legacy_unidentifiable_payload(self) -> None:
+        claim_text = "Estimate the causal effect of exposure on recovery."
+        parsed = parse_claim(claim_text)
+        ledger = build_assumption_ledger(parsed)
+        countermodel = search_countermodels(parsed, ledger, context={"claim_text": claim_text})
+        decision = decide_verdict(parsed, ledger, countermodel)
+
+        selective_output = SelectiveVerifierOutput.from_decision_payload(decision.to_dict())
+        payload = selective_output.to_dict()
+        unresolved_assumptions = sorted(
+            entry.name
+            for entry in decision.assumption_ledger.entries
+            if entry.status.value == "unresolved"
+        )
+
+        self.assertEqual(payload["label"], "unidentifiable")
+        self.assertEqual(payload["identification_status"], "underdetermined")
+        self.assertIs(selective_output.identification_status, IdentificationStatus.UNDERDETERMINED)
+        self.assertEqual(payload["refusal_reason"], "missing_identifying_support")
+        self.assertEqual(
+            payload["missing_information_spec"],
+            {
+                "missing_assumptions": unresolved_assumptions,
+                "required_evidence": [],
+                "note": decision.reasoning_summary,
+            },
+        )
+        json.dumps(payload)
+
+    def test_stage_4_high_risk_claim_abstains_when_identifying_support_only_appears_in_non_primary_trace(self) -> None:
+        parsed = ParsedClaim(
+            query_type="intervention",
+            treatment="exposure",
+            outcome="recovery",
+            claim_polarity="positive",
+            claim_strength="strong",
+            mentioned_assumptions=["valid adjustment set"],
+            implied_assumptions=["positivity"],
+            rhetorical_strategy="adjustment_sufficiency_assertion",
+            needs_abstention_check=True,
+        )
+        ledger = build_assumption_ledger(parsed)
+        countermodel = CountermodelSearchResult(found_countermodel=False, candidates=[])
+        tool_trace = [
+            {
+                "tool_name": "correlation_analysis",
+                "summary": "The association points in the claimed direction.",
+                "supports_claim": True,
+                "supports_primary_claim": True,
+                "claim_stance": "pro_causal",
+                "confidence": 0.9,
+                "supports_assumptions": [],
+                "contradicts_assumptions": [],
+            },
+            {
+                "tool_name": "rebuttal_adjustment_check",
+                "summary": "A secondary trace names the adjustment assumptions.",
+                "supports_claim": True,
+                "supports_primary_claim": False,
+                "claim_stance": "anti_causal",
+                "confidence": 0.82,
+                "supports_assumptions": ["valid adjustment set", "positivity"],
+                "contradicts_assumptions": [],
+            },
+        ]
+
+        decision = decide_verdict(parsed, ledger, countermodel, tool_trace=tool_trace)
+
+        self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
+        self.assertEqual(decision.metadata["decision_stage"], 3)
+        self.assertEqual(decision.metadata["stage_variant"], "abstention_gate")
+        self.assertTrue(decision.metadata["abstention_gate_triggered"])
+        self.assertIn("missing primary-trace support for valid adjustment set", decision.metadata["abstention_reasons"])
 
     def test_stage_4_ignores_stance_relative_rebuttal_trace_when_assessing_primary_claim(self) -> None:
         parsed = ParsedClaim(

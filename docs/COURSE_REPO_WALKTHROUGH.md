@@ -8,7 +8,8 @@
 现在这个仓库的正确介绍方式是：
 
 > 我们把项目从“多智能体因果欺骗系统”收缩成了一个论文主线明确的研究仓库：
-> 一个新任务、一个 leakage-free benchmark、一个 countermodel-grounded verifier。
+> 一个 selective causal oversight 新任务、一个 leakage-free benchmark、
+> 一个 countermodel-grounded selective verifier。
 
 不要把仓库开场介绍成：
 
@@ -22,9 +23,10 @@
 
 按这个顺序：
 
-1. [FINAL_CONSTRUCTION_BLUEPRINT.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT.md)
-2. [AGENT_EXECUTION_MANUAL.md](C:/Users/njb18/Desktop/causal-traitor/docs/AGENT_EXECUTION_MANUAL.md)
-3. [PROJECT_MAP.md](C:/Users/njb18/Desktop/causal-traitor/docs/PROJECT_MAP.md)
+1. [FINAL_CONSTRUCTION_BLUEPRINT_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md)
+2. [ENGINEERING_EXECUTION_PLAN_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/ENGINEERING_EXECUTION_PLAN_V2.md)
+3. [PHASE_TASK_CARDS_V2.md](C:/Users/njb18/Desktop/causal-traitor/docs/PHASE_TASK_CARDS_V2.md)
+4. [PROJECT_MAP.md](C:/Users/njb18/Desktop/causal-traitor/docs/PROJECT_MAP.md)
 
 这一段要讲清楚：
 
@@ -45,7 +47,7 @@
 这里重点讲：
 
 - public/gold 信息分区
-- 三标签：`valid / invalid / unidentifiable`
+- selective outputs：`identified / contradicted / underdetermined` 与 `valid / invalid / unidentifiable`
 - graph family + attack template + witness 的数据生成逻辑
 
 ### 第三步：讲 verifier
@@ -115,7 +117,7 @@
 最理想的阅读路径是：
 
 1. `README.md`
-2. `docs/FINAL_CONSTRUCTION_BLUEPRINT.md`
+2. `docs/FINAL_CONSTRUCTION_BLUEPRINT_V2.md`
 3. `docs/PROJECT_MAP.md`
 4. `benchmark/`
 5. `verifier/`
@@ -128,4 +130,5 @@
 
 > 我们已经完全转向新方案。
 > 旧系统代码和文档没有删，是因为它们还承担 supplemental demo、appendix 和历史演化证据的作用。
-> 但项目主线、论文主线和实验主线已经全部切换到新方案文档定义的 task + benchmark + verifier 结构。
+> 但项目主线、论文主线和实验主线已经全部切换到 v2 文档定义的
+> selective task + benchmark + verifier 结构。

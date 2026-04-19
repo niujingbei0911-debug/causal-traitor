@@ -4,21 +4,22 @@ This file is the shortest reliable guide to the current repository layout.
 
 ## Canonical Baseline
 
-Treat the following two documents as the active project definition:
+Treat the following documents as the active project definition:
 
-- [FINAL_CONSTRUCTION_BLUEPRINT.md](FINAL_CONSTRUCTION_BLUEPRINT.md)
-- [AGENT_EXECUTION_MANUAL.md](AGENT_EXECUTION_MANUAL.md)
+- [FINAL_CONSTRUCTION_BLUEPRINT_V2.md](FINAL_CONSTRUCTION_BLUEPRINT_V2.md)
+- [ENGINEERING_EXECUTION_PLAN_V2.md](ENGINEERING_EXECUTION_PLAN_V2.md)
+- [PHASE_TASK_CARDS_V2.md](PHASE_TASK_CARDS_V2.md)
 - [ARTIFACT_LAYOUT.md](ARTIFACT_LAYOUT.md)
 - [COURSE_REPO_WALKTHROUGH.md](COURSE_REPO_WALKTHROUGH.md)
 
-If any older document conflicts with them, the newer mainline documents win.
+If any older document conflicts with them, the v2 documents win.
 
 ## What The Project Is Now
 
 The repository's active research goal is:
 
-> a new task + a leakage-free benchmark + a countermodel-grounded verifier
-> for adversarial causal claim oversight under information asymmetry
+> a selective causal oversight task + a leakage-free benchmark +
+> a countermodel-grounded selective verifier under information asymmetry
 
 That means the primary story is no longer:
 
@@ -96,13 +97,14 @@ Do not use them as the current source of truth for project scope.
 
 If you want to understand the active project without getting confused:
 
-1. [FINAL_CONSTRUCTION_BLUEPRINT.md](FINAL_CONSTRUCTION_BLUEPRINT.md)
-2. [AGENT_EXECUTION_MANUAL.md](AGENT_EXECUTION_MANUAL.md)
-3. This file
-4. `benchmark/`
-5. `verifier/`
-6. `evaluation/`
-7. `experiments/benchmark_harness.py`
+1. [FINAL_CONSTRUCTION_BLUEPRINT_V2.md](FINAL_CONSTRUCTION_BLUEPRINT_V2.md)
+2. [ENGINEERING_EXECUTION_PLAN_V2.md](ENGINEERING_EXECUTION_PLAN_V2.md)
+3. [PHASE_TASK_CARDS_V2.md](PHASE_TASK_CARDS_V2.md)
+4. This file
+5. `benchmark/`
+6. `verifier/`
+7. `evaluation/`
+8. `experiments/benchmark_harness.py`
 
 Only after that should you look at:
 

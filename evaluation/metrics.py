@@ -34,6 +34,10 @@ def _normalize_verdict_label(value: Any) -> str | None:
     return None
 
 
+def _is_committed_label(value: str | None) -> bool:
+    return value in {"valid", "invalid"}
+
+
 def _clip01(value: Any) -> float:
     try:
         return float(np.clip(float(value), 0.0, 1.0))
@@ -290,6 +294,126 @@ class CausalMetrics:
                 "correctly_flagged": correctly_flagged,
             },
             is_primary=True,
+        )
+
+    @classmethod
+    def wise_refusal_recall(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+    ) -> MetricResult:
+        pairs = cls._paired_labels(gold_labels, predicted_labels)
+        gold_unidentifiable = [(gold, pred) for gold, pred in pairs if gold == "unidentifiable"]
+        if not gold_unidentifiable:
+            return cls._metric(
+                "wise_refusal_recall",
+                0.0,
+                category="selective",
+                details={"n_unidentifiable": 0, "wise_refusals": 0},
+                is_primary=True,
+            )
+        wise_refusals = sum(1 for _, pred in gold_unidentifiable if pred == "unidentifiable")
+        return cls._metric(
+            "wise_refusal_recall",
+            _safe_rate(wise_refusals, len(gold_unidentifiable)),
+            category="selective",
+            details={
+                "n_unidentifiable": len(gold_unidentifiable),
+                "wise_refusals": wise_refusals,
+            },
+            is_primary=True,
+        )
+
+    @classmethod
+    def wise_refusal_precision(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+    ) -> MetricResult:
+        pairs = cls._paired_labels(gold_labels, predicted_labels)
+        predicted_refusals = [(gold, pred) for gold, pred in pairs if pred == "unidentifiable"]
+        if not predicted_refusals:
+            return cls._metric(
+                "wise_refusal_precision",
+                0.0,
+                category="selective",
+                details={"n_predicted_refusals": 0, "correct_refusals": 0},
+                is_primary=True,
+            )
+        correct_refusals = sum(1 for gold, _ in predicted_refusals if gold == "unidentifiable")
+        return cls._metric(
+            "wise_refusal_precision",
+            _safe_rate(correct_refusals, len(predicted_refusals)),
+            category="selective",
+            details={
+                "n_predicted_refusals": len(predicted_refusals),
+                "correct_refusals": correct_refusals,
+            },
+            is_primary=True,
+        )
+
+    @classmethod
+    def over_commitment_rate(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+    ) -> MetricResult:
+        pairs = cls._paired_labels(gold_labels, predicted_labels)
+        gold_unidentifiable = [(gold, pred) for gold, pred in pairs if gold == "unidentifiable"]
+        if not gold_unidentifiable:
+            return cls._metric(
+                "over_commitment_rate",
+                0.0,
+                category="selective",
+                details={"n_unidentifiable": 0, "over_committed": 0},
+                is_primary=True,
+                higher_is_better=False,
+            )
+        over_committed = sum(1 for _, pred in gold_unidentifiable if _is_committed_label(pred))
+        return cls._metric(
+            "over_commitment_rate",
+            _safe_rate(over_committed, len(gold_unidentifiable)),
+            category="selective",
+            details={
+                "n_unidentifiable": len(gold_unidentifiable),
+                "over_committed": over_committed,
+            },
+            is_primary=True,
+            higher_is_better=False,
+        )
+
+    @classmethod
+    def over_refusal_rate(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+    ) -> MetricResult:
+        pairs = cls._paired_labels(gold_labels, predicted_labels)
+        gold_identifiable = [
+            (gold, pred)
+            for gold, pred in pairs
+            if gold in {"valid", "invalid"}
+        ]
+        if not gold_identifiable:
+            return cls._metric(
+                "over_refusal_rate",
+                0.0,
+                category="selective",
+                details={"n_identifiable": 0, "over_refusals": 0},
+                is_primary=True,
+                higher_is_better=False,
+            )
+        over_refusals = sum(1 for _, pred in gold_identifiable if pred == "unidentifiable")
+        return cls._metric(
+            "over_refusal_rate",
+            _safe_rate(over_refusals, len(gold_identifiable)),
+            category="selective",
+            details={
+                "n_identifiable": len(gold_identifiable),
+                "over_refusals": over_refusals,
+            },
+            is_primary=True,
+            higher_is_better=False,
         )
 
     @classmethod
@@ -882,6 +1006,10 @@ class CausalMetrics:
                     cls.verdict_macro_f1(gold_labels, predicted_labels),
                     cls.invalid_claim_acceptance_rate(gold_labels, predicted_labels),
                     cls.unidentifiable_awareness(gold_labels, predicted_labels),
+                    cls.wise_refusal_recall(gold_labels, predicted_labels),
+                    cls.wise_refusal_precision(gold_labels, predicted_labels),
+                    cls.over_commitment_rate(gold_labels, predicted_labels),
+                    cls.over_refusal_rate(gold_labels, predicted_labels),
                     cls.expected_calibration_error(
                         gold_labels,
                         predicted_labels,

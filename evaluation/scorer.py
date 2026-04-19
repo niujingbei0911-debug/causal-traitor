@@ -300,6 +300,10 @@ class Scorer:
             CausalMetrics.verdict_macro_f1(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.invalid_claim_acceptance_rate(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.unidentifiable_awareness(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.wise_refusal_recall(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.wise_refusal_precision(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.over_commitment_rate(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.over_refusal_rate(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.expected_calibration_error(
                 paired_gold_labels,
                 paired_predicted_labels,
