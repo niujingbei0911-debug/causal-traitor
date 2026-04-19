@@ -439,6 +439,18 @@ def _coerce_optional_string(value: Any) -> str | None:
     return normalized or None
 
 
+def _normalize_optional_mapping(value: Any, *, none_as_empty: bool) -> dict[str, Any] | None:
+    if value is None:
+        return {} if none_as_empty else None
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        serialized = value.to_dict()
+        if isinstance(serialized, dict):
+            return dict(serialized)
+    raise TypeError(f"Expected mapping-compatible payload, got {type(value)!r}.")
+
+
 def default_identification_status(
     label: VerdictLabel | str | None,
 ) -> IdentificationStatus | None:
@@ -500,6 +512,67 @@ def _normalize_missing_information_spec(
     raise TypeError(f"Unsupported missing_information_spec type: {type(value)!r}")
 
 
+def _has_missing_information(spec: MissingInformationSpec) -> bool:
+    return bool(spec.missing_assumptions or spec.required_evidence or spec.note)
+
+
+def derive_refusal_reason(
+    *,
+    explicit_reason: str | None,
+    label: VerdictLabel | str | None,
+    missing_information_spec: MissingInformationSpec,
+    countermodel_witness: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    normalized = _coerce_optional_string(explicit_reason)
+    if normalized is not None:
+        return normalized
+
+    normalized_label = _coerce_label(label, field_name="label") if label is not None else None
+    if normalized_label is not VerdictLabel.UNIDENTIFIABLE:
+        return None
+
+    metadata_payload = _normalize_optional_mapping(metadata, none_as_empty=True) or {}
+    countermodel_payload = _normalize_optional_mapping(countermodel_witness, none_as_empty=False) or {}
+    witness_payload = _normalize_optional_mapping(countermodel_payload.get("payload"), none_as_empty=True) or {}
+
+    if bool(witness_payload.get("query_disagreement")):
+        return "observational_equivalence"
+    if metadata_payload.get("stage_variant") == "abstention_gate":
+        return "missing_primary_identifying_support"
+    if missing_information_spec.missing_assumptions:
+        return "missing_identifying_support"
+    return "insufficient_public_information"
+
+
+def validate_selective_verdict_state(
+    *,
+    label: VerdictLabel | None,
+    identification_status: IdentificationStatus | None,
+    refusal_reason: str | None,
+    missing_information_spec: MissingInformationSpec,
+) -> None:
+    if label is None:
+        if identification_status is not None or refusal_reason is not None or _has_missing_information(missing_information_spec):
+            raise ValueError("Selective verdict fields require a non-null label.")
+        return
+
+    expected_status = default_identification_status(label)
+    if identification_status is not None and expected_status is not None and identification_status is not expected_status:
+        raise ValueError(
+            "identification_status must be consistent with label: "
+            f"label={label.value!r}, identification_status={identification_status.value!r}."
+        )
+
+    if label is not VerdictLabel.UNIDENTIFIABLE:
+        if refusal_reason is not None:
+            raise ValueError(f"refusal_reason is only valid for label='unidentifiable', got {label.value!r}.")
+        if _has_missing_information(missing_information_spec):
+            raise ValueError(
+                "missing_information_spec must be empty unless label='unidentifiable'."
+            )
+
+
 @dataclass(slots=True)
 class VerifierVerdict:
     """Structured verdict for evaluation.
@@ -513,6 +586,7 @@ class VerifierVerdict:
     identification_status: IdentificationStatus | str | None = None
     refusal_reason: str | None = None
     missing_information_spec: MissingInformationSpec | dict[str, Any] | None = None
+    countermodel_witness: dict[str, Any] | None = None
     confidence: float | None = None
     reasoning_summary: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -533,15 +607,26 @@ class VerifierVerdict:
             and self.reasoning_summary
         ):
             self.missing_information_spec.note = self.reasoning_summary
-        self.refusal_reason = _coerce_optional_string(self.refusal_reason)
-        if self.label is VerdictLabel.UNIDENTIFIABLE and self.refusal_reason is None:
-            if self.missing_information_spec.missing_assumptions:
-                self.refusal_reason = "missing_identifying_support"
-            else:
-                self.refusal_reason = "insufficient_public_information"
+        self.countermodel_witness = _normalize_optional_mapping(
+            self.countermodel_witness,
+            none_as_empty=False,
+        )
+        self.metadata = _normalize_optional_mapping(self.metadata, none_as_empty=True) or {}
+        self.refusal_reason = derive_refusal_reason(
+            explicit_reason=self.refusal_reason,
+            label=self.label,
+            missing_information_spec=self.missing_information_spec,
+            countermodel_witness=self.countermodel_witness,
+            metadata=self.metadata,
+        )
+        validate_selective_verdict_state(
+            label=self.label,
+            identification_status=self.identification_status,
+            refusal_reason=self.refusal_reason,
+            missing_information_spec=self.missing_information_spec,
+        )
         if self.confidence is not None:
             self.confidence = float(self.confidence)
-        self.metadata = dict(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -552,6 +637,9 @@ class VerifierVerdict:
             ),
             "refusal_reason": self.refusal_reason,
             "missing_information_spec": self.missing_information_spec.to_dict(),
+            "countermodel_witness": (
+                dict(self.countermodel_witness) if self.countermodel_witness is not None else None
+            ),
             "confidence": self.confidence,
             "reasoning_summary": self.reasoning_summary,
             "metadata": dict(self.metadata),
@@ -569,6 +657,7 @@ def _normalize_verdict(
             identification_status=value.identification_status,
             refusal_reason=value.refusal_reason,
             missing_information_spec=value.missing_information_spec,
+            countermodel_witness=value.countermodel_witness,
             confidence=value.confidence,
             reasoning_summary=value.reasoning_summary,
             metadata=dict(value.metadata),
@@ -579,9 +668,10 @@ def _normalize_verdict(
             identification_status=value.get("identification_status"),
             refusal_reason=value.get("refusal_reason"),
             missing_information_spec=value.get("missing_information_spec"),
+            countermodel_witness=value.get("countermodel_witness"),
             confidence=value.get("confidence"),
             reasoning_summary=str(value.get("reasoning_summary", "")),
-            metadata=dict(value.get("metadata", {})),
+            metadata=value.get("metadata"),
         )
     raise TypeError(f"Unsupported verdict type: {type(value)!r}")
 
@@ -1094,6 +1184,21 @@ def ensure_public_instance(
         if isinstance(public, PublicCausalInstance):
             return public
     raise TypeError(f"Unsupported scenario type for public projection: {type(scenario)!r}")
+
+
+def ensure_claim_instance(claim: ClaimInstance | dict[str, Any] | Any) -> ClaimInstance:
+    """Normalize a claim-like payload into ClaimInstance."""
+
+    if isinstance(claim, ClaimInstance):
+        return ClaimInstance.from_dict(claim.to_dict())
+    if isinstance(claim, dict):
+        return ClaimInstance.from_dict(dict(claim))
+    to_dict = getattr(claim, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, dict):
+            return ClaimInstance.from_dict(payload)
+    raise TypeError(f"Unsupported claim payload type: {type(claim)!r}")
 
 
 def require_public_instance(scenario: PublicCausalInstance | Any) -> PublicCausalInstance:

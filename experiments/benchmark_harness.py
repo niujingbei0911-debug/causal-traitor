@@ -30,6 +30,7 @@ PRIMARY_METRICS: tuple[str, ...] = (
     "unsafe_acceptance_rate",
     "wise_refusal_recall",
     "wise_refusal_precision",
+    "over_commitment_rate",
     "over_refusal_rate",
     "verdict_accuracy",
     "macro_f1",

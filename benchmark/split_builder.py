@@ -58,6 +58,14 @@ def _is_variable_renamed(instance: ClaimInstance) -> bool:
     return False
 
 
+def _meta_text(instance: ClaimInstance, key: str) -> str | None:
+    value = instance.meta.get(key)
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _shuffle_ids(instance_ids: list[str], *, seed: int) -> list[str]:
     rng = random.Random(int(seed))
     shuffled = list(instance_ids)
@@ -196,6 +204,10 @@ def build_split_manifest(
     family_holdout: Iterable[str] | None = None,
     lexical_holdout: Iterable[str] | None = None,
     variable_renaming_holdout: bool | None = None,
+    mechanism_holdout: Iterable[str] | None = None,
+    attack_family_holdout: Iterable[str] | None = None,
+    context_shift_holdout: Iterable[str] | None = None,
+    paired_flip_holdout: bool | None = None,
     dev_ratio: float = 0.2,
     test_iid_ratio: float = 0.2,
     seed: int = 0,
@@ -215,12 +227,22 @@ def build_split_manifest(
     selected_variable_renaming_holdout = (
         renamed_available if variable_renaming_holdout is None else bool(variable_renaming_holdout)
     )
+    selected_mechanism_holdout = _collect_unique(mechanism_holdout or [])
+    selected_attack_family_holdout = _collect_unique(attack_family_holdout or [])
+    selected_context_shift_holdout = _collect_unique(context_shift_holdout or [])
+    selected_paired_flip_holdout = bool(paired_flip_holdout)
     selection_policy = {
         "family_holdout": "explicit" if family_holdout is not None else "default_unset",
         "lexical_holdout": "explicit" if lexical_holdout is not None else "default_unset",
         "variable_renaming_holdout": (
             "explicit" if variable_renaming_holdout is not None else "auto_if_available"
         ),
+        "mechanism_holdout": "explicit" if mechanism_holdout is not None else "default_unset",
+        "attack_family_holdout": (
+            "explicit" if attack_family_holdout is not None else "default_unset"
+        ),
+        "context_shift_holdout": "explicit" if context_shift_holdout is not None else "default_unset",
+        "paired_flip_holdout": "explicit" if paired_flip_holdout is not None else "default_unset",
     }
 
     if family_holdout is None and not selected_family_holdout and len(families) > 1:
@@ -276,6 +298,19 @@ def build_split_manifest(
             reasons.append("lexical_holdout")
         if selected_variable_renaming_holdout and _is_variable_renamed(instance):
             reasons.append("variable_renaming_holdout")
+        if _meta_text(instance, "mechanism_ood_tag") in selected_mechanism_holdout:
+            reasons.append("mechanism_holdout")
+        if _meta_text(instance, "attack_family") in selected_attack_family_holdout:
+            reasons.append("attack_family_holdout")
+        context_group = _meta_text(instance, "context_shift_group")
+        context_id = _meta_text(instance, "context_shift_id")
+        if (
+            context_group in selected_context_shift_holdout
+            or context_id in selected_context_shift_holdout
+        ):
+            reasons.append("context_shift_holdout")
+        if selected_paired_flip_holdout and _meta_text(instance, "paired_flip_id") is not None:
+            reasons.append("paired_flip_holdout")
         if reasons:
             ood_reasons[instance.instance_id] = reasons
 
@@ -331,7 +366,22 @@ def build_split_manifest(
             "test_ood": len(test_ood_ids),
         },
         "holdout_selection_policy": selection_policy,
+        "extended_holdout_strategy": {
+            "mechanism_holdout": selected_mechanism_holdout,
+            "attack_family_holdout": selected_attack_family_holdout,
+            "context_shift_holdout": selected_context_shift_holdout,
+            "paired_flip_holdout": selected_paired_flip_holdout,
+        },
         "ood_reasons": ood_reasons,
+        "ood_reason_counts": dict(
+            sorted(
+                Counter(
+                    reason
+                    for reasons in ood_reasons.values()
+                    for reason in reasons
+                ).items()
+            )
+        ),
         "label_distribution": {
             "train": _label_distribution(split_map["train"], id_to_instance=id_to_instance),
             "dev": _label_distribution(split_map["dev"], id_to_instance=id_to_instance),

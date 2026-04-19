@@ -11,6 +11,8 @@ from benchmark.schema import (
     MissingInformationSpec,
     VerdictLabel,
     default_identification_status,
+    derive_refusal_reason,
+    validate_selective_verdict_state,
 )
 
 
@@ -173,29 +175,6 @@ def _derive_missing_information_spec(
     return spec
 
 
-def _derive_refusal_reason(
-    *,
-    explicit_reason: str | None,
-    label: VerdictLabel,
-    missing_information_spec: MissingInformationSpec,
-    countermodel_witness: dict[str, Any] | None,
-    metadata: dict[str, Any],
-) -> str | None:
-    normalized = _coerce_optional_string(explicit_reason)
-    if normalized is not None:
-        return normalized
-    if label is not VerdictLabel.UNIDENTIFIABLE:
-        return None
-    countermodel_payload = dict(countermodel_witness.get("payload", {})) if countermodel_witness else {}
-    if bool(countermodel_payload.get("query_disagreement")):
-        return "observational_equivalence"
-    if metadata.get("stage_variant") == "abstention_gate":
-        return "missing_primary_identifying_support"
-    if missing_information_spec.missing_assumptions:
-        return "missing_identifying_support"
-    return "insufficient_public_information"
-
-
 @dataclass(slots=True)
 class ParsedClaim:
     """Machine-readable representation of a natural-language causal claim."""
@@ -258,14 +237,14 @@ class SelectiveVerifierOutput:
         self.confidence = None if self.confidence is None else float(self.confidence)
         self.reasoning_summary = str(self.reasoning_summary).strip()
         self.assumption_ledger = _normalize_assumption_ledger(self.assumption_ledger)
-        self.metadata = dict(self.metadata)
+        self.metadata = dict(self.metadata or {})
         self.witness = _normalize_payload_mapping(self.witness)
         self.support_witness = _normalize_payload_mapping(self.support_witness)
         self.countermodel_witness = _normalize_payload_mapping(self.countermodel_witness)
         self.tool_trace = _normalize_payload_trace(self.tool_trace)
         self.probabilities = {
             str(key): float(value)
-            for key, value in dict(self.probabilities).items()
+            for key, value in dict(self.probabilities or {}).items()
         }
         self.identification_status = _coerce_identification_status(
             self.identification_status
@@ -276,12 +255,18 @@ class SelectiveVerifierOutput:
             assumption_ledger=self.assumption_ledger,
             reasoning_summary=self.reasoning_summary,
         )
-        self.refusal_reason = _derive_refusal_reason(
+        self.refusal_reason = derive_refusal_reason(
             explicit_reason=self.refusal_reason,
             label=self.label,
             missing_information_spec=self.missing_information_spec,
             countermodel_witness=self.countermodel_witness,
             metadata=self.metadata,
+        )
+        validate_selective_verdict_state(
+            label=self.label,
+            identification_status=self.identification_status,
+            refusal_reason=self.refusal_reason,
+            missing_information_spec=self.missing_information_spec,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -319,12 +304,12 @@ class SelectiveVerifierOutput:
             identification_status=data.get("identification_status"),
             refusal_reason=data.get("refusal_reason"),
             missing_information_spec=data.get("missing_information_spec"),
-            probabilities=dict(data.get("probabilities", {})),
-            assumption_ledger=list(data.get("assumption_ledger", [])),
+            probabilities=data.get("probabilities"),
+            assumption_ledger=data.get("assumption_ledger"),
             witness=data.get("witness"),
             support_witness=data.get("support_witness"),
             countermodel_witness=data.get("countermodel_witness"),
-            tool_trace=list(data.get("tool_trace", [])),
+            tool_trace=data.get("tool_trace"),
             reasoning_summary=str(data.get("reasoning_summary", "")),
-            metadata=dict(data.get("metadata", {})),
+            metadata=data.get("metadata"),
         )

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from experiments.benchmark_harness import (
+    PRIMARY_METRICS,
     _apply_no_abstention,
     _apply_family_postprocessing,
     _run_claim_only_family,
@@ -39,6 +40,9 @@ def _prediction_record(
 
 
 class BenchmarkHarnessTests(unittest.TestCase):
+    def test_primary_metric_contract_includes_over_commitment_rate(self) -> None:
+        self.assertIn("over_commitment_rate", PRIMARY_METRICS)
+
     def test_write_artifacts_emits_phase4_sidecars(self) -> None:
         payload = {
             "config": {"samples_per_family": 10, "difficulty": 0.55},
@@ -300,6 +304,22 @@ class BenchmarkHarnessTests(unittest.TestCase):
                             "metrics": {
                                 "verdict_accuracy": 1.0,
                             }
+                        }
+                    }
+                },
+                split_name="test_iid",
+            )
+
+    def test_aggregate_seed_metrics_requires_over_commitment_rate(self) -> None:
+        metrics = {metric_name: 1.0 for metric_name in PRIMARY_METRICS}
+        metrics.pop("over_commitment_rate")
+
+        with self.assertRaisesRegex(ValueError, "over_commitment_rate"):
+            aggregate_seed_metrics(
+                {
+                    0: {
+                        "test_iid": {
+                            "metrics": metrics,
                         }
                     }
                 },

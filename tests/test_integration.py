@@ -37,6 +37,7 @@ from game.config import ConfigLoader
 from game.data_generator import DataGenerator
 from game.debate_engine import DebateEngine
 from game.difficulty import DifficultyController
+from main import _round_for_scoring as round_for_scoring_main
 from main import run_game
 from run_live_game import _public_graph
 from verifier.pipeline import VerifierPipeline
@@ -133,6 +134,32 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("verdict_metrics", payload["summary"])
             self.assertIn("protocol_metrics", payload["summary"])
             self.assertIn("tracking", payload)
+
+    def test_main_round_for_scoring_forwards_verifier_probabilities(self) -> None:
+        payload = round_for_scoring_main(
+            {
+                "round_number": 1,
+                "scenario": SimpleNamespace(gold_label="valid", ground_truth={"label": "valid"}),
+                "audit_verdict": {
+                    "verifier_verdict": {
+                        "probabilities": {
+                            "valid": 0.55,
+                            "invalid": 0.30,
+                            "unidentifiable": 0.15,
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(
+            payload["predicted_probabilities"],
+            {
+                "valid": 0.55,
+                "invalid": 0.30,
+                "unidentifiable": 0.15,
+            },
+        )
 
     async def test_exp1_defaults_to_verdict_centric_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

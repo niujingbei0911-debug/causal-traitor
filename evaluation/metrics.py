@@ -1043,16 +1043,9 @@ class CausalMetrics:
         confidences = list(game_data.get("confidences", []))
         countermodel_hits = list(game_data.get("countermodel_hits", []))
         countermodel_applicable = list(game_data.get("countermodel_applicable", []))
-
         predicted_probabilities = list(game_data.get("predicted_probabilities", []))
 
-        if rounds and (
-            not gold_labels
-            or not predicted_labels
-            or len(confidences) < min(len(gold_labels), len(predicted_labels))
-            or len(countermodel_hits) < min(len(gold_labels), len(predicted_labels))
-            or len(countermodel_applicable) < min(len(gold_labels), len(predicted_labels))
-        ):
+        if rounds:
             gold_labels = []
             predicted_labels = []
             confidences = []

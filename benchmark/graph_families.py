@@ -102,6 +102,13 @@ _ROLE_NAME_POOLS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_DEFAULT_CONTEXT_SHIFT_DOMAINS: tuple[str, ...] = (
+    "policy",
+    "clinical",
+    "education",
+    "market",
+)
+
 
 def _stable_rng(family_name: str, seed: int) -> random.Random:
     material = f"{family_name}:{int(seed)}".encode("utf-8")
@@ -165,6 +172,21 @@ def _serialize_json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_serialize_json_safe(item) for item in value]
     return value
+
+
+def _ood_generator_hints(
+    *,
+    mechanism_ood_tag: str,
+    paired_flip_candidates: list[str] | tuple[str, ...],
+    extra: dict[str, Any] | None = None,
+    context_shift_domains: list[str] | tuple[str, ...] = _DEFAULT_CONTEXT_SHIFT_DOMAINS,
+) -> dict[str, Any]:
+    return {
+        "mechanism_ood_tag": str(mechanism_ood_tag),
+        "context_shift_domains": _normalize_str_list(context_shift_domains),
+        "paired_flip_candidates": _normalize_str_list(paired_flip_candidates),
+        **dict(extra or {}),
+    }
 
 
 def _coerce_causal_level(value: str, *, field_name: str) -> str:
@@ -366,11 +388,15 @@ def _build_l1_latent_confounding_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["association_strength", "causal_direction"],
         supported_gold_labels=["invalid", "unidentifiable"],
         family_tags=["l1", "association", "hidden_confounding"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="confounding",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
             "attack_modes": ["association_overclaim", "hidden_confounder_denial"],
             "observational_equivalence_risk": True,
             "preferred_observed_subset": list(observed_variables),
-        },
+            },
+        ),
     )
 
 
@@ -424,11 +450,15 @@ def _build_l1_selection_bias_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["association_strength", "selection_bias_check"],
         supported_gold_labels=["invalid", "unidentifiable"],
         family_tags=["l1", "association", "selection_bias", "collider"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="selection_bias",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
             "attack_modes": ["selection_bias_obfuscation", "association_overclaim"],
             "conditioning_variables": [selection],
             "selection_mechanism": "conditioning_on_collider",
-        },
+            },
+        ),
     )
 
 
@@ -482,11 +512,15 @@ def _build_l1_proxy_disambiguation_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["association_strength", "proxy_adjusted_claim"],
         supported_gold_labels=["valid", "invalid"],
         family_tags=["l1", "association", "proxy_assisted"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="proxy_disambiguation",
+            paired_flip_candidates=["valid", "invalid"],
+            extra={
             "attack_modes": ["association_overclaim"],
             "identifying_variables": [adjuster, proxy],
             "selection_mechanism": "none",
-        },
+            },
+        ),
     )
 
 
@@ -536,12 +570,16 @@ def _build_l2_valid_backdoor_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["average_treatment_effect", "interventional_effect"],
         supported_gold_labels=["valid", "invalid"],
         family_tags=["l2", "intervention", "backdoor"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="backdoor_adjustment",
+            paired_flip_candidates=["valid", "invalid"],
+            extra={
             "attack_modes": ["invalid_adjustment_claim", "heterogeneity_overgeneralization"],
             "identifying_set_candidates": [[adjuster]],
             "invalid_adjustment_candidates": [context, *proxy_variables],
             "selection_mechanism": "none",
-        },
+            },
+        ),
     )
 
 
@@ -584,10 +622,14 @@ def _build_l2_valid_iv_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["average_treatment_effect", "instrumental_variable_claim"],
         supported_gold_labels=["valid", "invalid"],
         family_tags=["l2", "intervention", "instrument", "valid_iv"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="instrumental_variable",
+            paired_flip_candidates=["valid", "invalid"],
+            extra={
             "attack_modes": ["heterogeneity_overgeneralization"],
             "selection_mechanism": "none",
-        },
+            },
+        ),
     )
 
 
@@ -631,11 +673,15 @@ def _build_l2_invalid_iv_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["average_treatment_effect", "instrumental_variable_claim"],
         supported_gold_labels=["invalid", "unidentifiable"],
         family_tags=["l2", "intervention", "instrument", "invalid_iv"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="instrumental_variable",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
             "attack_modes": ["weak_iv_as_valid_iv", "invalid_iv_exclusion_claim"],
             "invalidity_reason": "instrument_directly_affects_outcome",
             "selection_mechanism": "none",
-        },
+            },
+        ),
     )
 
 
@@ -679,11 +725,15 @@ def _build_l3_counterfactual_ambiguity_family(seed: int) -> GraphFamilyBlueprint
         query_types=["unit_level_counterfactual", "effect_of_treatment_on_treated"],
         supported_gold_labels=["unidentifiable", "invalid"],
         family_tags=["l3", "counterfactual", "ambiguity"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="counterfactual_ambiguity",
+            paired_flip_candidates=["unidentifiable", "invalid"],
+            extra={
             "attack_modes": ["counterfactual_overclaim", "unidentifiable_disguised_as_valid"],
             "requires_countermodel_search": True,
             "selection_mechanism": "none",
-        },
+            },
+        ),
     )
 
 
@@ -727,11 +777,15 @@ def _build_l3_mediation_abduction_family(seed: int) -> GraphFamilyBlueprint:
         query_types=["unit_level_counterfactual", "abduction_action_prediction"],
         supported_gold_labels=["valid", "invalid"],
         family_tags=["l3", "counterfactual", "mediation"],
-        generator_hints={
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="mediation",
+            paired_flip_candidates=["valid", "invalid"],
+            extra={
             "attack_modes": ["counterfactual_overclaim", "function_form_manipulation"],
             "requires_countermodel_search": False,
             "identifying_assumptions": ["consistency", "measured_confounding", "stable_mediation"],
-        },
+            },
+        ),
     )
 
 

@@ -130,7 +130,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score_a.final_scores["ece"], 0.4)
         self.assertEqual(score_a.final_scores["brier"], 0.1789)
         self.assertEqual(score_a.final_scores["countermodel_coverage"], 0.5)
-        self.assertEqual(score_a.final_scores["overall"], 0.6211)
+        self.assertEqual(score_a.final_scores["overall"], 0.6711)
         self.assertNotEqual(score_a.summary["appendix_metrics"], score_b.summary["appendix_metrics"])
         self.assertIn("DSR", score_a.summary["appendix_metrics"])
         self.assertIn("jury_accuracy", score_a.summary["appendix_metrics"])
@@ -326,6 +326,25 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(score.final_scores["ece"], 0.45, places=4)
         self.assertAlmostEqual(score.final_scores["brier"], 0.105, places=4)
 
+    def test_score_game_accepts_sequence_probability_distribution(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "calibration-sequence-probabilities",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "valid",
+                        "verdict_label": "valid",
+                        "verifier_confidence": 0.99,
+                        "predicted_probabilities": [0.55, 0.30, 0.15],
+                    }
+                ],
+            }
+        )
+
+        self.assertAlmostEqual(score.final_scores["ece"], 0.45, places=4)
+        self.assertAlmostEqual(score.final_scores["brier"], 0.105, places=4)
+
     def test_countermodel_applicability_is_not_polluted_by_predicted_label(self) -> None:
         self.assertFalse(
             _extract_countermodel_applicable(
@@ -371,6 +390,67 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
         self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
+
+    def test_compute_all_prefers_round_level_payload_over_top_level_arrays(self) -> None:
+        game_data = {
+            "rounds": [
+                {
+                    "round_id": 1,
+                    "gold_label": "valid",
+                    "verdict_label": "valid",
+                    "verifier_confidence": 0.99,
+                    "predicted_probabilities": {
+                        "valid": 0.55,
+                        "invalid": 0.30,
+                        "unidentifiable": 0.15,
+                    },
+                }
+            ],
+            "gold_labels": ["valid"],
+            "predicted_labels": ["valid"],
+            "confidences": [0.99],
+            "predicted_probabilities": [{"valid": 0.99, "invalid": 0.005, "unidentifiable": 0.005}],
+            "countermodel_hits": [False],
+            "countermodel_applicable": [False],
+        }
+
+        score = self.scorer.score_game(game_data)
+        lookup = {result.name: result for result in CausalMetrics.compute_all(game_data)}
+
+        self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
+        self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
+
+    def test_compute_weighted_score_includes_over_commitment_rate_in_primary_contract(self) -> None:
+        core_metrics = [
+            MetricResult(
+                name="unsafe_acceptance_rate",
+                value=0.0,
+                category="selective",
+                is_primary=True,
+                higher_is_better=False,
+            ),
+            MetricResult(name="wise_refusal_recall", value=1.0, category="selective", is_primary=True),
+            MetricResult(name="wise_refusal_precision", value=1.0, category="selective", is_primary=True),
+            MetricResult(
+                name="over_commitment_rate",
+                value=0.0,
+                category="selective",
+                is_primary=True,
+                higher_is_better=False,
+            ),
+            MetricResult(
+                name="over_refusal_rate",
+                value=0.0,
+                category="selective",
+                is_primary=True,
+                higher_is_better=False,
+            ),
+            MetricResult(name="ece", value=0.0, category="verdict", is_primary=True, higher_is_better=False),
+            MetricResult(name="brier", value=0.0, category="verdict", is_primary=True, higher_is_better=False),
+            MetricResult(name="countermodel_coverage", value=1.0, category="verdict", is_primary=True),
+        ]
+
+        self.assertGreaterEqual(self.scorer.compute_weighted_score(core_metrics), 0.9)
 
     def test_score_game_counts_missing_predictions_as_scored_failures(self) -> None:
         score = self.scorer.score_game(

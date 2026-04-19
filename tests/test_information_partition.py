@@ -224,6 +224,75 @@ class InformationPartitionTests(unittest.TestCase):
             {key: verifier_payload[key] for key in comparable_keys},
         )
 
+    def test_benchmark_and_verifier_align_refusal_reason_for_abstention_gate_payload(self) -> None:
+        payload = {
+            "label": "unidentifiable",
+            "metadata": {"stage_variant": "abstention_gate"},
+        }
+
+        benchmark_payload = VerifierVerdict(**payload).to_dict()
+        verifier_payload = SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+
+        self.assertEqual(benchmark_payload["refusal_reason"], "missing_primary_identifying_support")
+        self.assertEqual(benchmark_payload["refusal_reason"], verifier_payload["refusal_reason"])
+
+    def test_benchmark_and_verifier_align_refusal_reason_for_query_disagreement_payload(self) -> None:
+        payload = {
+            "label": "unidentifiable",
+            "countermodel_witness": {
+                "payload": {
+                    "query_disagreement": True,
+                }
+            },
+        }
+
+        benchmark_payload = VerifierVerdict(**payload).to_dict()
+        verifier_payload = SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+
+        self.assertEqual(benchmark_payload["refusal_reason"], "observational_equivalence")
+        self.assertEqual(benchmark_payload["refusal_reason"], verifier_payload["refusal_reason"])
+
+    def test_selective_contract_rejects_inconsistent_identification_status(self) -> None:
+        with self.assertRaises(ValueError):
+            VerifierVerdict(label="valid", identification_status="underdetermined")
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(label="valid", identification_status="underdetermined")
+
+    def test_selective_contract_rejects_committed_labels_with_refusal_fields(self) -> None:
+        with self.assertRaises(ValueError):
+            VerifierVerdict(
+                label="valid",
+                refusal_reason="missing_identifying_support",
+            )
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(
+                label="invalid",
+                missing_information_spec={"missing_assumptions": ["positivity"]},
+            )
+
+    def test_selective_upgrade_path_tolerates_explicit_null_fields(self) -> None:
+        benchmark_payload = VerifierVerdict(
+            label="unidentifiable",
+            metadata=None,
+            countermodel_witness=None,
+        ).to_dict()
+        verifier_payload = SelectiveVerifierOutput.from_decision_payload(
+            {
+                "label": "unidentifiable",
+                "probabilities": None,
+                "assumption_ledger": None,
+                "tool_trace": None,
+                "metadata": None,
+                "countermodel_witness": None,
+            }
+        ).to_dict()
+
+        self.assertEqual(benchmark_payload["metadata"], {})
+        self.assertEqual(verifier_payload["probabilities"], {})
+        self.assertEqual(verifier_payload["assumption_ledger"], [])
+        self.assertEqual(verifier_payload["tool_trace"], [])
+        self.assertEqual(verifier_payload["metadata"], {})
+
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(
             scenario_id="description_leak_case",

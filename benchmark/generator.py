@@ -42,6 +42,26 @@ def _coerce_causal_level(level: int | str | None) -> str | None:
     return normalized
 
 
+_CONTEXT_SHIFT_DOMAIN_SPACE: tuple[str, ...] = (
+    "policy",
+    "clinical",
+    "education",
+    "market",
+)
+_ATTACK_FAMILY_BY_ATTACK_NAME: dict[str, str] = {
+    "association_overclaim": "observational_shortcut",
+    "hidden_confounder_denial": "observational_shortcut",
+    "selection_bias_obfuscation": "observational_shortcut",
+    "invalid_adjustment_claim": "identification_shortcut",
+    "weak_iv_as_valid_iv": "identification_shortcut",
+    "invalid_iv_exclusion_claim": "identification_shortcut",
+    "heterogeneity_overgeneralization": "transport_shortcut",
+    "counterfactual_overclaim": "counterfactual_shortcut",
+    "function_form_manipulation": "counterfactual_shortcut",
+    "unidentifiable_disguised_as_valid": "counterfactual_shortcut",
+}
+
+
 def _standardize(values: np.ndarray) -> np.ndarray:
     array = np.asarray(values, dtype=float)
     std = float(array.std())
@@ -58,6 +78,14 @@ def _serialize_json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_serialize_json_safe(item) for item in value]
     return value
+
+
+def _coerce_label_override(value: VerdictLabel | str | None) -> VerdictLabel | None:
+    if value is None:
+        return None
+    if isinstance(value, VerdictLabel):
+        return value
+    return VerdictLabel(str(value).strip().lower())
 
 
 def _serialize_frame(frame: pd.DataFrame | None) -> list[dict[str, Any]]:
@@ -99,15 +127,56 @@ def _public_description(
     treatment: str,
     outcome: str,
     causal_level: str,
+    context_shift_group: str | None = None,
 ) -> str:
     visible = list(observed_variables[:4])
     variable_text = ", ".join(visible)
     if len(observed_variables) > len(visible):
         variable_text = f"{variable_text}, ..."
-    return (
+    prefix = ""
+    if context_shift_group:
+        prefix = f"{str(context_shift_group).title()} context. "
+    return prefix + (
         f"Observed {causal_level} benchmark case over {variable_text}. "
         f"Evaluate claims about {treatment} and {outcome} using only the public evidence in this view."
     )
+
+
+def _context_shift_group(
+    *,
+    family_name: str,
+    seed: int,
+    available_domains: list[str] | tuple[str, ...] | None = None,
+) -> str:
+    candidates = [str(value).strip() for value in (available_domains or _CONTEXT_SHIFT_DOMAIN_SPACE) if str(value).strip()]
+    if not candidates:
+        candidates = list(_CONTEXT_SHIFT_DOMAIN_SPACE)
+    rng = _stable_rng("context_shift", family_name, seed)
+    return str(rng.choice(candidates))
+
+
+def _context_shift_payload(
+    *,
+    blueprint: GraphFamilyBlueprint,
+    seed: int,
+) -> dict[str, Any]:
+    available_domains = list(blueprint.generator_hints.get("context_shift_domains", []))
+    context_group = _context_shift_group(
+        family_name=blueprint.family_name,
+        seed=seed,
+        available_domains=available_domains,
+    )
+    return {
+        "context_shift_group": context_group,
+        "context_shift_id": f"{context_group}::{blueprint.family_name}::seed_{seed}",
+        "context_shift_domains": available_domains or list(_CONTEXT_SHIFT_DOMAIN_SPACE),
+    }
+
+
+def _attack_family_for_name(attack_name: str | None) -> str | None:
+    if attack_name is None:
+        return None
+    return _ATTACK_FAMILY_BY_ATTACK_NAME.get(str(attack_name).strip())
 
 
 def _rename_json_tokens(value: Any, rename_map: dict[str, str]) -> Any:
@@ -237,6 +306,8 @@ class BenchmarkGenerator:
         causal_level: int | str | None = None,
         seed: int | None = None,
         n_samples: int | None = None,
+        gold_label_override: VerdictLabel | str | None = None,
+        sample_variant_tag: str | None = None,
     ) -> GoldCausalInstance:
         """Generate one gold instance from either a showcase or a graph family."""
 
@@ -249,6 +320,8 @@ class BenchmarkGenerator:
                 difficulty=difficulty,
                 seed=resolved_seed,
                 n_samples=n_samples,
+                gold_label_override=gold_label_override,
+                sample_variant_tag=sample_variant_tag,
             )
 
         normalized_level = _coerce_causal_level(causal_level)
@@ -272,6 +345,8 @@ class BenchmarkGenerator:
             n_samples=n_samples or self._resolve_sample_size(difficulty),
             seed=resolved_seed,
             renaming_meta=renaming_meta,
+            gold_label_override=gold_label_override,
+            sample_variant_tag=sample_variant_tag,
         )
 
     def generate_public_instance(self, **kwargs: Any) -> PublicCausalInstance:
@@ -366,6 +441,60 @@ class BenchmarkGenerator:
                 n_samples=n_samples,
             )
         ]
+
+    def generate_paired_flip_samples(
+        self,
+        *,
+        family_name: str,
+        difficulty: float = 0.5,
+        seed: int | None = None,
+        n_samples: int | None = None,
+    ) -> tuple[BenchmarkSample, BenchmarkSample]:
+        """Generate a deterministic paired-flip sample pair for one family."""
+
+        resolved_seed = self.seed if seed is None else int(seed)
+        blueprint = generate_graph_family(family_name, seed=resolved_seed)
+        labels = list(blueprint.generator_hints.get("paired_flip_candidates", blueprint.supported_gold_labels))
+        if len(labels) < 2:
+            raise ValueError(f"Family {family_name!r} does not expose enough labels for paired-flip generation.")
+
+        first_label, second_label = labels[0], labels[1]
+        anchor = self.generate_benchmark_sample(
+            family_name=family_name,
+            difficulty=difficulty,
+            seed=resolved_seed,
+            n_samples=n_samples,
+            gold_label_override=first_label,
+            sample_variant_tag=f"paired_flip::{first_label}",
+        )
+        flipped = self.generate_benchmark_sample(
+            family_name=family_name,
+            difficulty=difficulty,
+            seed=resolved_seed,
+            n_samples=n_samples,
+            gold_label_override=second_label,
+            sample_variant_tag=f"paired_flip::{second_label}",
+        )
+
+        pair_id = f"{family_name}::seed_{resolved_seed}::query_{anchor.claim.query_type}"
+        pair_meta = (
+            (anchor, flipped, "anchor"),
+            (flipped, anchor, "flip"),
+        )
+        for current, partner, role in pair_meta:
+            current.claim.meta["paired_flip_id"] = pair_id
+            current.claim.meta["paired_flip_role"] = role
+            current.claim.meta["paired_flip_partner_id"] = partner.claim.instance_id
+            current.claim.meta.setdefault("ood_axes", [])
+            if "paired_flip" not in current.claim.meta["ood_axes"]:
+                current.claim.meta["ood_axes"] = [
+                    *current.claim.meta["ood_axes"],
+                    "paired_flip",
+                ]
+            current.gold.metadata["paired_flip_id"] = pair_id
+            current.gold.metadata["paired_flip_role"] = role
+            current.gold.metadata["paired_flip_partner_id"] = partner.claim.instance_id
+        return anchor, flipped
 
     def export_public_instance(
         self,
@@ -702,6 +831,20 @@ class BenchmarkGenerator:
         )
         benchmark_family = str(gold.metadata.get("benchmark_family", blueprint.family_name))
         benchmark_subfamily = gold.metadata.get("benchmark_subfamily")
+        ood_axes = [
+            "mechanism_ood_tag",
+            "context_shift_group",
+            *(
+                ["attack_family"]
+                if attack_sample.get("attack_family") is not None
+                else []
+            ),
+            *(
+                ["paired_flip"]
+                if gold.metadata.get("paired_flip_id")
+                else []
+            ),
+        ]
 
         return ClaimInstance(
             instance_id=f"{gold.scenario_id}_benchmark_seed_{seed}",
@@ -745,6 +888,7 @@ class BenchmarkGenerator:
                 "generator_mode": "benchmark_generator_v1",
                 "claim_mode": attack_sample["claim_mode"],
                 "attack_name": attack_sample.get("attack_name"),
+                "attack_family": attack_sample.get("attack_family"),
                 "style_id": attack_sample.get("style_id"),
                 "persuasion_style_id": attack_sample.get("persuasion_style_id"),
                 "pressure_type": attack_sample.get("pressure_type"),
@@ -752,6 +896,16 @@ class BenchmarkGenerator:
                 "conceals_missing_information": bool(
                     attack_sample.get("conceals_missing_information", False)
                 ),
+                "mechanism_ood_tag": gold.metadata.get(
+                    "mechanism_ood_tag",
+                    blueprint.generator_hints.get("mechanism_ood_tag"),
+                ),
+                "context_shift_group": gold.metadata.get("context_shift_group"),
+                "context_shift_id": gold.metadata.get("context_shift_id"),
+                "ood_axes": ood_axes,
+                "paired_flip_id": gold.metadata.get("paired_flip_id"),
+                "paired_flip_role": gold.metadata.get("paired_flip_role"),
+                "paired_flip_partner_id": gold.metadata.get("paired_flip_partner_id"),
                 "selected_query_type": query_type,
                 "query_types": list(blueprint.query_types),
                 "family_tags": list(blueprint.family_tags),
@@ -791,6 +945,7 @@ class BenchmarkGenerator:
                 ),
                 "claim_mode": "attack",
                 "attack_name": attack.attack_name,
+                "attack_family": _attack_family_for_name(attack.attack_name),
                 "style_id": attack.style_id,
                 "persuasion_style_id": attack.persuasion_style_id,
                 "pressure_type": attack.metadata.get("pressure_type"),
@@ -835,6 +990,7 @@ class BenchmarkGenerator:
             "language_template_id": f"truthful::{style_id}::{query_type}",
             "claim_mode": "truthful",
             "attack_name": None,
+            "attack_family": None,
             "style_id": style_id,
             "persuasion_style_id": None,
             "pressure_type": None,
@@ -873,6 +1029,8 @@ class BenchmarkGenerator:
         difficulty: float,
         seed: int,
         n_samples: int | None,
+        gold_label_override: VerdictLabel | str | None = None,
+        sample_variant_tag: str | None = None,
     ) -> GoldCausalInstance:
         legacy_generator = DataGenerator(config=self.config, seed=seed)
         info = SHOWCASE_FAMILY_REGISTRY[showcase_scenario_id]
@@ -883,17 +1041,27 @@ class BenchmarkGenerator:
             n_samples=n_samples,
         )
         parent_blueprint = generate_graph_family(str(info["benchmark_family"]), seed=seed)
-        if scenario.gold_label is None:
+        resolved_label_override = _coerce_label_override(gold_label_override)
+        if resolved_label_override is not None:
+            scenario.gold_label = resolved_label_override
+        elif scenario.gold_label is None:
             label_value = scenario.ground_truth.get("label") or self._select_gold_label(parent_blueprint, seed)
             scenario.gold_label = VerdictLabel(str(label_value).strip().lower())
         scenario.ground_truth["label"] = scenario.gold_label.value
         scenario.ground_truth.setdefault("identifiability", parent_blueprint.identifiability.value)
         scenario.ground_truth.setdefault("query_types", list(parent_blueprint.query_types))
+        context_payload = _context_shift_payload(blueprint=parent_blueprint, seed=seed)
+        if sample_variant_tag:
+            scenario.scenario_id = f"{scenario.scenario_id}::{sample_variant_tag}"
         scenario.metadata.setdefault("proxy_variables", list(parent_blueprint.proxy_variables))
         scenario.metadata.setdefault("selection_variables", list(parent_blueprint.selection_variables))
         scenario.metadata.setdefault(
             "selection_mechanism",
             parent_blueprint.generator_hints.get("selection_mechanism", "none"),
+        )
+        scenario.metadata.setdefault(
+            "mechanism_ood_tag",
+            parent_blueprint.generator_hints.get("mechanism_ood_tag"),
         )
         scenario.metadata.setdefault("family_tags", list(parent_blueprint.family_tags))
         scenario.metadata.setdefault("generator_hints", dict(parent_blueprint.generator_hints))
@@ -906,8 +1074,15 @@ class BenchmarkGenerator:
                 treatment=parent_blueprint.target_variables["treatment"],
                 outcome=parent_blueprint.target_variables["outcome"],
                 causal_level=parent_blueprint.causal_level,
+                context_shift_group=context_payload["context_shift_group"],
             ),
         )
+        scenario.metadata.setdefault(
+            "public_scenario_id",
+            _public_scenario_id(f"showcase:{showcase_scenario_id}:{sample_variant_tag or seed}"),
+        )
+        for key, value in context_payload.items():
+            scenario.metadata.setdefault(key, value)
         for key, value in self._public_metadata_payload(parent_blueprint).items():
             scenario.metadata.setdefault(key, value)
         if parent_blueprint.role_bindings.get("instrument"):
@@ -930,8 +1105,21 @@ class BenchmarkGenerator:
         n_samples: int,
         seed: int,
         renaming_meta: dict[str, Any] | None = None,
+        gold_label_override: VerdictLabel | str | None = None,
+        sample_variant_tag: str | None = None,
     ) -> GoldCausalInstance:
-        gold_label = VerdictLabel(str(self._select_gold_label(blueprint, seed)).strip().lower())
+        resolved_label_override = _coerce_label_override(gold_label_override)
+        if (
+            resolved_label_override is not None
+            and str(resolved_label_override.value) not in set(blueprint.supported_gold_labels)
+        ):
+            raise ValueError(
+                f"gold_label_override={resolved_label_override.value!r} is not supported by "
+                f"{blueprint.family_name!r}."
+            )
+        gold_label = resolved_label_override or VerdictLabel(
+            str(self._select_gold_label(blueprint, seed)).strip().lower()
+        )
         query_type = self._select_query_type(blueprint, seed)
         sample_seed = seed
         for attempt in range(64):
@@ -960,9 +1148,11 @@ class BenchmarkGenerator:
         difficulty_profile = self._difficulty_profile(difficulty)
         renaming_meta = dict(renaming_meta or {})
         public_metadata = self._public_metadata_payload(blueprint)
+        context_payload = _context_shift_payload(blueprint=blueprint, seed=seed)
+        scenario_suffix = f"::{sample_variant_tag}" if sample_variant_tag else ""
 
         return GoldCausalInstance(
-            scenario_id=f"{blueprint.family_name}_seed_{seed}",
+            scenario_id=f"{blueprint.family_name}_seed_{seed}{scenario_suffix}",
             description=(
                 f"{blueprint.description} Programmatic sample generated from "
                 f"{blueprint.family_name} with seed {seed}."
@@ -1013,16 +1203,21 @@ class BenchmarkGenerator:
                 ),
                 "selection_variables": list(blueprint.selection_variables),
                 "selection_mechanism": blueprint.generator_hints.get("selection_mechanism", "none"),
+                "mechanism_ood_tag": blueprint.generator_hints.get("mechanism_ood_tag"),
                 "role_bindings": dict(blueprint.role_bindings),
                 "family_tags": list(blueprint.family_tags),
                 "generator_hints": dict(blueprint.generator_hints),
-                "public_scenario_id": _public_scenario_id(f"{blueprint.family_name}:{seed}"),
+                "public_scenario_id": _public_scenario_id(
+                    f"{blueprint.family_name}:{seed}:{sample_variant_tag or 'default'}"
+                ),
                 "public_description": _public_description(
                     observed_variables=list(blueprint.observed_variables),
                     treatment=treatment,
                     outcome=outcome,
                     causal_level=blueprint.causal_level,
+                    context_shift_group=context_payload["context_shift_group"],
                 ),
+                **context_payload,
                 **public_metadata,
                 **renaming_meta,
             },

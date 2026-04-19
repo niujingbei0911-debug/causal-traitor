@@ -335,6 +335,26 @@ class GraphFamilyTemplateTests(unittest.TestCase):
         self.assertEqual(different.seed, 24)
         self.assertNotEqual(first.to_dict(), different.to_dict())
 
+    def test_graph_family_blueprints_expose_harder_ood_tags(self) -> None:
+        expected_mechanisms = {
+            "l1_latent_confounding_family": "confounding",
+            "l1_selection_bias_family": "selection_bias",
+            "l1_proxy_disambiguation_family": "proxy_disambiguation",
+            "l2_valid_backdoor_family": "backdoor_adjustment",
+            "l2_valid_iv_family": "instrumental_variable",
+            "l2_invalid_iv_family": "instrumental_variable",
+            "l3_counterfactual_ambiguity_family": "counterfactual_ambiguity",
+            "l3_mediation_abduction_family": "mediation",
+        }
+
+        for family_name, mechanism in expected_mechanisms.items():
+            with self.subTest(family_name=family_name):
+                blueprint = generate_graph_family(family_name, seed=19)
+
+                self.assertEqual(blueprint.generator_hints["mechanism_ood_tag"], mechanism)
+                self.assertTrue(blueprint.generator_hints["context_shift_domains"])
+                self.assertTrue(blueprint.generator_hints["paired_flip_candidates"])
+
 
 class AttackTemplateTests(unittest.TestCase):
     def test_attack_registry_exposes_at_least_five_templates(self) -> None:
@@ -845,6 +865,40 @@ class ShowcaseMigrationTests(unittest.TestCase):
         )
         self.assertIs(invalid_sample.claim.gold_label, VerdictLabel.INVALID)
 
+    def test_benchmark_generator_tracks_harder_ood_axes_in_claim_metadata(self) -> None:
+        claim = BenchmarkGenerator(seed=29).generate_claim_instance(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+        )
+
+        self.assertEqual(claim.meta["mechanism_ood_tag"], "instrumental_variable")
+        self.assertEqual(claim.meta["attack_family"], "identification_shortcut")
+        self.assertTrue(claim.meta["context_shift_id"])
+        self.assertIn(claim.meta["context_shift_group"], {"policy", "clinical", "education", "market"})
+        self.assertIn("attack_family", claim.meta["ood_axes"])
+        self.assertIn("mechanism_ood_tag", claim.meta["ood_axes"])
+        self.assertIn("context_shift_group", claim.meta["ood_axes"])
+
+    def test_benchmark_generator_can_generate_paired_flip_samples(self) -> None:
+        anchor, flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+        )
+
+        self.assertIsInstance(anchor, BenchmarkSample)
+        self.assertIsInstance(flipped, BenchmarkSample)
+        self.assertEqual(anchor.claim.graph_family, flipped.claim.graph_family)
+        self.assertEqual(anchor.claim.query_type, flipped.claim.query_type)
+        self.assertEqual(anchor.claim.target_variables, flipped.claim.target_variables)
+        self.assertNotEqual(anchor.claim.gold_label, flipped.claim.gold_label)
+        self.assertEqual(anchor.claim.meta["paired_flip_id"], flipped.claim.meta["paired_flip_id"])
+        self.assertEqual(anchor.claim.meta["paired_flip_role"], "anchor")
+        self.assertEqual(flipped.claim.meta["paired_flip_role"], "flip")
+        self.assertEqual(anchor.claim.meta["paired_flip_partner_id"], flipped.claim.instance_id)
+        self.assertEqual(flipped.claim.meta["paired_flip_partner_id"], anchor.claim.instance_id)
+
     def test_benchmark_generator_rotates_query_types_within_family(self) -> None:
         generator = BenchmarkGenerator(seed=53)
         families = (
@@ -1123,6 +1177,155 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertEqual(
             manifest.metadata["ood_reasons"]["inst_ood_family"],
             ["family_holdout"],
+        )
+
+    def test_split_builder_supports_harder_ood_reasons_and_manifest_metadata(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_train_1",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["X", "Z", "Y"],
+                meta={
+                    "mechanism_ood_tag": "confounding",
+                    "attack_family": "observational_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_1",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_2",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha_2",
+                observed_variables=["A", "B", "C"],
+                meta={
+                    "mechanism_ood_tag": "confounding",
+                    "attack_family": "observational_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_2",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_3",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["T", "M", "Y"],
+                meta={
+                    "mechanism_ood_tag": "backdoor_adjustment",
+                    "attack_family": "identification_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_3",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_mechanism_ood",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_gamma",
+                observed_variables=["I", "J", "K"],
+                meta={
+                    "mechanism_ood_tag": "instrumental_variable",
+                    "attack_family": "identification_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_4",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_attack_family_ood",
+                graph_family="l3_counterfactual_ambiguity_family",
+                language_template_id="tmpl_delta",
+                observed_variables=["Q", "R", "S"],
+                meta={
+                    "mechanism_ood_tag": "counterfactual_ambiguity",
+                    "attack_family": "counterfactual_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_5",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_context_shift_ood",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_epsilon",
+                observed_variables=["L", "N", "P"],
+                meta={
+                    "mechanism_ood_tag": "backdoor_adjustment",
+                    "attack_family": "identification_shortcut",
+                    "context_shift_group": "policy",
+                    "context_shift_id": "policy::seed_6",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_paired_flip_a",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_flip_a",
+                observed_variables=["U", "V", "W"],
+                meta={
+                    "mechanism_ood_tag": "instrumental_variable",
+                    "attack_family": "identification_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_7",
+                    "paired_flip_id": "pair::7",
+                    "paired_flip_role": "anchor",
+                    "paired_flip_partner_id": "inst_paired_flip_b",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "inst_paired_flip_b",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_flip_b",
+                observed_variables=["U", "V", "W"],
+                meta={
+                    "mechanism_ood_tag": "instrumental_variable",
+                    "attack_family": "identification_shortcut",
+                    "context_shift_group": "education",
+                    "context_shift_id": "education::seed_7",
+                    "paired_flip_id": "pair::7",
+                    "paired_flip_role": "flip",
+                    "paired_flip_partner_id": "inst_paired_flip_a",
+                },
+            ),
+        ]
+
+        manifest = build_split_manifest(
+            instances,
+            family_holdout=[],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            mechanism_holdout=["instrumental_variable"],
+            attack_family_holdout=["counterfactual_shortcut"],
+            context_shift_holdout=["policy"],
+            paired_flip_holdout=True,
+            seed=17,
+        )
+
+        self.assertIn("inst_mechanism_ood", manifest.test_ood)
+        self.assertIn("inst_attack_family_ood", manifest.test_ood)
+        self.assertIn("inst_context_shift_ood", manifest.test_ood)
+        self.assertIn("inst_paired_flip_a", manifest.test_ood)
+        self.assertIn("inst_paired_flip_b", manifest.test_ood)
+        self.assertEqual(
+            manifest.metadata["ood_reasons"]["inst_mechanism_ood"],
+            ["mechanism_holdout"],
+        )
+        self.assertEqual(
+            manifest.metadata["ood_reasons"]["inst_attack_family_ood"],
+            ["attack_family_holdout"],
+        )
+        self.assertEqual(
+            manifest.metadata["ood_reasons"]["inst_context_shift_ood"],
+            ["context_shift_holdout"],
+        )
+        self.assertEqual(
+            manifest.metadata["ood_reasons"]["inst_paired_flip_a"],
+            ["mechanism_holdout", "paired_flip_holdout"],
+        )
+        self.assertEqual(
+            manifest.metadata["extended_holdout_strategy"],
+            {
+                "mechanism_holdout": ["instrumental_variable"],
+                "attack_family_holdout": ["counterfactual_shortcut"],
+                "context_shift_holdout": ["policy"],
+                "paired_flip_holdout": True,
+            },
         )
 
     def test_split_builder_default_holdouts_use_stable_policy_instead_of_last_sorted_values(self) -> None:

@@ -6,6 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from benchmark.real_grounded import (
+    RealGroundedCase,
+    RealGroundedDataset,
+    ensure_real_grounded_dataset,
+)
 from benchmark.schema import BenchmarkSplitManifest, ClaimInstance
 
 
@@ -76,3 +81,57 @@ def load_split_instances(
             resolved.append(instance)
         splits[split_name] = resolved
     return splits
+
+
+def _normalize_real_grounded_source(
+    source: RealGroundedDataset | RealGroundedCase | dict[str, Any] | list[Any] | str | Path,
+) -> RealGroundedDataset:
+    if isinstance(source, RealGroundedCase):
+        return RealGroundedDataset(cases=[source])
+    if isinstance(source, RealGroundedDataset):
+        return ensure_real_grounded_dataset(source)
+    if isinstance(source, (dict, list)):
+        return ensure_real_grounded_dataset(source)
+
+    path = Path(source)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return ensure_real_grounded_dataset(payload)
+
+
+def load_real_grounded_dataset(
+    source: RealGroundedDataset | RealGroundedCase | dict[str, Any] | list[Any] | str | Path,
+) -> RealGroundedDataset:
+    """Load a real-grounded dataset from memory or a JSON file."""
+
+    return _normalize_real_grounded_source(source)
+
+
+def load_real_grounded_cases(
+    source: RealGroundedDataset | RealGroundedCase | dict[str, Any] | list[Any] | str | Path,
+) -> list[RealGroundedCase]:
+    """Resolve a real-grounded dataset source into case objects."""
+
+    return list(_normalize_real_grounded_source(source).cases)
+
+
+def load_real_grounded_claims(
+    source: RealGroundedDataset | RealGroundedCase | dict[str, Any] | list[Any] | str | Path,
+) -> list[ClaimInstance]:
+    """Extract ClaimInstance objects from a real-grounded dataset source."""
+
+    return _normalize_real_grounded_source(source).claim_instances()
+
+
+def save_real_grounded_dataset(
+    dataset: RealGroundedDataset | dict[str, Any] | list[Any],
+    destination: str | Path,
+) -> Path:
+    """Serialize a real-grounded dataset into the canonical JSON export format."""
+
+    normalized = ensure_real_grounded_dataset(dataset)
+    path = Path(destination)
+    path.write_text(
+        json.dumps(normalized.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
