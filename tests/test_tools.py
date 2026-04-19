@@ -16,6 +16,7 @@ from causal_tools.l2_intervention import (
     iv_estimation,
     overlap_check,
     propensity_score_matching,
+    sensitivity_analysis,
     validate_backdoor_criterion,
 )
 from causal_tools.l3_counterfactual import (
@@ -159,6 +160,27 @@ class ToolTests(unittest.TestCase):
 
         proxy_report = proxy_support_check(self.df.rename(columns={"M": "proxy_signal"}), "X", "Y", "proxy_signal")
         self.assertIn("supports_proxy_sufficiency", proxy_report)
+
+    def test_sensitivity_analysis_pooled_std_uses_both_group_variances(self):
+        df = pd.DataFrame(
+            {
+                "T": [1, 1, 1, 0, 0, 0],
+                "Y": [10.0, 12.0, 14.0, 1.0, 2.0, 5.0],
+            }
+        )
+
+        result = sensitivity_analysis(df, "T", "Y")
+
+        treated = df.loc[df["T"] == 1, "Y"]
+        control = df.loc[df["T"] == 0, "Y"]
+        effect = float(treated.mean() - control.mean())
+        pooled_std = float(
+            np.sqrt((treated.var(ddof=1) + control.var(ddof=1)) / 2.0)
+        )
+        expected_standardized_effect = abs(effect) / pooled_std
+
+        self.assertAlmostEqual(result["standardized_effect"], expected_standardized_effect, places=6)
+        self.assertAlmostEqual(result["robust_up_to_gamma"], min(3.0, 1.0 + expected_standardized_effect), places=6)
 
     def test_counterfactual_suite(self):
         model = FakeSCM(effect=1.5)

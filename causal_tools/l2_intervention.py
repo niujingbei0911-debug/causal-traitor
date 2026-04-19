@@ -368,8 +368,10 @@ def sensitivity_analysis(
     effect = float(treated.mean() - control.mean())
     pooled_std = float(
         np.sqrt(
-            (treated.var(ddof=1) if len(treated) > 1 else 0.0
-             + control.var(ddof=1) if len(control) > 1 else 0.0) / 2
+            (
+                (treated.var(ddof=1) if len(treated) > 1 else 0.0)
+                + (control.var(ddof=1) if len(control) > 1 else 0.0)
+            ) / 2
         )
     )
     standardized_effect = 0.0 if pooled_std == 0 else abs(effect) / pooled_std
