@@ -340,19 +340,20 @@ class ToolExecutor:
         *,
         parsed_claim: Any | None = None,
     ) -> ToolExecutionResult | None:
-        metadata = dict(getattr(scenario, "metadata", {}) or {})
-        measurement_semantics = metadata.get("measurement_semantics")
-        if not isinstance(measurement_semantics, dict) or not measurement_semantics:
+        measurement_semantics = self._measurement_semantics(scenario)
+        if not measurement_semantics:
             return None
 
         supports: list[str] = []
         contradicts: list[str] = []
         matched_variables: list[str] = []
         required_assumptions: set[str] = set()
+        rhetorical_strategy = ""
         if parsed_claim is not None:
             required_assumptions = set(getattr(parsed_claim, "mentioned_assumptions", [])) | set(
                 getattr(parsed_claim, "implied_assumptions", [])
             )
+            rhetorical_strategy = str(getattr(parsed_claim, "rhetorical_strategy", "")).strip()
 
         for raw_variable, raw_semantics in measurement_semantics.items():
             variable = str(raw_variable).strip()
@@ -370,6 +371,28 @@ class ToolExecutor:
                 for item in semantics.get("contradicts_assumptions", [])
                 if str(item).strip()
             )
+
+        claimed_adjuster = self._extract_named_variable(
+            claim,
+            list(measurement_semantics),
+            patterns=(
+                r"\bafter controlling for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\bcontrolling for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\badjusting for (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",
+                r"\bonce (?P<name>[A-Za-z][A-Za-z0-9_]*) is included\b",
+                r"\b(?P<name>[A-Za-z][A-Za-z0-9_]*) is the only adjustment needed\b",
+                r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*) as the adjustment set\b",
+            ),
+        )
+        if claimed_adjuster is not None:
+            matched_variables.append(claimed_adjuster)
+            claimed_view = self._measurement_view(scenario, claimed_adjuster)
+            if (
+                rhetorical_strategy == "adjustment_sufficiency_assertion"
+                and claimed_view is not None
+                and claimed_view != "adjustment_covariate"
+            ):
+                contradicts.append("valid adjustment set")
 
         if not matched_variables and required_assumptions:
             for assumption in required_assumptions:
@@ -401,6 +424,38 @@ class ToolExecutor:
                 "contradicts_assumptions": contradicts,
             },
         )
+
+    def _measurement_semantics(
+        self,
+        scenario: PublicCausalInstance | None,
+    ) -> dict[str, dict[str, Any]]:
+        if scenario is None:
+            return {}
+        metadata = dict(getattr(scenario, "metadata", {}) or {})
+        raw_semantics = metadata.get("measurement_semantics")
+        if not isinstance(raw_semantics, dict):
+            return {}
+        semantics: dict[str, dict[str, Any]] = {}
+        for raw_variable, raw_value in raw_semantics.items():
+            variable = str(raw_variable).strip()
+            if not variable or not isinstance(raw_value, dict):
+                continue
+            semantics[variable] = dict(raw_value)
+        return semantics
+
+    def _measurement_view(
+        self,
+        scenario: PublicCausalInstance | None,
+        variable: str | None,
+    ) -> str | None:
+        if scenario is None or variable is None:
+            return None
+        semantics = self._measurement_semantics(scenario).get(str(variable).strip(), {})
+        measurement_view = semantics.get("measurement_view")
+        if measurement_view is None:
+            return None
+        normalized = str(measurement_view).strip()
+        return normalized or None
 
     def _build_tool_kwargs(
         self,
@@ -1195,6 +1250,8 @@ class ToolExecutor:
         claim: str,
         variables: list[str],
         parsed_claim,
+        *,
+        scenario: PublicCausalInstance | None = None,
     ) -> dict[str, Any]:
         hints: dict[str, Any] = {}
         if parsed_claim is not None:
@@ -1275,9 +1332,22 @@ class ToolExecutor:
 
         query_type = getattr(parsed_claim, "query_type", None)
         if bridge is not None and bridge not in {treatment, outcome}:
+            bridge_view = self._measurement_view(scenario, bridge)
             if explicit_instrument is None and query_type is not None and str(query_type.value) == "counterfactual":
                 hints.setdefault("mediator", bridge)
-            elif explicit_instrument is None and proxy is None and selection is None:
+            elif bridge_view == "proxy_measurement":
+                hints.setdefault("proxy", bridge)
+                hints.setdefault("proxy_variables", [bridge])
+            elif bridge_view == "sample_inclusion_indicator":
+                hints.setdefault("selection", bridge)
+                hints.setdefault("selection_variables", [bridge])
+            elif bridge_view == "intermediate_measurement":
+                hints.setdefault("mediator", bridge)
+            elif bridge_view == "assignment_signal":
+                hints.setdefault("instrument", bridge)
+            elif bridge_view == "adjustment_covariate" and explicit_instrument is None and proxy is None and selection is None:
+                hints.setdefault("adjustment_set", [bridge])
+            elif bridge_view is None and explicit_instrument is None and proxy is None and selection is None:
                 hints.setdefault("adjustment_set", [bridge])
 
         if explicit_instrument is not None:
@@ -1437,7 +1507,12 @@ class ToolExecutor:
         if parsed_claim is not None:
             merged["_parsed_claim"] = parsed_claim
         if variables:
-            for key, value in self._infer_claim_hints(claim, variables, parsed_claim).items():
+            for key, value in self._infer_claim_hints(
+                claim,
+                variables,
+                parsed_claim,
+                scenario=scenario,
+            ).items():
                 merged.setdefault(key, value)
         if parsed_claim is not None:
             if getattr(parsed_claim, "treatment", ""):

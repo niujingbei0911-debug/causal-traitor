@@ -749,9 +749,11 @@ class ShowcaseMigrationTests(unittest.TestCase):
         )
 
         self.assertTrue(sample.claim.meta.get("variable_renaming"))
-        self.assertTrue(sample.claim.meta.get("rename_map"))
+        self.assertNotIn("rename_map", sample.claim.meta)
+        self.assertNotIn("original_variables", sample.claim.meta)
+        self.assertTrue(sample.gold.metadata.get("rename_map"))
         self.assertNotEqual(
-            sample.claim.meta["original_variables"],
+            sample.gold.metadata["original_variables"],
             list(sample.claim.observed_variables),
         )
 
@@ -834,12 +836,27 @@ class ShowcaseMigrationTests(unittest.TestCase):
 
         self.assertTrue(renamed)
         for claim in renamed:
-            self.assertTrue(claim.meta["rename_map"])
-            self.assertTrue(claim.meta["original_variables"])
-            self.assertNotEqual(
-                claim.meta["original_variables"],
-                list(claim.observed_variables),
-            )
+            self.assertNotIn("rename_map", claim.meta)
+            self.assertNotIn("original_variables", claim.meta)
+            self.assertTrue(claim.meta["renamed_variables"])
+
+    def test_variable_renaming_metadata_does_not_leak_original_names_to_claim_payload(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l1_proxy_disambiguation_family",
+            difficulty=0.35,
+            seed=3,
+        )
+
+        if not sample.claim.meta.get("variable_renaming"):
+            self.skipTest("seed=3 did not generate a renamed sample")
+
+        original_variables = list(sample.gold.metadata.get("original_variables", []))
+        claim_payload = sample.claim.to_dict()
+        public_payload = sample.public.to_dict()
+        serialized = json.dumps({"claim": claim_payload, "public": public_payload}, ensure_ascii=False)
+
+        for original in original_variables:
+            self.assertNotIn(original, serialized)
 
     def test_showcase_families_can_generate_claim_instances_through_benchmark_chain(self) -> None:
         generator = BenchmarkGenerator(seed=37)

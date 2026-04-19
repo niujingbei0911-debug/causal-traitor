@@ -697,6 +697,24 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for record in seed_bucket_results["mixed_ood"]["predictions"]:
                 self.assertGreater(len(record["ood_reasons"]), 1)
 
+    def test_phase4_ood_runner_marks_empty_pure_buckets_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_ood_generalization(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_ood_generalization_empty_bucket.json"),
+            )
+
+            self.assertEqual(payload["bucket_sample_counts"]["graph_family_ood"]["total"], 0)
+            self.assertEqual(payload["per_seed_bucket_results"][0]["graph_family_ood"]["predictions"], [])
+            self.assertIsNone(payload["per_seed_bucket_results"][0]["graph_family_ood"]["metrics"])
+            self.assertIsNone(payload["aggregated_metrics"]["graph_family_ood"])
+            self.assertFalse(payload["ood_gap"]["graph_family_ood"]["available"])
+            self.assertIsNone(payload["ood_gap"]["graph_family_ood"]["verdict_accuracy_gap"])
+            self.assertIsNone(payload["significance"]["graph_family_ood"])
+            self.assertIn("graph_family_ood: N/A", payload["markdown_summary"])
+
     def test_cross_model_transfer_requires_explicit_surrogate_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with self.assertRaises(ValueError):

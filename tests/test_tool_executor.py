@@ -217,6 +217,29 @@ class ToolExecutorTests(unittest.TestCase):
         }
         self.assertIn("valid adjustment set", contradicts)
 
+    def test_invalid_adjustment_claim_with_context_covariate_is_contradicted_by_public_semantics(self):
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.55,
+            seed=39,
+        )
+
+        report = self.executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=2,
+            context={"claim_stance": "pro_causal"},
+        )
+
+        public_semantics_entries = [
+            entry for entry in report["tool_trace"] if entry["tool_name"] == "public_semantics_check"
+        ]
+        self.assertTrue(public_semantics_entries)
+        self.assertIn(
+            "valid adjustment set",
+            public_semantics_entries[0]["contradicts_assumptions"],
+        )
+
     def test_backdoor_adjustment_check_without_public_graph_only_promotes_conservative_claim_support(self):
         parsed_claim = parse_claim(
             "After controlling for pretest_score, the causal effect of exposure on recovery is identified."

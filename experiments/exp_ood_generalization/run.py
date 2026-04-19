@@ -32,6 +32,43 @@ OOD_BUCKETS: tuple[tuple[str, str | None], ...] = (
 )
 
 
+def _empty_bucket_result(*, reason: str) -> dict[str, Any]:
+    return {
+        "predictions": [],
+        "metrics": None,
+        "appendix_metrics": {},
+        "summary": {},
+        "available": False,
+        "unavailable_reason": reason,
+    }
+
+
+def _bucket_has_predictions(bucket_payload: dict[str, Any]) -> bool:
+    return bool(bucket_payload.get("predictions"))
+
+
+def _aggregate_bucket_metrics(
+    per_seed_bucket_results: dict[int, dict[str, Any]],
+    *,
+    seeds: list[int],
+    bucket_name: str,
+) -> dict[str, Any] | None:
+    available_seed_payloads = {
+        seed: per_seed_bucket_results[seed]
+        for seed in seeds
+        if _bucket_has_predictions(per_seed_bucket_results[seed][bucket_name])
+    }
+    if not available_seed_payloads:
+        return None
+    return aggregate_seed_metrics(available_seed_payloads, split_name=bucket_name)
+
+
+def _format_metric_cell(metrics: dict[str, Any] | None, metric_name: str) -> str:
+    if metrics is None:
+        return "N/A"
+    return str(metrics[metric_name]["formatted"])
+
+
 def _bucket_sample_count_summary(per_seed_bucket_counts: dict[int, dict[str, int]], bucket_name: str) -> dict[str, Any]:
     per_seed = {
         int(seed): int(bucket_counts.get(bucket_name, 0))
@@ -70,16 +107,23 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
     for bucket_name, metrics in payload["aggregated_metrics"].items():
         counts = payload["bucket_sample_counts"][bucket_name]
         lines.append(
-            f"| {bucket_name} | {list(counts['per_seed'].values())} | {metrics['verdict_accuracy']['formatted']} | "
-            f"{metrics['macro_f1']['formatted']} | {metrics['invalid_claim_acceptance_rate']['formatted']} | "
-            f"{metrics['unidentifiable_awareness']['formatted']} |"
+            f"| {bucket_name} | {list(counts['per_seed'].values())} | "
+            f"{_format_metric_cell(metrics, 'verdict_accuracy')} | "
+            f"{_format_metric_cell(metrics, 'macro_f1')} | "
+            f"{_format_metric_cell(metrics, 'invalid_claim_acceptance_rate')} | "
+            f"{_format_metric_cell(metrics, 'unidentifiable_awareness')} |"
         )
     lines.extend(["", "## OOD Gap", ""])
     for bucket_name, gap in payload["ood_gap"].items():
-        lines.append(
-            f"- {bucket_name}: accuracy gap={gap['verdict_accuracy_gap']:.4f}, "
-            f"macro_f1 gap={gap['macro_f1_gap']:.4f}"
-        )
+        if not gap["available"]:
+            lines.append(
+                f"- {bucket_name}: N/A ({gap['reason']})"
+            )
+        else:
+            lines.append(
+                f"- {bucket_name}: accuracy gap={gap['verdict_accuracy_gap']:.4f}, "
+                f"macro_f1 gap={gap['macro_f1_gap']:.4f}"
+            )
     if payload["bucket_warnings"]:
         lines.extend(["", "## Bucket Warnings", ""])
         for warning in payload["bucket_warnings"]:
@@ -166,58 +210,90 @@ def run_experiment(
                     if record.get("ood_reasons", []) == [reason_name]
                 ]
             bucket_counts[bucket_name] = len(bucket_predictions)
-            bucket_payload[bucket_name] = score_prediction_records(
-                bucket_predictions,
-                game_id=f"{SYSTEM_NAME}_{bucket_name}_seed_{seed}",
-            )
+            if bucket_predictions:
+                bucket_payload[bucket_name] = score_prediction_records(
+                    bucket_predictions,
+                    game_id=f"{SYSTEM_NAME}_{bucket_name}_seed_{seed}",
+                )
+            else:
+                bucket_payload[bucket_name] = _empty_bucket_result(
+                    reason=(
+                        "No samples matched this pure OOD bucket under the current split configuration."
+                    )
+                )
         per_seed_bucket_results[seed] = bucket_payload
         per_seed_bucket_counts[seed] = bucket_counts
 
     aggregated_metrics = {
-        split_name: aggregate_seed_metrics(
+        "test_iid": aggregate_seed_metrics(
             {
                 seed: per_seed_bucket_results[seed]
                 for seed in resolved_seeds
             },
-            split_name=split_name,
+            split_name="test_iid",
         )
-        for split_name in ("test_iid", "graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
     }
+    for split_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood"):
+        aggregated_metrics[split_name] = _aggregate_bucket_metrics(
+            per_seed_bucket_results,
+            seeds=resolved_seeds,
+            bucket_name=split_name,
+        )
     bucket_sample_counts = {
         bucket_name: _bucket_sample_count_summary(per_seed_bucket_counts, bucket_name)
         for bucket_name in ("test_iid", "graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
     }
-    ood_gap = {
-        bucket_name: {
+    ood_gap: dict[str, dict[str, Any]] = {}
+    for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood"):
+        bucket_metrics = aggregated_metrics[bucket_name]
+        if bucket_metrics is None:
+            ood_gap[bucket_name] = {
+                "verdict_accuracy_gap": None,
+                "macro_f1_gap": None,
+                "available": False,
+                "reason": "No pure-bucket samples were available for this OOD category.",
+            }
+            continue
+        ood_gap[bucket_name] = {
             "verdict_accuracy_gap": (
                 aggregated_metrics["test_iid"]["verdict_accuracy"]["mean"]
-                - aggregated_metrics[bucket_name]["verdict_accuracy"]["mean"]
+                - bucket_metrics["verdict_accuracy"]["mean"]
             ),
             "macro_f1_gap": (
                 aggregated_metrics["test_iid"]["macro_f1"]["mean"]
-                - aggregated_metrics[bucket_name]["macro_f1"]["mean"]
+                - bucket_metrics["macro_f1"]["mean"]
             ),
+            "available": True,
+            "reason": None,
         }
-        for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
-    }
+
+    significance_inputs: dict[str, dict[str, list[float]]] = {}
+    for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood"):
+        comparable_seeds = [
+            seed
+            for seed in sorted(resolved_seeds)
+            if _bucket_has_predictions(per_seed_bucket_results[seed][bucket_name])
+        ]
+        if not comparable_seeds:
+            continue
+        significance_inputs[bucket_name] = {
+            "test_iid": [
+                float(per_seed_bucket_results[seed]["test_iid"]["metrics"]["verdict_accuracy"])
+                for seed in comparable_seeds
+            ],
+            bucket_name: [
+                float(per_seed_bucket_results[seed][bucket_name]["metrics"]["verdict_accuracy"])
+                for seed in comparable_seeds
+            ],
+        }
     significance, global_multiple_comparison_correction = build_seed_metric_significance(
-        {
-            bucket_name: {
-                "test_iid": [
-                    float(per_seed_bucket_results[seed]["test_iid"]["metrics"]["verdict_accuracy"])
-                    for seed in sorted(resolved_seeds)
-                ],
-                bucket_name: [
-                    float(per_seed_bucket_results[seed][bucket_name]["metrics"]["verdict_accuracy"])
-                    for seed in sorted(resolved_seeds)
-                ],
-            }
-            for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
-        },
+        significance_inputs,
         baseline="test_iid",
         metric_name="verdict_accuracy",
         estimand="seed_mean_verdict_accuracy",
-    )
+    ) if significance_inputs else ({}, {"family_size": 0, "alpha": 0.05, "correction": "holm-bonferroni", "entries": []})
+    for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood"):
+        significance.setdefault(bucket_name, None)
 
     payload = {
         "experiment_id": "exp_ood_generalization",

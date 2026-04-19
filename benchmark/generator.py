@@ -752,8 +752,6 @@ class BenchmarkGenerator:
                 **(
                     {
                         "variable_renaming": True,
-                        "rename_map": dict(gold.metadata.get("rename_map", {})),
-                        "original_variables": list(gold.metadata.get("original_variables", [])),
                         "renamed_variables": list(gold.metadata.get("renamed_variables", [])),
                     }
                     if gold.metadata.get("variable_renaming")

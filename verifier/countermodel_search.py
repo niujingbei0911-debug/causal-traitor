@@ -471,9 +471,32 @@ def _claimed_adjuster(
         patterns=(
             r"\b(?:controlling|conditioning)\s+for\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)",
             r"\badjust(?:ing|ment)?\s+(?:on|for)\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)",
+            r"\bonce\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+is\s+included\b",
+            r"\b(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+is\s+the\s+only\s+adjustment\s+needed\b",
+            r"\busing\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s+as\s+the\s+adjustment\s+set\b",
         ),
     )
     return extracted
+
+
+def _measurement_view(
+    scenario: PublicCausalInstance | None,
+    variable: str | None,
+) -> str | None:
+    if scenario is None or variable is None:
+        return None
+    metadata = dict(getattr(scenario, "metadata", {}) or {})
+    raw_semantics = metadata.get("measurement_semantics")
+    if not isinstance(raw_semantics, dict):
+        return None
+    semantics = raw_semantics.get(str(variable).strip(), {})
+    if not isinstance(semantics, dict):
+        return None
+    measurement_view = semantics.get("measurement_view")
+    if measurement_view is None:
+        return None
+    normalized = str(measurement_view).strip()
+    return normalized or None
 
 
 def _observational_evidence(
@@ -764,6 +787,7 @@ def _l2_candidates(
     parsed_claim: ParsedClaim,
     statuses: dict[str, AssumptionLedgerEntry],
     *,
+    scenario: PublicCausalInstance | None,
     observed_data: pd.DataFrame,
     role_bindings: dict[str, str],
     context: dict[str, Any] | None = None,
@@ -776,6 +800,7 @@ def _l2_candidates(
     exclusion_status = _status_of(statuses, "exclusion restriction")
     independence_status = _status_of(statuses, "instrument independence")
     claimed_adjuster = _claimed_adjuster(context_text, context)
+    claimed_adjuster_view = _measurement_view(scenario, claimed_adjuster)
     observed_assoc = _association_strength(observed_data, parsed_claim.treatment, parsed_claim.outcome)
     adjustment_instability = _stratified_effect_instability(
         observed_data,
@@ -849,6 +874,13 @@ def _l2_candidates(
             "should be interpreted as identified",
         )
     ) or bool(re.search(r"\bonce [A-Za-z][A-Za-z0-9_]* is included\b", context_text, re.IGNORECASE))
+    if (
+        parsed_claim.rhetorical_strategy == "adjustment_sufficiency_assertion"
+        and claimed_adjuster is not None
+        and claimed_adjuster_view is not None
+        and claimed_adjuster_view != "adjustment_covariate"
+    ):
+        has_explicit_adjustment_overclaim = True
     has_population_generalization_overclaim = any(
         phrase in context_text
         for phrase in (
@@ -922,6 +954,11 @@ def _l2_candidates(
                 f", and the within-stratum effect instability after adjusting for {claimed_adjuster or 'the claimed covariate'} is {adjustment_instability:.2f}; "
                 "a hidden-confounder interventional countermodel therefore remains observationally compatible."
             )
+            if claimed_adjuster_view is not None and claimed_adjuster_view != "adjustment_covariate":
+                explanation += (
+                    f" Public measurement semantics classify {claimed_adjuster} as {claimed_adjuster_view}, "
+                    "which is not a verifier-visible adjustment covariate."
+                )
         else:
             explanation = (
                 f"An interventional model with hidden confounding can remain observationally plausible while changing the estimated effect of "
@@ -948,6 +985,7 @@ def _l2_candidates(
                     association_strength=round(observed_assoc, 3),
                     adjustment_instability=round(adjustment_instability, 3),
                     claimed_adjuster=claimed_adjuster,
+                    claimed_adjuster_measurement_view=claimed_adjuster_view,
                 ),
             )
         )
@@ -1268,6 +1306,7 @@ def search_countermodels(
         candidates = _l2_candidates(
             parsed_claim,
             statuses,
+            scenario=scenario,
             observed_data=resolved_data,
             role_bindings=role_bindings,
             context=context,

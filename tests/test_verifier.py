@@ -1347,6 +1347,34 @@ class PipelineTests(unittest.TestCase):
             for assumption in entry["contradicts_assumptions"]
         })
 
+    def test_pipeline_with_real_tool_executor_rejects_context_covariate_adjustment_overclaim(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.55,
+            seed=39,
+        )
+        executor = ToolExecutor({})
+        report = executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=2,
+            context={"claim_stance": "pro_causal"},
+        )
+        result = run_verifier_pipeline(
+            sample.claim.claim_text,
+            scenario=sample.public,
+            tool_runner=FakeToolRunner(report["tool_trace"]),
+        )
+
+        self.assertIs(sample.claim.gold_label, VerdictLabel.INVALID)
+        self.assertEqual(result.label, VerdictLabel.INVALID)
+        self.assertIsNotNone(result.countermodel_witness)
+        self.assertIn("valid adjustment set", {
+            assumption
+            for entry in report["tool_trace"]
+            for assumption in entry["contradicts_assumptions"]
+        })
+
     def test_pipeline_with_real_tool_executor_keeps_selection_biased_sample_off_valid_path(self) -> None:
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l1_selection_bias_family",
