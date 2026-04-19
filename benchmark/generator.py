@@ -746,6 +746,12 @@ class BenchmarkGenerator:
                 "claim_mode": attack_sample["claim_mode"],
                 "attack_name": attack_sample.get("attack_name"),
                 "style_id": attack_sample.get("style_id"),
+                "persuasion_style_id": attack_sample.get("persuasion_style_id"),
+                "pressure_type": attack_sample.get("pressure_type"),
+                "pressure_markers": list(attack_sample.get("pressure_markers", [])),
+                "conceals_missing_information": bool(
+                    attack_sample.get("conceals_missing_information", False)
+                ),
                 "selected_query_type": query_type,
                 "query_types": list(blueprint.query_types),
                 "family_tags": list(blueprint.family_tags),
@@ -779,10 +785,19 @@ class BenchmarkGenerator:
             return {
                 "claim_text": attack.claim_text,
                 "attacker_rationale": attack.attacker_rationale,
-                "language_template_id": f"attack::{attack.attack_name}::{attack.style_id}",
+                "language_template_id": (
+                    f"attack::{attack.attack_name}::{attack.style_id}"
+                    f"::persuasion::{attack.persuasion_style_id}"
+                ),
                 "claim_mode": "attack",
                 "attack_name": attack.attack_name,
                 "style_id": attack.style_id,
+                "persuasion_style_id": attack.persuasion_style_id,
+                "pressure_type": attack.metadata.get("pressure_type"),
+                "pressure_markers": list(attack.metadata.get("pressure_markers", [])),
+                "conceals_missing_information": bool(
+                    attack.metadata.get("conceals_missing_information", False)
+                ),
             }
         return self._generate_truthful_claim(blueprint=blueprint, query_type=query_type, seed=seed)
 
@@ -821,6 +836,10 @@ class BenchmarkGenerator:
             "claim_mode": "truthful",
             "attack_name": None,
             "style_id": style_id,
+            "persuasion_style_id": None,
+            "pressure_type": None,
+            "pressure_markers": [],
+            "conceals_missing_information": False,
         }
 
     def _build_gold_answer(

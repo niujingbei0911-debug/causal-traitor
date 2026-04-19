@@ -26,6 +26,7 @@ from benchmark.graph_families import (
     list_graph_families,
 )
 from benchmark.loaders import load_split_ids, load_split_instances, load_split_manifest
+from benchmark.persuasion_overlays import PERSUASION_STYLE_SPACE
 from benchmark.schema import (
     BenchmarkSplitManifest,
     ClaimInstance,
@@ -407,6 +408,35 @@ class AttackTemplateTests(unittest.TestCase):
 
         self.assertGreater(len(variants), 1)
 
+    def test_same_structural_attack_can_emit_multiple_persuasion_styles(self) -> None:
+        authority = generate_attack_sample(
+            "l2_invalid_iv_family",
+            gold_label="invalid",
+            query_type="instrumental_variable_claim",
+            attack_name="weak_iv_as_valid_iv",
+            style_id="technical",
+            persuasion_style_id="authority_pressure",
+            seed=31,
+        )
+        confidence = generate_attack_sample(
+            "l2_invalid_iv_family",
+            gold_label="invalid",
+            query_type="instrumental_variable_claim",
+            attack_name="weak_iv_as_valid_iv",
+            style_id="technical",
+            persuasion_style_id="confidence_pressure",
+            seed=31,
+        )
+
+        self.assertEqual(authority.attack_name, confidence.attack_name)
+        self.assertEqual(authority.style_id, confidence.style_id)
+        self.assertEqual(authority.persuasion_style_id, "authority_pressure")
+        self.assertEqual(confidence.persuasion_style_id, "confidence_pressure")
+        self.assertNotEqual(authority.claim_text, confidence.claim_text)
+        self.assertNotEqual(authority.attacker_rationale, confidence.attacker_rationale)
+        self.assertEqual(authority.metadata["pressure_type"], "authority_pressure")
+        self.assertEqual(confidence.metadata["pressure_type"], "confidence_pressure")
+
     def test_attack_generator_uses_family_hints_and_label_compatibility(self) -> None:
         blueprint = generate_graph_family("l2_invalid_iv_family", seed=29)
         sample = generate_attack_sample(
@@ -766,6 +796,18 @@ class ShowcaseMigrationTests(unittest.TestCase):
 
         self.assertEqual(claim.meta["difficulty_family"], "l2_valid_backdoor_family")
         self.assertEqual(claim.meta["task_level"], "L2")
+
+    def test_claim_instance_meta_tracks_persuasion_style_for_attack_samples(self) -> None:
+        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+        )
+
+        self.assertEqual(claim.meta["claim_mode"], "attack")
+        self.assertIn(claim.meta["persuasion_style_id"], PERSUASION_STYLE_SPACE)
+        self.assertEqual(claim.meta["pressure_type"], claim.meta["persuasion_style_id"])
+        self.assertIn(claim.meta["persuasion_style_id"], claim.language_template_id)
 
     def test_benchmark_generator_produces_claim_instance_level_sample_bundle(self) -> None:
         generator = BenchmarkGenerator(seed=29)

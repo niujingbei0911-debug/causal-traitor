@@ -9,6 +9,10 @@ import random
 from typing import Any, Callable, ClassVar
 
 from benchmark.graph_families import GraphFamilyBlueprint, generate_graph_family
+from benchmark.persuasion_overlays import (
+    PERSUASION_STYLE_SPACE,
+    apply_persuasion_overlay,
+)
 from benchmark.schema import VerdictLabel
 
 
@@ -756,11 +760,13 @@ class AttackSample:
     claim_text: str
     attacker_rationale: str
     style_id: str
+    persuasion_style_id: str
     seed: int
     target_variables: dict[str, str]
     metadata: dict[str, Any] = field(default_factory=dict)
 
     style_space: ClassVar[tuple[str, ...]] = ATTACK_STYLE_SPACE
+    persuasion_style_space: ClassVar[tuple[str, ...]] = PERSUASION_STYLE_SPACE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -772,6 +778,7 @@ class AttackSample:
             "claim_text": self.claim_text,
             "attacker_rationale": self.attacker_rationale,
             "style_id": self.style_id,
+            "persuasion_style_id": self.persuasion_style_id,
             "seed": self.seed,
             "target_variables": dict(self.target_variables),
             "metadata": dict(self.metadata),
@@ -909,6 +916,7 @@ def generate_attack_sample(
     attack_name: str | None = None,
     seed: int = 0,
     style_id: str | None = None,
+    persuasion_style_id: str | None = None,
 ) -> AttackSample:
     """Generate one deterministic attack sample for a family and label."""
 
@@ -966,12 +974,21 @@ def generate_attack_sample(
 
     template = compatible_templates[0] if attack_name is not None else rng.choice(compatible_templates)
     resolved_style = _select_style(rng, style_id)
-    claim_text, attacker_rationale, metadata = template.render_fn(
+    base_claim_text, base_attacker_rationale, metadata = template.render_fn(
         blueprint,
         normalized_label,
         rng,
         resolved_style,
         query_type,
+    )
+    persuasion_overlay = apply_persuasion_overlay(
+        claim_text=base_claim_text,
+        attacker_rationale=base_attacker_rationale,
+        persuasion_style_id=persuasion_style_id,
+        attack_name=template.attack_name,
+        query_type=query_type,
+        family_name=blueprint.family_name,
+        seed=seed,
     )
 
     return AttackSample(
@@ -980,9 +997,10 @@ def generate_attack_sample(
         causal_level=blueprint.causal_level,
         requested_label=normalized_label,
         compatible_labels=tuple(template.compatible_labels),
-        claim_text=claim_text,
-        attacker_rationale=attacker_rationale,
+        claim_text=persuasion_overlay.claim_text,
+        attacker_rationale=persuasion_overlay.attacker_rationale,
         style_id=resolved_style,
+        persuasion_style_id=persuasion_overlay.persuasion_style_id,
         seed=int(seed),
         target_variables=dict(blueprint.target_variables),
         metadata={
@@ -991,6 +1009,7 @@ def generate_attack_sample(
             "template_description": template.description,
             "requested_query_type": query_type,
             **metadata,
+            **persuasion_overlay.metadata,
         },
     )
 
@@ -1003,6 +1022,7 @@ def build_attack_sample(
     attack_name: str | None = None,
     seed: int = 0,
     style_id: str | None = None,
+    persuasion_style_id: str | None = None,
 ) -> AttackSample:
     """Alias kept for readability in generator call sites."""
 
@@ -1013,4 +1033,5 @@ def build_attack_sample(
         attack_name=attack_name,
         seed=seed,
         style_id=style_id,
+        persuasion_style_id=persuasion_style_id,
     )
