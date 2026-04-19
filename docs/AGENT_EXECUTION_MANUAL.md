@@ -107,9 +107,10 @@ causal-traitor/
 │   ├── test_agents.py
 │   └── test_integration.py
 ├── docs/
-│   ├── DESIGN.md
+│   ├── PROJECT_MAP.md
 │   ├── FINAL_CONSTRUCTION_BLUEPRINT.md
-│   └── AGENT_EXECUTION_MANUAL.md
+│   ├── AGENT_EXECUTION_MANUAL.md
+│   └── legacy/
 ├── main.py
 └── run_live_game.py
 ```

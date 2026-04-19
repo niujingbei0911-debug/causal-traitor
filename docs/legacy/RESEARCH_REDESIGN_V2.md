@@ -1,5 +1,10 @@
 # Causal Traitor 方案深度优化 v2
 
+> Legacy archive note:
+> This is a later intermediate redesign memo, but it is still superseded by
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md`.
+> Use this file only for historical context, not as the active source of truth.
+
 ## 1. 最核心的结论
 
 ### 1.1 方向有价值，但“原始版本”不够安全

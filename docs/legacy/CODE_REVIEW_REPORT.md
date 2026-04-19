@@ -1,5 +1,12 @@
 # 代码审查报告 — 对照 causal_traitor_v2.md 设计文档
 
+> Legacy archive note:
+> This review was written against an older repository framing.
+> It is preserved for historical traceability only and should not be treated as
+> the active implementation roadmap.
+> The current mainline baseline is defined by
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md` and `docs/AGENT_EXECUTION_MANUAL.md`.
+
 > 审查日期: 2026-04-14
 > 审查范围: 全仓库代码 vs `../plans/causal_traitor_v2.md` 设计文档 (1252行)
 

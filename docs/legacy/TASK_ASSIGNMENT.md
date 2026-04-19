@@ -1,5 +1,12 @@
 # The Causal Traitor — 三人协作开发任务分工
 
+> Legacy archive note:
+> This task assignment belongs to the earlier course-project organization stage.
+> It is retained for historical reference only.
+> The active repository execution baseline is now
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md` and
+> `docs/AGENT_EXECUTION_MANUAL.md`.
+
 > 基于 `causal_traitor_v2.md` 设计方案
 > 3人团队并行开发计划
 

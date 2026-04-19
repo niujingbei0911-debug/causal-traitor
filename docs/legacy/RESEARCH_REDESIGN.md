@@ -1,5 +1,10 @@
 # Causal Traitor 论文级重构方案
 
+> Legacy archive note:
+> This is an intermediate redesign memo that was later superseded by
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md`.
+> Keep it only as historical reasoning trace, not as the active project plan.
+
 ## 1. 当前项目的真实定位
 
 以 2026 年 4 月的仓库状态看，`causal-traitor` 已经是一个完成度很高的课程项目与系统 Demo，但距离 ICML / NeurIPS 主会论文仍有明显距离。核心问题不是“做得不够多”，而是“做得太散”：系统里有 Agent、Jury、Difficulty、Evolution、Visualization、14 个指标和 4 个实验，但缺少一条足够尖锐、足够可验证、足够可发表的主线。

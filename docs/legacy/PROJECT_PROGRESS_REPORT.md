@@ -1,5 +1,11 @@
 # 项目进度报告 — The Causal Traitor (因果叛徒)
 
+> Legacy archive note:
+> This report belongs to the earlier multi-agent game stage of the project.
+> It is no longer the canonical description of project scope or paper direction.
+> For the active baseline, use
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md` and `docs/AGENT_EXECUTION_MANUAL.md`.
+
 > 报告日期: 2026-04-15
 > 项目状态: **核心功能完成 + DashScope集成 + 进化对抗机制实现，实验待真实LLM运行**
 

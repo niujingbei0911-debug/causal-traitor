@@ -1,5 +1,13 @@
 # The Causal Traitor (因果叛徒) — 完整设计方案 v2.1
 
+> Legacy archive note:
+> This document records a superseded project framing centered on the earlier
+> multi-agent game design.
+> The active repository baseline is now defined by
+> `docs/FINAL_CONSTRUCTION_BLUEPRINT.md` and `docs/AGENT_EXECUTION_MANUAL.md`.
+> Keep this file only for historical reference, appendix context, and demo
+> backstory.
+
 > **多智能体信息不对称下的因果欺骗与隐变量反侦察**
 > 浙江大学 · 因果推断课程创新项目
 > v2.1 — 整合全部优化建议 + 进化对抗机制实现 + DashScope 集成
