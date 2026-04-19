@@ -60,12 +60,14 @@ def _result_gold_label(result: dict[str, Any]) -> str | None:
 
 def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
     audit = result.get("audit_verdict", {}) if isinstance(result.get("audit_verdict"), dict) else {}
+    verifier_verdict = audit.get("verifier_verdict", {}) if isinstance(audit.get("verifier_verdict"), dict) else {}
     jury = result.get("jury_verdict", {}) if isinstance(result.get("jury_verdict"), dict) else {}
     return {
         "round_id": int(result.get("round_number", 0)),
         "gold_label": _result_gold_label(result),
         "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
         "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
+        "predicted_probabilities": verifier_verdict.get("probabilities"),
         "countermodel_witness": audit.get("countermodel_witness"),
         "jury_consensus": jury.get("agreement_rate", 0.0),
         "jury_verdict": jury.get("final_winner"),
