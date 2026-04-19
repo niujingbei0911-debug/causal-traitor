@@ -1397,6 +1397,29 @@ class PipelineTests(unittest.TestCase):
         self.assertIs(sample.claim.gold_label, VerdictLabel.UNIDENTIFIABLE)
         self.assertEqual(result.label, VerdictLabel.UNIDENTIFIABLE)
 
+    def test_pipeline_with_real_tool_executor_rejects_selection_bias_overclaim_that_reads_interventional(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l1_selection_bias_family",
+            difficulty=0.55,
+            seed=130,
+        )
+        executor = ToolExecutor({})
+        report = executor.execute_for_claim(
+            scenario=sample.public,
+            claim=sample.claim.claim_text,
+            level=1,
+            context={"claim_stance": "pro_causal"},
+        )
+        result = run_verifier_pipeline(
+            sample.claim.claim_text,
+            scenario=sample.public,
+            tool_runner=FakeToolRunner(report["tool_trace"]),
+        )
+
+        self.assertIs(sample.claim.gold_label, VerdictLabel.INVALID)
+        self.assertEqual(result.label, VerdictLabel.INVALID)
+        self.assertIsNotNone(result.countermodel_witness)
+
     def test_pipeline_with_real_tool_executor_matches_representative_benchmark_grid(self) -> None:
         executor = ToolExecutor({})
         generator = BenchmarkGenerator(seed=17)

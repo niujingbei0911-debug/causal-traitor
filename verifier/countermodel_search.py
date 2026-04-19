@@ -136,6 +136,30 @@ def _resolve_public_instance(
     return None
 
 
+def _resolve_countermodel_level(
+    parsed_claim: ParsedClaim,
+    scenario: PublicCausalInstance | None,
+) -> str:
+    public_instance = None if scenario is None else require_public_instance(scenario)
+    if public_instance is not None:
+        try:
+            scenario_level = int(getattr(public_instance, "causal_level", 0) or 0)
+        except (TypeError, ValueError):
+            scenario_level = 0
+        if scenario_level >= 3:
+            return "L3"
+        if scenario_level == 2:
+            return "L2"
+        if scenario_level == 1:
+            return "L1"
+
+    if parsed_claim.query_type is QueryType.COUNTERFACTUAL:
+        return "L3"
+    if parsed_claim.query_type is QueryType.INTERVENTION:
+        return "L2"
+    return "L1"
+
+
 def _resolve_observed_data(
     *,
     scenario: PublicCausalInstance | None,
@@ -1293,7 +1317,9 @@ def search_countermodels(
         context_text=context_text,
     )
 
-    if parsed_claim.query_type is QueryType.ASSOCIATION:
+    resolved_level = _resolve_countermodel_level(parsed_claim, scenario)
+
+    if resolved_level == "L1":
         candidates = _l1_candidates(
             parsed_claim,
             statuses,
@@ -1302,7 +1328,7 @@ def search_countermodels(
             context=context,
             context_text=context_text,
         )
-    elif parsed_claim.query_type is QueryType.INTERVENTION:
+    elif resolved_level == "L2":
         candidates = _l2_candidates(
             parsed_claim,
             statuses,
