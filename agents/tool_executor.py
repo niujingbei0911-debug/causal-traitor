@@ -14,7 +14,11 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from benchmark.schema import PublicCausalInstance, require_public_instance
+from benchmark.schema import (
+    PublicCausalInstance,
+    require_public_instance,
+    sanitize_public_measurement_semantics,
+)
 from causal_tools.meta_tools import ToolSelector
 from verifier.claim_parser import parse_claim
 
@@ -361,16 +365,6 @@ class ToolExecutor:
             if not variable or not re.search(rf"\b{re.escape(variable)}\b", claim, flags=re.IGNORECASE):
                 continue
             matched_variables.append(variable)
-            supports.extend(
-                str(item)
-                for item in semantics.get("supports_assumptions", [])
-                if str(item).strip()
-            )
-            contradicts.extend(
-                str(item)
-                for item in semantics.get("contradicts_assumptions", [])
-                if str(item).strip()
-            )
 
         claimed_adjuster = self._extract_named_variable(
             claim,
@@ -390,25 +384,11 @@ class ToolExecutor:
             if (
                 rhetorical_strategy == "adjustment_sufficiency_assertion"
                 and claimed_view is not None
-                and claimed_view != "adjustment_covariate"
             ):
-                contradicts.append("valid adjustment set")
-
-        if not matched_variables and required_assumptions:
-            for assumption in required_assumptions:
-                owners = [
-                    str(raw_variable).strip()
-                    for raw_variable, raw_semantics in measurement_semantics.items()
-                    if isinstance(raw_semantics, dict)
-                    and assumption in {
-                        str(item).strip()
-                        for item in raw_semantics.get("supports_assumptions", [])
-                        if str(item).strip()
-                    }
-                ]
-                if len(owners) == 1:
-                    matched_variables.append(owners[0])
-                    supports.append(assumption)
+                if claimed_view == "adjustment_covariate":
+                    supports.append("valid adjustment set")
+                else:
+                    contradicts.append("valid adjustment set")
 
         supports = self._deduplicate(supports)
         contradicts = self._deduplicate(contradicts)
@@ -433,15 +413,7 @@ class ToolExecutor:
             return {}
         metadata = dict(getattr(scenario, "metadata", {}) or {})
         raw_semantics = metadata.get("measurement_semantics")
-        if not isinstance(raw_semantics, dict):
-            return {}
-        semantics: dict[str, dict[str, Any]] = {}
-        for raw_variable, raw_value in raw_semantics.items():
-            variable = str(raw_variable).strip()
-            if not variable or not isinstance(raw_value, dict):
-                continue
-            semantics[variable] = dict(raw_value)
-        return semantics
+        return sanitize_public_measurement_semantics(raw_semantics)
 
     def _measurement_view(
         self,
@@ -724,14 +696,20 @@ class ToolExecutor:
         is_counterfactual_overclaim = rhetorical_strategy in {"false_uniqueness", "counterfactual_certainty"}
 
         if result.tool_name in {"backdoor_adjustment", "backdoor_adjustment_check"} and output is not None:
+            support_basis = str(output.get("adjustment_support_basis", "")).strip().lower()
             if output.get("is_valid_adjustment") is True:
                 supports.append("valid adjustment set")
             elif output.get("is_valid_adjustment") is False:
                 contradicts.append("valid adjustment set")
-            elif conservative_adjustment_claim and output.get("supports_adjustment_set") is True:
+            elif (
+                conservative_adjustment_claim
+                and support_basis == "graph_validation"
+                and output.get("supports_adjustment_set") is True
+            ):
                 supports.append("valid adjustment set")
             elif (
                 (conservative_adjustment_claim or aggressive_adjustment_claim)
+                and support_basis == "graph_validation"
                 and output.get("supports_adjustment_set") is False
                 and output.get("adjustment_set")
             ):

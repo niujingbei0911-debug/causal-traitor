@@ -447,7 +447,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_human_audit.json",
+        output_path=output_path or "outputs/mainline/exp_human_audit.json",
         payload=payload,
         markdown_summary=summary,
     )

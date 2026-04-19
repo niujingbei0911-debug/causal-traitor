@@ -319,6 +319,19 @@ class BenchmarkHarnessTests(unittest.TestCase):
             self.assertIsNotNone(sample.claim.meta.get("attack_name"))
             self.assertEqual(sample.claim.meta.get("claim_mode"), "attack")
 
+    def test_build_seed_benchmark_run_propagates_split_metadata_onto_samples(self) -> None:
+        run = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=2,
+        )
+
+        for split_name, samples in run.split_samples.items():
+            self.assertTrue(samples)
+            for sample in samples:
+                self.assertEqual(sample.claim.meta.get("ood_split"), split_name)
+                self.assertEqual(sample.public.metadata.get("ood_split"), split_name)
+
     def test_protocol_compliance_tracks_non_seed_requirements(self) -> None:
         protocol = summarize_protocol_compliance(
             [0, 1, 2],

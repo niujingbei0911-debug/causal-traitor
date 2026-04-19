@@ -57,16 +57,22 @@ def load_split_instances(
     manifest = _normalize_manifest_source(manifest_source)
     normalized_instances = _normalize_instances(instances)
     instance_by_id = {instance.instance_id: instance for instance in normalized_instances}
+    ood_reasons = manifest.metadata.get("ood_reasons", {})
+    ood_reasons = ood_reasons if isinstance(ood_reasons, dict) else {}
 
     splits: dict[str, list[ClaimInstance]] = {}
     for split_name, ids in manifest.split_map().items():
         resolved: list[ClaimInstance] = []
         for instance_id in ids:
             try:
-                resolved.append(instance_by_id[instance_id])
+                instance = instance_by_id[instance_id]
             except KeyError as exc:
                 raise KeyError(
                     f"Manifest references unknown instance_id {instance_id!r} in split {split_name!r}."
                 ) from exc
+            instance.meta["ood_split"] = split_name
+            if instance_id in ood_reasons:
+                instance.meta["ood_reasons"] = list(ood_reasons[instance_id])
+            resolved.append(instance)
         splits[split_name] = resolved
     return splits

@@ -237,11 +237,11 @@ def _supported_identifying_assumptions(ledger: AssumptionLedger) -> list[Assumpt
     ]
 
 
-def _explicitly_contradicted_assumptions(ledger: AssumptionLedger) -> list[AssumptionLedgerEntry]:
+def _contradicted_assumptions(ledger: AssumptionLedger) -> list[AssumptionLedgerEntry]:
     return [
         entry
         for entry in ledger.entries
-        if entry.status is AssumptionStatus.CONTRADICTED and entry.source == "claim explicit"
+        if entry.status is AssumptionStatus.CONTRADICTED
     ]
 
 
@@ -286,19 +286,25 @@ def _make_assumption_witness(
     description: str | None = None,
     stage: str = "assumption_gate",
 ) -> Witness:
-    unsupported = _unsupported_core_assumptions(ledger)
+    targeted_entries = (
+        _contradicted_assumptions(ledger)
+        if verdict is VerdictLabel.INVALID
+        else _unsupported_core_assumptions(ledger)
+    )
     resolved_description = description or (
-        "Core identification assumptions remain unsupported after countermodel-free review, so the claim stays under-identified."
+        "Tool-backed evidence directly contradicts one or more identification assumptions, so the claim is not tenable."
+        if verdict is VerdictLabel.INVALID
+        else "Core identification assumptions remain unsupported after countermodel-free review, so the claim stays under-identified."
     )
     evidence = [
         f"{entry.name}: {entry.status.value} ({entry.source})."
-        for entry in unsupported[:4]
+        for entry in targeted_entries[:4]
     ]
     return Witness(
         witness_type=WitnessKind.ASSUMPTION,
         description=resolved_description,
         evidence=evidence,
-        assumptions=[entry.name for entry in unsupported],
+        assumptions=[entry.name for entry in targeted_entries],
         payload={
             "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
             "supported_count": ledger.supported_count,
@@ -461,7 +467,43 @@ def decide_verdict(
     unsupported = _unsupported_core_assumptions(adjudicated_ledger)
     tools_support_claim = _tool_supports_claim(normalized_tool_trace)
     supported_identifying = _supported_identifying_assumptions(adjudicated_ledger)
-    explicitly_contradicted = _explicitly_contradicted_assumptions(adjudicated_ledger)
+    contradicted = _contradicted_assumptions(adjudicated_ledger)
+
+    if contradicted:
+        witness = _make_assumption_witness(
+            adjudicated_ledger,
+            verdict=VerdictLabel.INVALID,
+            description=(
+                "Stage 3: no decisive countermodel survived, but tool-backed evidence directly contradicts one or more core identification assumptions."
+            ),
+        )
+        contradicted_ratio = _score_ratio(len(contradicted), len(adjudicated_ledger.entries))
+        confidence = max(0.72, min(0.82 + (0.12 * contradicted_ratio), 0.93))
+        probabilities = _ensure_label_probability_floor(
+            _probabilities_from_scores(
+                valid_score=0.03,
+                invalid_score=0.7 + (0.3 * contradicted_ratio),
+                unidentifiable_score=0.12 + (0.18 * (1.0 - contradicted_ratio)),
+            ),
+            label=VerdictLabel.INVALID,
+            floor=max(0.74, confidence - 0.03),
+        )
+        return VerifierDecision(
+            label=VerdictLabel.INVALID,
+            confidence=confidence,
+            assumption_ledger=adjudicated_ledger,
+            probabilities=probabilities,
+            witness=witness,
+            tool_trace=normalized_tool_trace,
+            reasoning_summary=(
+                "Stage 3: no decisive countermodel survived, but tool-backed evidence directly contradicts the claim's identifying assumptions."
+            ),
+            metadata={
+                "decision_stage": 3,
+                "support_stage_entered": True,
+                "contradicted_identifying_assumptions": [entry.name for entry in contradicted],
+            },
+        )
 
     # Stage 3: unsupported core assumptions -> unidentifiable
     if unsupported or not tools_support_claim or (
@@ -477,7 +519,7 @@ def decide_verdict(
             assumption_ledger=adjudicated_ledger,
             probabilities=_probabilities_from_scores(
                 valid_score=0.08 + (0.2 * supported_ratio),
-                invalid_score=0.08 + (0.18 * _score_ratio(len(explicitly_contradicted), len(adjudicated_ledger.entries))),
+                invalid_score=0.08 + (0.18 * _score_ratio(len(contradicted), len(adjudicated_ledger.entries))),
                 unidentifiable_score=0.6 + (0.25 * unsupported_ratio) + (0.15 * (0.0 if tools_support_claim else 1.0)),
             ),
             witness=witness,
@@ -510,7 +552,7 @@ def decide_verdict(
         probabilities=_ensure_label_probability_floor(
             _probabilities_from_scores(
                 valid_score=0.62 + (0.2 * support_ratio) + (0.2 * support_confidence),
-                invalid_score=0.04 + (0.14 * _score_ratio(len(explicitly_contradicted), len(adjudicated_ledger.entries))),
+                invalid_score=0.04 + (0.14 * _score_ratio(len(contradicted), len(adjudicated_ledger.entries))),
                 unidentifiable_score=0.12 + (0.25 * (1.0 - support_ratio)),
             ),
             label=VerdictLabel.VALID,

@@ -182,7 +182,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             transfer_payload = run_cross_model_transfer(
                 seeds=[0],
                 samples_per_family=1,
-                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer.json"),
             )
@@ -199,7 +198,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("verdict_accuracy", main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"])
             self.assertFalse(main_payload["protocol"]["compliant"])
             self.assertTrue(main_payload["protocol"]["override_used"])
+            self.assertEqual(
+                main_payload["systems"],
+                ["judge_direct", "debate_reduced", "tool_only", "countermodel_grounded"],
+            )
             for artifact_key in (
+                "artifact_json",
                 "config",
                 "seed_list",
                 "aggregated_metrics",
@@ -214,7 +218,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if record["system_name"] == "oracle_leaking_partition"
             ]
             self.assertTrue(leaking_predictions)
-            self.assertTrue(all(not record["supports_public_only"] for record in leaking_predictions))
+            self.assertTrue(all(record["supports_public_only"] for record in leaking_predictions))
             self.assertTrue(
                 all(
                     not record["verdict"]["metadata"].get("same_verifier_pipeline")
@@ -225,6 +229,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 all(
                     record["verdict"]["metadata"].get("leakage_mode")
                     == "oracle_metadata_readout"
+                    for record in leaking_predictions
+                )
+            )
+            self.assertTrue(
+                all(
+                    all(channel.startswith("measurement_semantics.") for channel in record["verdict"]["metadata"].get("oracle_channels", []))
                     for record in leaking_predictions
                 )
             )
@@ -241,6 +251,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("mcnemar_significance", leakage_payload)
             self.assertFalse(leakage_payload["protocol"]["compliant"])
             self.assertTrue(leakage_payload["protocol"]["override_used"])
+            self.assertIn("artifact_json", leakage_payload["artifacts"])
 
             for system_name in ("no_ledger", "no_countermodel", "no_abstention", "no_tools"):
                 self.assertIn(system_name, ablation_payload["aggregated_metrics"])
@@ -284,16 +295,22 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ood_payload["protocol"]["override_used"])
             self.assertIn("Sample Count", ood_payload["markdown_summary"])
             self.assertIn("## Significance:", ood_payload["markdown_summary"])
+            self.assertNotIn("mixed_ood", ood_payload["aggregated_metrics"])
 
-            self.assertGreaterEqual(len(transfer_payload["systems"]), 2)
-            self.assertGreaterEqual(len(transfer_payload["attacker_families"]), 2)
+            self.assertGreaterEqual(len(transfer_payload["verifier_model_families"]), 2)
+            self.assertGreaterEqual(len(transfer_payload["attacker_model_families"]), 2)
             self.assertTrue(transfer_payload["raw_predictions"])
             self.assertIn(
-                "attacker_family",
+                "attacker_model_family",
+                transfer_payload["raw_predictions"][0],
+            )
+            self.assertIn(
+                "verifier_model_family",
                 transfer_payload["raw_predictions"][0],
             )
             self.assertFalse(transfer_payload["protocol"]["compliant"])
             self.assertTrue(transfer_payload["protocol"]["override_used"])
+            self.assertTrue(transfer_payload["blueprint_alignment"]["model_family_transfer_realized"])
 
             self.assertIn("aggregated_metrics", human_payload)
             self.assertIn("test_iid", human_payload["aggregated_metrics"])
@@ -330,11 +347,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertGreaterEqual(len(main_payload["seeds"]), 3)
-            self.assertGreaterEqual(len(main_payload["systems"]), 2)
-            self.assertNotIn("skeptical_family", main_payload["systems"])
-            self.assertNotIn("optimistic_family", main_payload["systems"])
-            self.assertIn("no_tools", main_payload["systems"])
-            self.assertIn("no_countermodel", main_payload["systems"])
+            self.assertEqual(
+                main_payload["systems"],
+                ["judge_direct", "debate_reduced", "tool_only", "countermodel_grounded"],
+            )
+            self.assertTrue(main_payload["blueprint_alignment"]["full_baseline_matrix_connected"])
+            self.assertEqual(main_payload["blueprint_alignment"]["missing_blueprint_baseline_categories"], [])
             self.assertIn("ECE", main_payload["markdown_summary"])
             self.assertIn("Brier", main_payload["markdown_summary"])
 
@@ -387,19 +405,33 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 expected_delta = leakage_payload["inflation"][split_name]["accuracy"]["delta_mean"]
                 self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
-    def test_phase4_leakage_control_reads_oracle_metadata_hint(self) -> None:
+    def test_phase4_leakage_control_reads_oracle_public_measurement_semantics(self) -> None:
         run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
         sample = next(
             candidate
             for candidate in run.split_samples["test_iid"]
             if candidate.claim.graph_family == "l2_invalid_iv_family"
         )
+        public = _build_oracle_leaking_public_partition(sample)
         study = _run_oracle_leaking_partition(sample)
 
+        self.assertNotIn("notes", public.metadata)
+        leaked_entries = [
+            semantics
+            for semantics in public.metadata["measurement_semantics"].values()
+            if semantics.get("oracle_verdict") is not None
+        ]
+        self.assertTrue(leaked_entries)
+        self.assertEqual(leaked_entries[0]["oracle_verdict"], sample.claim.gold_label.value)
         self.assertEqual(study["predicted_label"], sample.claim.gold_label.value)
         self.assertEqual(study["verdict"]["label"], sample.claim.gold_label.value)
         self.assertEqual(study["verdict"]["metadata"]["leakage_mode"], "oracle_metadata_readout")
-        self.assertFalse(study["supports_public_only"])
+        self.assertTrue(study["supports_public_only"])
+        self.assertTrue(
+            all(channel.startswith("measurement_semantics.") for channel in study["verdict"]["metadata"]["oracle_channels"])
+        )
+        self.assertFalse(study["countermodel_found"])
+        self.assertIsNone(study["countermodel_type"])
 
     def test_phase4_leakage_partition_passes_predicted_probabilities_into_scorer_rounds(self) -> None:
         run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
@@ -524,7 +556,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 run_cross_model_transfer(
                     seeds=[0],
-                    allow_surrogate_transfer=True,
                     output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_invalid.json"),
                 )
             with self.assertRaises(ValueError):
@@ -574,7 +605,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 seeds=[0],
                 samples_per_family=0,
                 difficulty=1.5,
-                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_effective.json"),
             )
@@ -621,7 +651,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             transfer_payload = run_cross_model_transfer(
                 samples_per_family=1,
-                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_toy.json"),
             )
@@ -688,7 +717,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 run_cross_model_transfer(
                     seeds=[0, 0, 1],
-                    allow_surrogate_transfer=True,
                     allow_protocol_violations=True,
                     output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_duplicate_seeds.json"),
                 )
@@ -778,36 +806,43 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ("lexical_ood", ["lexical_holdout"]),
                 ("variable_naming_ood", ["variable_renaming_holdout"]),
             ):
+                self.assertTrue(seed_bucket_results[bucket_name]["predictions"])
                 for record in seed_bucket_results[bucket_name]["predictions"]:
                     self.assertEqual(record["ood_reasons"], expected_reason)
-            for record in seed_bucket_results["mixed_ood"]["predictions"]:
-                self.assertGreater(len(record["ood_reasons"]), 1)
 
-    def test_phase4_ood_runner_marks_empty_pure_buckets_as_unavailable(self) -> None:
+    def test_phase4_ood_runner_uses_matched_seed_sets_for_gap_and_significance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             payload = run_ood_generalization(
-                seeds=[0],
-                samples_per_family=1,
-                allow_protocol_violations=True,
-                output_path=str(Path(tmp_dir) / "exp_ood_generalization_empty_bucket.json"),
+                output_path=str(Path(tmp_dir) / "exp_ood_generalization_default.json"),
             )
 
-            self.assertEqual(payload["bucket_sample_counts"]["graph_family_ood"]["total"], 0)
-            self.assertEqual(payload["per_seed_bucket_results"][0]["graph_family_ood"]["predictions"], [])
-            self.assertIsNone(payload["per_seed_bucket_results"][0]["graph_family_ood"]["metrics"])
-            self.assertIsNone(payload["aggregated_metrics"]["graph_family_ood"])
-            self.assertFalse(payload["ood_gap"]["graph_family_ood"]["available"])
-            self.assertIsNone(payload["ood_gap"]["graph_family_ood"]["verdict_accuracy_gap"])
-            self.assertIsNone(payload["significance"]["graph_family_ood"])
-            self.assertIn("graph_family_ood: N/A", payload["markdown_summary"])
-
-    def test_cross_model_transfer_requires_explicit_surrogate_opt_in(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with self.assertRaises(ValueError):
-                run_cross_model_transfer(
-                    seeds=[0, 1, 2],
-                    output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_default_guard.json"),
+            for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood"):
+                self.assertIsNotNone(payload["aggregated_metrics"][bucket_name])
+                self.assertTrue(payload["ood_gap"][bucket_name]["available"])
+                self.assertEqual(
+                    payload["ood_gap"][bucket_name]["reference_seed_list"],
+                    payload["ood_gap"][bucket_name]["bucket_seed_list"],
                 )
+                self.assertEqual(
+                    payload["significance"][bucket_name]["paired_seed_list"],
+                    payload["ood_gap"][bucket_name]["bucket_seed_list"],
+                )
+
+    def test_cross_model_transfer_runs_formal_family_matrix_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_cross_model_transfer(
+                output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_default.json"),
+            )
+
+            self.assertTrue(payload["blueprint_alignment"]["model_family_transfer_realized"])
+            self.assertGreaterEqual(len(payload["attacker_model_families"]), 2)
+            self.assertGreaterEqual(len(payload["verifier_model_families"]), 2)
+            cross_pairs = [
+                pair
+                for pair in payload["family_pairs"]
+                if pair["attacker_model_family"] != pair["verifier_model_family"]
+            ]
+            self.assertTrue(cross_pairs)
 
     def test_human_audit_rejects_duplicate_ids_and_stale_package_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

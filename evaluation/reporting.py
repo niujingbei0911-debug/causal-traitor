@@ -220,6 +220,7 @@ def compare_predictions(
             y_true,
             pred_a,
             pred_b,
+            metric_name=metric_name,
             exact=exact,
             continuity=continuity,
             alpha=alpha,

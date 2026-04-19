@@ -79,7 +79,6 @@ def _verifier_tool_context(
     sample: BenchmarkSample,
     public: PublicCausalInstance,
 ) -> dict[str, Any]:
-    notes = public.metadata.get("notes")
     return {
         "treatment": sample.claim.target_variables["treatment"],
         "outcome": sample.claim.target_variables["outcome"],
@@ -87,7 +86,6 @@ def _verifier_tool_context(
         "selection_variables": list(getattr(public, "selection_variables", [])),
         "selection_mechanism": getattr(public, "selection_mechanism", None),
         "claim_stance": "pro_causal",
-        "notes": json.dumps(notes, ensure_ascii=False, sort_keys=True) if notes else "",
     }
 
 
@@ -187,22 +185,18 @@ def _build_oracle_leaking_public_partition(sample: BenchmarkSample) -> PublicCau
             *list(hint["contradicted_assumptions"]),
         }
     )
+    measurement_entry["oracle_verdict"] = hint["gold_verdict"]
+    measurement_entry["oracle_partition_signal"] = "oracle_leaking_public_partition"
+    measurement_entry["leakage_channels"] = [
+        f"measurement_semantics.{measurement_key}.oracle_verdict",
+        f"measurement_semantics.{measurement_key}.supports_assumptions",
+        f"measurement_semantics.{measurement_key}.contradicts_assumptions",
+    ]
     measurement_semantics[measurement_key] = measurement_entry
-
-    raw_notes = public.metadata.get("notes")
-    notes = dict(raw_notes) if isinstance(raw_notes, dict) else {}
-    if raw_notes is not None and not isinstance(raw_notes, dict):
-        notes["legacy_notes"] = str(raw_notes)
-    notes["oracle_partition_hint"] = {
-        **hint,
-        "leakage_channels": ["notes.oracle_partition_hint", "measurement_semantics"],
-        "control_interpretation": "oracle_leaking_public_partition",
-    }
 
     metadata = dict(public.metadata)
     metadata["measurement_semantics"] = measurement_semantics
-    metadata["notes"] = notes
-    return PublicCausalInstance(
+    leaky_public = PublicCausalInstance(
         scenario_id=public.scenario_id,
         description=public.description,
         variables=list(public.variables),
@@ -214,17 +208,33 @@ def _build_oracle_leaking_public_partition(sample: BenchmarkSample) -> PublicCau
         causal_level=public.causal_level,
         difficulty=public.difficulty,
         difficulty_config=dict(public.difficulty_config),
-        metadata=metadata,
+        metadata=dict(public.metadata),
+    )
+    # This control arm intentionally bypasses the public-schema sanitizer so the
+    # leakage study can measure the effect of explicit benchmark-answer leakage.
+    leaky_public.metadata = metadata
+    return leaky_public
+
+
+def _extract_oracle_partition_signal(public: PublicCausalInstance) -> tuple[str, list[str]]:
+    measurement_semantics = dict(public.metadata.get("measurement_semantics", {}))
+    for raw_variable, raw_entry in measurement_semantics.items():
+        variable = str(raw_variable).strip()
+        entry = raw_entry if isinstance(raw_entry, dict) else {}
+        oracle_verdict = str(entry.get("oracle_verdict", "")).strip().lower()
+        if oracle_verdict in {"valid", "invalid", "unidentifiable"}:
+            channels = list(entry.get("leakage_channels", []))
+            if not channels:
+                channels = [f"measurement_semantics.{variable}.oracle_verdict"]
+            return oracle_verdict, [str(channel) for channel in channels]
+    raise ValueError(
+        "Oracle-leaking partition is missing a leak signal in public measurement_semantics."
     )
 
 
 def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
     public = _build_oracle_leaking_public_partition(sample)
-    metadata = dict(public.metadata)
-    notes = metadata.get("notes") if isinstance(metadata.get("notes"), dict) else {}
-    oracle_hint = notes.get("oracle_partition_hint") if isinstance(notes, dict) else {}
-    oracle_hint = oracle_hint if isinstance(oracle_hint, dict) else {}
-    leaked_label = str(oracle_hint.get("gold_verdict", sample.claim.gold_label.value)).strip().lower()
+    leaked_label, oracle_channels = _extract_oracle_partition_signal(public)
     verdict = {
         "label": leaked_label,
         "confidence": 0.999,
@@ -241,7 +251,7 @@ def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
             {
                 "tool_name": "oracle_metadata_readout",
                 "status": "success",
-                "summary": "Benchmark answer supervision was leaked through public metadata and read directly.",
+                "summary": "Benchmark answer supervision was leaked through public measurement semantics and read directly.",
                 "supports_claim": leaked_label == "valid",
                 "supports_primary_claim": leaked_label == "valid",
                 "claim_stance": "pro_causal",
@@ -258,7 +268,7 @@ def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
         ),
         "metadata": {
             "leakage_mode": "oracle_metadata_readout",
-            "oracle_channels": ["notes.oracle_partition_hint.gold_verdict"],
+            "oracle_channels": oracle_channels,
             "control_interpretation": "oracle_leaking_public_partition",
             "same_verifier_pipeline": False,
         },
@@ -271,13 +281,13 @@ def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
             "selected_tools": ["oracle_metadata_readout"],
             "claim_stance": "pro_causal",
             "identified_issues": ["oracle_leakage"],
-            "supporting_evidence": ["Decoded leaked gold verdict from public metadata."],
+            "supporting_evidence": ["Decoded leaked gold verdict from public measurement semantics."],
             "counter_evidence": [],
             "tool_trace": list(verdict["tool_trace"]),
         },
-        "countermodel_found": leaked_label in {"invalid", "unidentifiable"},
-        "countermodel_type": "oracle_metadata_readout",
-        "supports_public_only": False,
+        "countermodel_found": False,
+        "countermodel_type": None,
+        "supports_public_only": True,
         "system_notes": [
             "oracle_leaking_public_partition",
             "oracle_metadata_readout",
@@ -859,7 +869,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_leakage_study.json",
+        output_path=output_path or "outputs/mainline/exp_leakage_study.json",
         payload=payload,
         markdown_summary=summary,
     )

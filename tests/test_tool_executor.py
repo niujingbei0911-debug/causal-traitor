@@ -4,6 +4,7 @@ import pandas as pd
 
 from agents.tool_executor import ToolExecutionResult, ToolExecutor
 from benchmark.generator import BenchmarkGenerator
+from benchmark.schema import PublicCausalInstance
 from game.debate_engine import CausalScenario
 from verifier.claim_parser import parse_claim
 
@@ -240,7 +241,7 @@ class ToolExecutorTests(unittest.TestCase):
             public_semantics_entries[0]["contradicts_assumptions"],
         )
 
-    def test_backdoor_adjustment_check_without_public_graph_only_promotes_conservative_claim_support(self):
+    def test_backdoor_adjustment_check_without_public_graph_does_not_promote_heuristic_support(self):
         parsed_claim = parse_claim(
             "After controlling for pretest_score, the causal effect of exposure on recovery is identified."
         )
@@ -260,7 +261,7 @@ class ToolExecutorTests(unittest.TestCase):
             parsed_claim=parsed_claim,
         )
 
-        self.assertIn("valid adjustment set", supports)
+        self.assertEqual(supports, [])
         self.assertNotIn("valid adjustment set", contradicts)
 
     def test_public_measurement_semantics_are_not_upgraded_into_tool_trace_evidence(self):
@@ -281,6 +282,53 @@ class ToolExecutorTests(unittest.TestCase):
             "public_semantics_check",
             {entry["tool_name"] for entry in report["tool_trace"]},
         )
+
+    def test_injected_public_measurement_semantics_do_not_promote_unsafe_assumption_support(self):
+        scenario = PublicCausalInstance(
+            scenario_id="unsafe_public_semantics_case",
+            description="Unsafe assumption hints must not become verifier evidence.",
+            variables=["treatment_flag", "clinical_score", "outcome_score"],
+            observed_data=pd.DataFrame(
+                {
+                    "treatment_flag": [0, 0, 1, 1, 0, 1, 0, 1],
+                    "clinical_score": [0.1, 0.2, 0.8, 0.9, 0.3, 0.7, 0.4, 0.85],
+                    "outcome_score": [0.2, 0.3, 0.9, 1.0, 0.35, 0.8, 0.4, 0.95],
+                }
+            ),
+            causal_level=2,
+            metadata={
+                "measurement_semantics": {
+                    "clinical_score": {
+                        "measurement_view": "adjustment_covariate",
+                        "notes": ["Observed pre-treatment score."],
+                    }
+                }
+            },
+        )
+        scenario.metadata["measurement_semantics"]["clinical_score"]["supports_assumptions"] = [
+            "no unobserved confounding",
+            "valid adjustment set",
+        ]
+        scenario.metadata["measurement_semantics"]["clinical_score"]["oracle_verdict"] = "invalid"
+
+        report = self.executor.execute_for_claim(
+            scenario=scenario,
+            claim="After controlling for clinical_score, the causal effect of treatment_flag on outcome_score is identified.",
+            level=2,
+            context={"claim_stance": "pro_causal"},
+        )
+
+        public_semantic_entries = [
+            entry
+            for entry in report["tool_trace"]
+            if entry["tool_name"] == "public_semantics_check"
+        ]
+
+        self.assertTrue(public_semantic_entries)
+        for entry in public_semantic_entries:
+            self.assertIn("valid adjustment set", entry["supports_assumptions"])
+            self.assertNotIn("no unobserved confounding", entry["supports_assumptions"])
+            self.assertEqual(entry["contradicts_assumptions"], [])
 
     def test_role_token_match_does_not_confuse_clinical_stage_with_selection(self):
         scenario = self.public_scenario.__class__(

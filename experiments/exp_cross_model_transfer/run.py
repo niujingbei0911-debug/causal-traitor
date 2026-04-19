@@ -8,24 +8,117 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
-    DEFAULT_ATTACKER_FAMILIES,
     DEFAULT_MODEL_FAMILIES,
     MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     aggregate_seed_metrics,
-    apply_attacker_family_profile,
-    build_seed_metric_significance,
+    apply_attacker_model_family_profile,
     build_seed_attack_benchmark_run,
-    evaluate_system_on_samples,
+    build_seed_metric_significance,
     manifest_metadata,
     normalize_benchmark_difficulty,
     normalize_benchmark_samples_per_family,
     normalize_experiment_seeds,
+    predict_sample_for_model_family,
+    score_prediction_records,
     summarize_protocol_compliance,
-    validate_attacker_families,
-    validate_system_names,
+    validate_model_families,
     write_artifacts,
 )
+
+
+def _evaluate_model_family_on_samples(
+    samples,
+    *,
+    seed: int,
+    split_name: str,
+    attacker_model_family: str,
+    verifier_model_family: str,
+    ood_reasons: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    predictions: list[dict[str, Any]] = []
+    manifest_ood_reasons = dict(ood_reasons or {})
+    for sample in sorted(samples, key=lambda item: item.claim.instance_id):
+        payload = predict_sample_for_model_family(
+            sample,
+            verifier_model_family=verifier_model_family,
+        )
+        verdict = dict(payload["verdict"])
+        public_payload = sample.public.to_dict()
+        record = {
+            "seed": int(seed),
+            "split": split_name,
+            "system_name": verifier_model_family,
+            "instance_id": sample.claim.instance_id,
+            "scenario_id": sample.gold.scenario_id,
+            "causal_level": public_payload["causal_level"],
+            "graph_family": sample.claim.graph_family,
+            "language_template_id": sample.claim.language_template_id,
+            "query_type": sample.claim.query_type,
+            "attack_name": sample.claim.meta.get("attack_name"),
+            "style_id": sample.claim.meta.get("style_id"),
+            "claim_mode": sample.claim.meta.get("claim_mode"),
+            "gold_label": sample.claim.gold_label.value,
+            "predicted_label": payload["predicted_label"],
+            "confidence": float(payload["confidence"]),
+            "supports_public_only": bool(payload["supports_public_only"]),
+            "ood_reasons": list(manifest_ood_reasons.get(sample.claim.instance_id, [])),
+            "claim_text": sample.claim.claim_text,
+            "target_variables": dict(sample.claim.target_variables),
+            "proxy_variables": list(sample.public.proxy_variables),
+            "selection_variables": list(sample.public.selection_variables),
+            "selection_mechanism": sample.public.selection_mechanism,
+            "tool_report": dict(payload["tool_report"]),
+            "tool_trace": list(payload["tool_report"].get("tool_trace", [])),
+            "countermodel_found": bool(payload["countermodel_found"]),
+            "countermodel_type": payload["countermodel_type"],
+            "predicted_probabilities": dict(verdict.get("probabilities", {})),
+            "verdict": verdict,
+            "attacker_model_family": attacker_model_family,
+            "verifier_model_family": verifier_model_family,
+            "family_relation": (
+                "cross_family"
+                if attacker_model_family != verifier_model_family
+                else "same_family_reference"
+            ),
+            "system_notes": list(payload["system_notes"]),
+        }
+        predictions.append(record)
+    return score_prediction_records(
+        predictions,
+        game_id=f"{attacker_model_family}_{verifier_model_family}_{split_name}_seed_{seed}",
+    )
+
+
+def _family_pairs(
+    attacker_model_families: list[str],
+    verifier_model_families: list[str],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "attacker_model_family": attacker_family,
+            "verifier_model_family": verifier_family,
+            "cross_family": attacker_family != verifier_family,
+        }
+        for attacker_family in attacker_model_families
+        for verifier_family in verifier_model_families
+    ]
+
+
+def _blueprint_alignment_summary(
+    verifier_model_families: list[str],
+    attacker_model_families: list[str],
+) -> dict[str, Any]:
+    return {
+        "model_family_transfer_realized": True,
+        "transfer_axis": "attacker_model_family_x_verifier_model_family",
+        "verifier_model_families": list(verifier_model_families),
+        "attacker_model_families": list(attacker_model_families),
+        "note": (
+            "This runner evaluates the formal Phase 4 transfer matrix by varying attacker and verifier "
+            "model-family profiles independently, including both same-family references and cross-family pairs."
+        ),
+    }
 
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
@@ -34,15 +127,16 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
         "",
         payload["blueprint_alignment"]["note"],
         "",
-        "| Attacker Family | Verifier Family | Split | Verdict Acc. | Macro-F1 | Unidentifiable Awareness |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Attacker Family | Verifier Family | Relation | Split | Verdict Acc. | Macro-F1 | Unidentifiable Awareness |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for attacker_family, verifier_payload in payload["aggregated_metrics"].items():
-        for system_name, split_payload in verifier_payload.items():
+        for verifier_family, split_payload in verifier_payload.items():
+            relation = "cross" if attacker_family != verifier_family else "same"
             for split_name in ("test_iid", "test_ood"):
                 metrics = split_payload[split_name]
                 lines.append(
-                    f"| {attacker_family} | {system_name} | {split_name} | "
+                    f"| {attacker_family} | {verifier_family} | {relation} | {split_name} | "
                     f"{metrics['verdict_accuracy']['formatted']} | "
                     f"{metrics['macro_f1']['formatted']} | "
                     f"{metrics['unidentifiable_awareness']['formatted']} |"
@@ -63,26 +157,11 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _blueprint_alignment_summary(
-    systems: list[str],
-    attacker_families: list[str],
-) -> dict[str, Any]:
-    return {
-        "model_family_transfer_realized": False,
-        "transfer_axis": "predictor_family_surrogate",
-        "verifier_predictor_families": list(systems),
-        "attacker_prompt_families": list(attacker_families),
-        "note": (
-            "This runner currently varies verifier predictor families and attacker prompt families. "
-            "It does not yet instantiate distinct attacker / verifier model families, so it should "
-            "be treated as a surrogate transfer study rather than the full blueprint cross-model-family experiment."
-        ),
-    }
-
-
 def run_experiment(
     *,
     seeds: list[int] | tuple[int, ...] | None = None,
+    verifier_model_families: list[str] | None = None,
+    attacker_model_families: list[str] | None = None,
     systems: list[str] | None = None,
     attacker_families: list[str] | None = None,
     samples_per_family: int = MIN_FORMAL_SAMPLES_PER_FAMILY,
@@ -91,22 +170,20 @@ def run_experiment(
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
 ) -> dict[str, Any]:
-    if not allow_surrogate_transfer:
-        raise ValueError(
-            "exp_cross_model_transfer currently runs only a predictor-family surrogate study, "
-            "not the Phase 4 P4-S4 cross-model-family experiment. Re-run with "
-            "allow_surrogate_transfer=True only for exploratory analysis."
-        )
+    del allow_surrogate_transfer
     resolved_seeds = normalize_experiment_seeds(
         seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
         allow_protocol_violations=allow_protocol_violations,
     )
-    resolved_systems = validate_system_names(
-        systems,
-        default_systems=DEFAULT_MODEL_FAMILIES,
+    resolved_verifier_families = validate_model_families(
+        verifier_model_families or systems,
+        default_families=DEFAULT_MODEL_FAMILIES,
     )
-    resolved_attacker_families = validate_attacker_families(attacker_families or list(DEFAULT_ATTACKER_FAMILIES))
+    resolved_attacker_families = validate_model_families(
+        attacker_model_families or attacker_families,
+        default_families=DEFAULT_MODEL_FAMILIES,
+    )
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
     effective_samples_per_family = max(2, resolved_samples_per_family)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
@@ -136,37 +213,36 @@ def run_experiment(
         seed_payload: dict[str, Any] = {}
         for attacker_family in resolved_attacker_families:
             attacker_payload: dict[str, Any] = {}
-            for system_name in resolved_systems:
-                system_payload: dict[str, Any] = {}
+            for verifier_family in resolved_verifier_families:
+                verifier_payload: dict[str, Any] = {}
                 for split_name in ("test_iid", "test_ood"):
-                    profiled_samples = apply_attacker_family_profile(
+                    profiled_samples = apply_attacker_model_family_profile(
                         run.split_samples[split_name],
-                        attacker_family=attacker_family,
+                        attacker_model_family=attacker_family,
                     )
-                    evaluated = evaluate_system_on_samples(
+                    evaluated = _evaluate_model_family_on_samples(
                         profiled_samples,
                         seed=seed,
                         split_name=split_name,
-                        system_name=system_name,
+                        attacker_model_family=attacker_family,
+                        verifier_model_family=verifier_family,
                         ood_reasons=ood_reasons,
                     )
-                    for record in evaluated["predictions"]:
-                        record["attacker_family"] = attacker_family
                     raw_predictions.extend(evaluated["predictions"])
-                    system_payload[split_name] = evaluated
-                attacker_payload[system_name] = system_payload
+                    verifier_payload[split_name] = evaluated
+                attacker_payload[verifier_family] = verifier_payload
             seed_payload[attacker_family] = attacker_payload
         per_seed_results[seed] = seed_payload
 
     aggregated_metrics: dict[str, dict[str, dict[str, Any]]] = {}
     for attacker_family in resolved_attacker_families:
         aggregated_metrics[attacker_family] = {}
-        for system_name in resolved_systems:
-            aggregated_metrics[attacker_family][system_name] = {}
+        for verifier_family in resolved_verifier_families:
+            aggregated_metrics[attacker_family][verifier_family] = {}
             for split_name in ("test_iid", "test_ood"):
-                aggregated_metrics[attacker_family][system_name][split_name] = aggregate_seed_metrics(
+                aggregated_metrics[attacker_family][verifier_family][split_name] = aggregate_seed_metrics(
                     {
-                        seed: per_seed_results[seed][attacker_family][system_name]
+                        seed: per_seed_results[seed][attacker_family][verifier_family]
                         for seed in resolved_seeds
                     },
                     split_name=split_name,
@@ -175,23 +251,25 @@ def run_experiment(
     significance_raw, global_multiple_comparison_correction = build_seed_metric_significance(
         {
             f"{attacker_family}::{split_name}": {
-                system_name: [
-                    float(per_seed_results[seed][attacker_family][system_name][split_name]["metrics"]["verdict_accuracy"])
+                verifier_family: [
+                    float(per_seed_results[seed][attacker_family][verifier_family][split_name]["metrics"]["verdict_accuracy"])
                     for seed in sorted(resolved_seeds)
                 ]
-                for system_name in resolved_systems
+                for verifier_family in resolved_verifier_families
             }
             for attacker_family in resolved_attacker_families
             for split_name in ("test_iid", "test_ood")
         },
-        baseline=resolved_systems[0],
+        baseline=resolved_verifier_families[0],
         metric_name="verdict_accuracy",
         estimand="seed_mean_verdict_accuracy",
     )
     significance: dict[str, dict[str, Any]] = {attacker_family: {} for attacker_family in resolved_attacker_families}
     for attacker_family in resolved_attacker_families:
         for split_name in ("test_iid", "test_ood"):
-            significance[attacker_family][split_name] = significance_raw[f"{attacker_family}::{split_name}"]
+            report = significance_raw[f"{attacker_family}::{split_name}"]
+            report["paired_seed_list"] = list(sorted(resolved_seeds))
+            significance[attacker_family][split_name] = report
 
     payload = {
         "experiment_id": "exp_cross_model_transfer",
@@ -202,15 +280,20 @@ def run_experiment(
         "requested_config": {
             "samples_per_family": int(samples_per_family),
             "difficulty": float(difficulty),
-            "allow_surrogate_transfer": bool(allow_surrogate_transfer),
             "allow_protocol_violations": bool(allow_protocol_violations),
         },
-        "systems": resolved_systems,
+        "verifier_model_families": resolved_verifier_families,
+        "attacker_model_families": resolved_attacker_families,
+        "systems": resolved_verifier_families,
         "attacker_families": resolved_attacker_families,
+        "family_pairs": _family_pairs(
+            resolved_attacker_families,
+            resolved_verifier_families,
+        ),
         "seeds": resolved_seeds,
         "protocol": protocol,
         "blueprint_alignment": _blueprint_alignment_summary(
-            resolved_systems,
+            resolved_verifier_families,
             resolved_attacker_families,
         ),
         "manifests": manifests,
@@ -223,7 +306,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_cross_model_transfer.json",
+        output_path=output_path or "outputs/mainline/exp_cross_model_transfer.json",
         payload=payload,
         markdown_summary=summary,
     )
@@ -236,8 +319,8 @@ def run_experiment(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Phase 4 cross-model transfer experiment.")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="Explicit seed list.")
-    parser.add_argument("--systems", nargs="*", default=None, help="Predictor family names.")
-    parser.add_argument("--attacker-families", nargs="*", default=None, help="Attacker family names.")
+    parser.add_argument("--verifier-model-families", nargs="*", default=None, help="Verifier model-family names.")
+    parser.add_argument("--attacker-model-families", nargs="*", default=None, help="Attacker model-family names.")
     parser.add_argument(
         "--samples-per-family",
         type=int,
@@ -245,11 +328,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Samples generated per benchmark family.",
     )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
-    parser.add_argument(
-        "--allow-surrogate-transfer",
-        action="store_true",
-        help="Acknowledge that this runner is still a surrogate predictor-family study.",
-    )
     parser.add_argument(
         "--allow-protocol-violations",
         action="store_true",
@@ -263,11 +341,10 @@ def main() -> None:
     args = build_parser().parse_args()
     payload = run_experiment(
         seeds=args.seeds,
-        systems=args.systems,
-        attacker_families=args.attacker_families,
+        verifier_model_families=args.verifier_model_families,
+        attacker_model_families=args.attacker_model_families,
         samples_per_family=args.samples_per_family,
         difficulty=args.difficulty,
-        allow_surrogate_transfer=args.allow_surrogate_transfer,
         allow_protocol_violations=args.allow_protocol_violations,
         output_path=args.output,
     )

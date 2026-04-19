@@ -176,6 +176,7 @@ def backdoor_adjustment_check(
         if graph is not None
         else None
     )
+    estimate["adjustment_support_basis"] = "graph_validation" if graph is not None else "statistical_heuristic"
     diagnostics = []
     supports_adjustment_set = bool(adjustment_set)
     for candidate in adjustment_set:

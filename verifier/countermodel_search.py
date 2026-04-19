@@ -846,9 +846,15 @@ def _l2_candidates(
             )
         except Exception:
             claimed_adjustment_report = None
+    adjustment_support_basis = (
+        ""
+        if claimed_adjustment_report is None
+        else str(claimed_adjustment_report.get("adjustment_support_basis", "")).strip().lower()
+    )
     claimed_adjuster_supported = (
         None
         if claimed_adjustment_report is None
+        or adjustment_support_basis != "graph_validation"
         else bool(claimed_adjustment_report.get("supports_adjustment_set"))
     )
     instrument = role_bindings.get("instrument") or _extract_named_variable(

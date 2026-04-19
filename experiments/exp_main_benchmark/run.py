@@ -26,10 +26,10 @@ from experiments.benchmark_harness import (
 from evaluation.significance import holm_bonferroni
 
 DEFAULT_MAIN_SYSTEMS: tuple[str, ...] = (
+    "judge_direct",
+    "debate_reduced",
+    "tool_only",
     "countermodel_grounded",
-    "no_tools",
-    "no_countermodel",
-    "claim_only_family",
 )
 DEFAULT_SAMPLES_PER_FAMILY = 10
 PAIRWISE_ALPHA = 0.05
@@ -72,13 +72,30 @@ def _build_formal_paired_significance(
 
 
 def _blueprint_alignment_summary(systems: list[str]) -> dict[str, Any]:
+    required = {
+        "Judge": "judge_direct",
+        "Debate": "debate_reduced",
+        "Tool": "tool_only",
+        "Ours": "countermodel_grounded",
+    }
+    missing = [
+        category
+        for category, system_name in required.items()
+        if system_name not in set(systems)
+    ]
+    connected = not missing
     return {
-        "full_baseline_matrix_connected": False,
+        "full_baseline_matrix_connected": connected,
         "implemented_systems": list(systems),
-        "missing_blueprint_baseline_categories": ["Judge", "Debate", "Tool"],
+        "missing_blueprint_baseline_categories": missing,
         "note": (
-            "The current runner covers verifier variants plus heuristic families, not the full "
-            "Judge / Debate / Tool / Ours baseline matrix described in FINAL_CONSTRUCTION_BLUEPRINT.md."
+            "The runner now evaluates one representative baseline for each required Phase 4 category: "
+            "Judge (`judge_direct`), Debate (`debate_reduced`), Tool (`tool_only`), and Ours (`countermodel_grounded`)."
+            if connected
+            else (
+                "The current runner is missing required baseline categories from the formal "
+                "Judge / Debate / Tool / Ours matrix."
+            )
         ),
     }
 
@@ -265,7 +282,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_main_benchmark.json",
+        output_path=output_path or "outputs/mainline/exp_main_benchmark.json",
         payload=payload,
         markdown_summary=summary,
     )

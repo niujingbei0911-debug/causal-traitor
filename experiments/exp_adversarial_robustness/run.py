@@ -180,7 +180,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_adversarial_robustness.json",
+        output_path=output_path or "outputs/mainline/exp_adversarial_robustness.json",
         payload=payload,
         markdown_summary=summary,
     )

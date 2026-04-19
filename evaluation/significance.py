@@ -278,6 +278,7 @@ def mcnemar_test(
     pred_a: Sequence[Any],
     pred_b: Sequence[Any],
     *,
+    metric_name: str = "accuracy",
     exact: bool = True,
     continuity: bool = True,
     alpha: float = 0.05,
@@ -338,7 +339,7 @@ def mcnemar_test(
 
     return PairedTestResult(
         method=method,
-        metric_name="accuracy",
+        metric_name=str(metric_name),
         score_a=score_a,
         score_b=score_b,
         observed_difference=observed_difference,

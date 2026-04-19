@@ -166,7 +166,7 @@ def run_experiment(
 
     summary = _markdown_summary(payload)
     artifacts = write_artifacts(
-        output_path=output_path or "outputs/exp_identifiability_ablation.json",
+        output_path=output_path or "outputs/mainline/exp_identifiability_ablation.json",
         payload=payload,
         markdown_summary=summary,
     )

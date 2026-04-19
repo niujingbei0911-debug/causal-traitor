@@ -36,12 +36,14 @@ PRIMARY_METRICS: tuple[str, ...] = (
     "countermodel_coverage",
 )
 DEFAULT_MODEL_FAMILIES: tuple[str, ...] = (
-    "countermodel_grounded",
-    "skeptical_family",
-    "optimistic_family",
-    "claim_only_family",
+    "gpt_like",
+    "claude_like",
+    "qwen_like",
 )
 SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
+    "judge_direct",
+    "debate_reduced",
+    "tool_only",
     "countermodel_grounded",
     "no_tools",
     "no_ledger",
@@ -63,6 +65,7 @@ DEFAULT_ATTACKER_FAMILIES: tuple[str, ...] = (
     "hidden_information_attacker",
 )
 SUPPORTED_ATTACKER_FAMILIES = frozenset(DEFAULT_ATTACKER_FAMILIES)
+SUPPORTED_MODEL_FAMILIES = frozenset(DEFAULT_MODEL_FAMILIES)
 
 
 @dataclass(slots=True)
@@ -133,6 +136,33 @@ def validate_system_names(
         raise ValueError(
             f"Unsupported system_name values: {unsupported!r}. "
             f"Supported values are: {sorted(SUPPORTED_SYSTEM_NAMES)!r}."
+        )
+    return resolved
+
+
+def validate_model_families(
+    model_families: list[str] | tuple[str, ...] | None,
+    *,
+    default_families: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    resolved = list(default_families or DEFAULT_MODEL_FAMILIES) if not model_families else [str(name).strip() for name in model_families]
+    if not resolved:
+        raise ValueError("At least one model_family is required.")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for family_name in resolved:
+        if not family_name:
+            raise ValueError("Model family names must be non-empty strings.")
+        if family_name in seen and family_name not in duplicates:
+            duplicates.append(family_name)
+        seen.add(family_name)
+    if duplicates:
+        raise ValueError(f"Duplicate model families are not allowed: {duplicates!r}.")
+    unsupported = sorted(set(resolved) - SUPPORTED_MODEL_FAMILIES)
+    if unsupported:
+        raise ValueError(
+            f"Unsupported model_family values: {unsupported!r}. "
+            f"Supported values are: {sorted(SUPPORTED_MODEL_FAMILIES)!r}."
         )
     return resolved
 
@@ -355,12 +385,34 @@ def _stable_sample_seed(seed: int, family_name: str, sample_index: int) -> int:
     return int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
 
 
+def _apply_split_metadata_to_samples(
+    *,
+    sample_by_id: dict[str, BenchmarkSample],
+    manifest,
+) -> None:
+    ood_reasons = manifest.metadata.get("ood_reasons", {})
+    ood_reasons = ood_reasons if isinstance(ood_reasons, dict) else {}
+
+    for split_name, instance_ids in manifest.split_map().items():
+        for instance_id in instance_ids:
+            sample = sample_by_id.get(instance_id)
+            if sample is None:
+                continue
+            sample.claim.meta["ood_split"] = split_name
+            if instance_id in ood_reasons:
+                sample.claim.meta["ood_reasons"] = list(ood_reasons[instance_id])
+            sample.public.metadata["ood_split"] = split_name
+
+
 def build_seed_benchmark_run(
     *,
     seed: int,
     difficulty: float,
     samples_per_family: int,
     family_names: list[str] | None = None,
+    family_holdout: list[str] | tuple[str, ...] | None = None,
+    lexical_holdout: list[str] | tuple[str, ...] | None = None,
+    variable_renaming_holdout: bool | None = None,
 ) -> SeedBenchmarkRun:
     families = list(family_names or default_benchmark_families())
     generator = BenchmarkGenerator(seed=seed)
@@ -380,8 +432,15 @@ def build_seed_benchmark_run(
             )
             sample_index += 1
 
-    manifest = build_benchmark_splits([sample.claim for sample in samples], seed=seed)
+    manifest = build_benchmark_splits(
+        [sample.claim for sample in samples],
+        seed=seed,
+        family_holdout=family_holdout,
+        lexical_holdout=lexical_holdout,
+        variable_renaming_holdout=variable_renaming_holdout,
+    )
     sample_by_id = {sample.claim.instance_id: sample for sample in samples}
+    _apply_split_metadata_to_samples(sample_by_id=sample_by_id, manifest=manifest)
     split_samples = {
         split_name: [sample_by_id[instance_id] for instance_id in instance_ids]
         for split_name, instance_ids in manifest.split_map().items()
@@ -433,6 +492,7 @@ def build_seed_attack_benchmark_run(
 
     manifest = build_benchmark_splits([sample.claim for sample in samples], seed=seed)
     sample_by_id = {sample.claim.instance_id: sample for sample in samples}
+    _apply_split_metadata_to_samples(sample_by_id=sample_by_id, manifest=manifest)
     split_samples = {
         split_name: [sample_by_id[instance_id] for instance_id in instance_ids]
         for split_name, instance_ids in manifest.split_map().items()
@@ -681,6 +741,25 @@ def apply_attacker_family_profile(
     return rewritten
 
 
+def apply_attacker_model_family_profile(
+    samples: list[BenchmarkSample],
+    *,
+    attacker_model_family: str,
+) -> list[BenchmarkSample]:
+    family = str(attacker_model_family).strip()
+    mapped_family = {
+        "gpt_like": "baseline_attacker",
+        "claude_like": "formal_attacker",
+        "qwen_like": "hidden_information_attacker",
+    }.get(family)
+    if mapped_family is None:
+        raise ValueError(f"Unsupported attacker_model_family: {attacker_model_family!r}.")
+    rewritten = apply_attacker_family_profile(samples, attacker_family=mapped_family)
+    for sample in rewritten:
+        sample.claim.meta["attacker_model_family"] = family
+    return rewritten
+
+
 def _verifier_tool_context(sample: BenchmarkSample) -> dict[str, Any]:
     public = sample.public
     return {
@@ -809,6 +888,184 @@ def _run_no_tools_verifier(sample: BenchmarkSample) -> dict[str, Any]:
         ),
         "supports_public_only": True,
         "system_notes": ["tools_disabled"],
+    }
+
+
+def _label_probabilities(label: str, confidence: float) -> dict[str, float]:
+    other_labels = [
+        VerdictLabel.VALID.value,
+        VerdictLabel.INVALID.value,
+        VerdictLabel.UNIDENTIFIABLE.value,
+    ]
+    probabilities = {candidate: 0.0 for candidate in other_labels}
+    clipped_confidence = max(0.0, min(1.0, float(confidence)))
+    remainder = max(0.0, 1.0 - clipped_confidence)
+    spill = remainder / 2.0
+    for candidate in probabilities:
+        probabilities[candidate] = spill
+    probabilities[str(label)] = clipped_confidence
+    return probabilities
+
+
+def _run_tool_only_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    scenario = _coerce_public_instance(sample)
+    tool_context = _verifier_tool_context(sample)
+    tool_executor = ToolExecutor({})
+    tool_report = tool_executor.execute_for_claim(
+        scenario=scenario,
+        claim=sample.claim.claim_text,
+        level=int(sample.claim.causal_level[1]),
+        context=tool_context,
+    )
+    tool_trace = list(tool_report["tool_trace"])
+    support_hits = sum(
+        1
+        for record in tool_trace
+        if bool(record.get("supports_primary_claim")) or str(record.get("evidence_direction", "")).strip().lower() == "support"
+    )
+    contradiction_hits = sum(
+        1
+        for record in tool_trace
+        if record.get("contradicts_assumptions")
+        or str(record.get("evidence_direction", "")).strip().lower() == "counter"
+    )
+    if contradiction_hits > support_hits and contradiction_hits > 0:
+        label = VerdictLabel.INVALID.value
+        confidence = min(0.82, 0.61 + (0.06 * contradiction_hits))
+    elif support_hits > 0 and contradiction_hits == 0:
+        label = VerdictLabel.VALID.value
+        confidence = min(0.8, 0.62 + (0.05 * support_hits))
+    else:
+        label = VerdictLabel.UNIDENTIFIABLE.value
+        confidence = 0.58
+    return {
+        "predicted_label": label,
+        "confidence": confidence,
+        "verdict": {
+            "label": label,
+            "confidence": confidence,
+            "probabilities": _label_probabilities(label, confidence),
+            "assumption_ledger": [],
+            "witness": None,
+            "support_witness": None,
+            "countermodel_witness": None,
+            "tool_trace": tool_trace,
+            "reasoning_summary": (
+                "Tool-only baseline judges the claim from public tool traces alone, without an "
+                "assumption ledger or countermodel search."
+            ),
+            "metadata": {
+                "baseline_category": "Tool",
+                "baseline_system": "tool_only",
+            },
+        },
+        "tool_report": {
+            "selected_tools": list(tool_report["selected_tools"]),
+            "claim_stance": tool_report["claim_stance"],
+            "identified_issues": list(tool_report["identified_issues"]),
+            "supporting_evidence": list(tool_report["supporting_evidence"]),
+            "counter_evidence": list(tool_report["counter_evidence"]),
+            "tool_trace": tool_trace,
+        },
+        "countermodel_found": False,
+        "countermodel_type": None,
+        "supports_public_only": True,
+        "system_notes": ["baseline_category:Tool", "tool_only"],
+    }
+
+
+def _run_judge_direct_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    payload = _run_claim_only_family(sample)
+    payload["verdict"]["metadata"] = {
+        **dict(payload["verdict"].get("metadata", {})),
+        "baseline_category": "Judge",
+        "baseline_system": "judge_direct",
+    }
+    payload["system_notes"] = ["baseline_category:Judge", "judge_direct"]
+    return payload
+
+
+def _run_debate_reduced_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    scenario = _coerce_public_instance(sample)
+    proposer = _run_judge_direct_baseline(sample)
+    parsed_claim = parse_claim(sample.claim.claim_text)
+    ledger = build_assumption_ledger(parsed_claim)
+    tool_context = _verifier_tool_context(sample)
+    tool_executor = ToolExecutor({})
+    tool_report = tool_executor.execute_for_claim(
+        scenario=scenario,
+        claim=sample.claim.claim_text,
+        level=int(sample.claim.causal_level[1]),
+        context=tool_context,
+    )
+    tool_trace = list(tool_report["tool_trace"])
+    contradicted = any(entry.status.value == "contradicted" for entry in ledger.entries) or any(
+        record.get("contradicts_assumptions") for record in tool_trace
+    )
+    unresolved_nonbaseline = [
+        entry
+        for entry in ledger.entries
+        if entry.status.value != "supported" and entry.name not in {"consistency", "positivity"}
+    ]
+    if contradicted:
+        rebuttal_label = VerdictLabel.INVALID.value
+        rebuttal_reason = "the rebuttal surfaces an explicit identification conflict"
+    elif unresolved_nonbaseline:
+        rebuttal_label = VerdictLabel.UNIDENTIFIABLE.value
+        rebuttal_reason = "the rebuttal keeps core identifying assumptions unresolved"
+    else:
+        rebuttal_label = VerdictLabel.VALID.value
+        rebuttal_reason = "the rebuttal fails to overturn the proposer's claim"
+
+    proposer_label = str(proposer["predicted_label"])
+    if proposer_label == rebuttal_label:
+        label = proposer_label
+    elif rebuttal_label == VerdictLabel.INVALID.value and proposer_label == VerdictLabel.VALID.value:
+        label = VerdictLabel.INVALID.value
+    elif VerdictLabel.UNIDENTIFIABLE.value in {proposer_label, rebuttal_label}:
+        label = VerdictLabel.UNIDENTIFIABLE.value
+    else:
+        label = proposer_label
+    confidence = {
+        VerdictLabel.VALID.value: 0.64,
+        VerdictLabel.INVALID.value: 0.67,
+        VerdictLabel.UNIDENTIFIABLE.value: 0.6,
+    }[label]
+    return {
+        "predicted_label": label,
+        "confidence": confidence,
+        "verdict": {
+            "label": label,
+            "confidence": confidence,
+            "probabilities": _label_probabilities(label, confidence),
+            "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
+            "witness": None,
+            "support_witness": None,
+            "countermodel_witness": None,
+            "tool_trace": tool_trace,
+            "reasoning_summary": (
+                "Reduced debate baseline combines a proposer-style direct judge with a rebuttal pass over "
+                f"the public evidence; here the rebuttal argues that {rebuttal_reason}."
+            ),
+            "metadata": {
+                "baseline_category": "Debate",
+                "baseline_system": "debate_reduced",
+                "proposer_label": proposer_label,
+                "rebuttal_label": rebuttal_label,
+            },
+        },
+        "tool_report": {
+            "selected_tools": list(tool_report["selected_tools"]),
+            "claim_stance": tool_report["claim_stance"],
+            "identified_issues": list(tool_report["identified_issues"]),
+            "supporting_evidence": list(tool_report["supporting_evidence"]),
+            "counter_evidence": list(tool_report["counter_evidence"]),
+            "tool_trace": tool_trace,
+        },
+        "countermodel_found": False,
+        "countermodel_type": None,
+        "supports_public_only": True,
+        "system_notes": ["baseline_category:Debate", "debate_reduced"],
     }
 
 
@@ -1097,6 +1354,12 @@ def predict_sample(
     *,
     system_name: str,
 ) -> dict[str, Any]:
+    if system_name == "judge_direct":
+        return _run_judge_direct_baseline(sample)
+    if system_name == "debate_reduced":
+        return _run_debate_reduced_baseline(sample)
+    if system_name == "tool_only":
+        return _run_tool_only_baseline(sample)
     if system_name == "countermodel_grounded":
         return _run_main_verifier(sample)
     if system_name == "no_tools":
@@ -1112,6 +1375,29 @@ def predict_sample(
     if system_name in {"skeptical_family", "optimistic_family"}:
         return _apply_family_postprocessing(system_name, _run_main_verifier(sample))
     raise ValueError(f"Unsupported system_name: {system_name!r}.")
+
+
+def predict_sample_for_model_family(
+    sample: BenchmarkSample,
+    *,
+    verifier_model_family: str,
+) -> dict[str, Any]:
+    family = str(verifier_model_family).strip()
+    if family == "gpt_like":
+        payload = _run_main_verifier(sample)
+    elif family == "claude_like":
+        payload = _apply_family_postprocessing("skeptical_family", _run_main_verifier(sample))
+    elif family == "qwen_like":
+        payload = _apply_family_postprocessing("optimistic_family", _run_main_verifier(sample))
+    else:
+        raise ValueError(f"Unsupported verifier_model_family: {verifier_model_family!r}.")
+
+    payload["verdict"]["metadata"] = {
+        **dict(payload["verdict"].get("metadata", {})),
+        "verifier_model_family": family,
+    }
+    payload["system_notes"] = list(payload.get("system_notes", [])) + [f"verifier_model_family:{family}"]
+    return payload
 
 
 def score_prediction_records(
@@ -1407,6 +1693,7 @@ def write_artifacts(
     )
     return {
         "json": str(json_path),
+        "artifact_json": str(json_path),
         "raw_predictions": str(raw_predictions_path),
         "markdown_summary": str(markdown_path),
         "config": str(config_path),

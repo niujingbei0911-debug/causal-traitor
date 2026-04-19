@@ -317,6 +317,45 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertIn("variable_descriptions", public.metadata)
         self.assertIn("measurement_semantics", public.metadata)
 
+    def test_public_metadata_sanitizer_strips_nested_supervision_fields_from_allowed_roots(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="nested_metadata_case",
+            description="Nested public metadata must stay verifier-safe.",
+            true_dag={"X": ["Y"]},
+            variables=["X", "Y"],
+            hidden_variables=[],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="valid",
+            metadata={
+                "task_level": "L2",
+                "variable_descriptions": {
+                    "X": {"public": "Observed treatment-like variable.", "gold_label": "invalid"},
+                    "Y": "Observed outcome-like variable.",
+                },
+                "measurement_semantics": {
+                    "X": {
+                        "measurement_view": "adjustment_covariate",
+                        "notes": ["safe note"],
+                        "supports_assumptions": ["valid adjustment set"],
+                        "oracle_verdict": "invalid",
+                        "nested": {"gold_label": "invalid"},
+                    }
+                },
+            },
+        )
+
+        public = gold.to_public()
+
+        self.assertEqual(public.metadata["variable_descriptions"]["X"], "Observed treatment-like variable.")
+        self.assertEqual(public.metadata["variable_descriptions"]["Y"], "Observed outcome-like variable.")
+        self.assertEqual(
+            public.metadata["measurement_semantics"]["X"],
+            {
+                "measurement_view": "adjustment_covariate",
+                "notes": ["safe note"],
+            },
+        )
+
     def test_public_schema_normalizes_variables_to_observed_columns(self) -> None:
         public = PublicCausalInstance(
             scenario_id="variable_normalization_case",

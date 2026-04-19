@@ -869,7 +869,7 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertTrue(decision.metadata["support_stage_entered"])
         self.assertEqual(decision.metadata["decision_stage"], 3)
 
-    def test_stage_3_explicitly_contradicted_assumption_stays_unidentifiable_without_countermodel(self) -> None:
+    def test_stage_3_explicitly_contradicted_assumption_returns_invalid_without_countermodel(self) -> None:
         parsed = ParsedClaim(
             query_type="intervention",
             treatment="exposure",
@@ -895,10 +895,10 @@ class DecisionRuleTests(unittest.TestCase):
 
         decision = decide_verdict(parsed, ledger, countermodel, tool_trace=tool_trace)
 
-        self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
+        self.assertEqual(decision.label, VerdictLabel.INVALID)
         self.assertIsNotNone(decision.witness)
         self.assertEqual(decision.witness.witness_type, WitnessKind.ASSUMPTION)
-        self.assertIs(decision.witness.verdict_suggestion, VerdictLabel.UNIDENTIFIABLE)
+        self.assertIs(decision.witness.verdict_suggestion, VerdictLabel.INVALID)
 
     def test_stage_4_supportive_tools_return_valid_for_identifiable_l3_claim(self) -> None:
         parsed = ParsedClaim(
@@ -1294,6 +1294,22 @@ class PipelineTests(unittest.TestCase):
 
                 self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
                 self.assertEqual(result.label, VerdictLabel.VALID)
+
+    def test_pipeline_valid_backdoor_sample_does_not_flip_invalid_from_heuristic_adjustment_rebuttal(self) -> None:
+        sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.2,
+            seed=94,
+        )
+
+        result = run_verifier_pipeline(
+            sample.claim.claim_text,
+            scenario=sample.public,
+        )
+
+        self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
+        self.assertEqual(result.label, VerdictLabel.VALID)
+        self.assertTrue(result.metadata["support_stage_entered"])
 
     def test_pipeline_l3_ambiguity_regression_seeds_stay_unidentifiable(self) -> None:
         generator = BenchmarkGenerator(seed=17)

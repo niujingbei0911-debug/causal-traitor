@@ -1294,6 +1294,9 @@ class SplitBuilderTests(unittest.TestCase):
         )
         self.assertTrue(loaded_manifest.test_ood)
         self.assertEqual(set(split_ids), {"train", "dev", "test_iid", "test_ood"})
+        for split_name, resolved_instances in split_instances.items():
+            for instance in resolved_instances:
+                self.assertEqual(instance.meta.get("ood_split"), split_name)
 
 
 if __name__ == "__main__":

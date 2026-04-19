@@ -2,6 +2,7 @@ import unittest
 
 from evaluation.metrics import CausalMetrics, MetricResult
 from evaluation.reporting import (
+    compare_predictions,
     compare_prediction_groups,
     summarize_human_audit_agreement,
     summarize_metric,
@@ -372,6 +373,23 @@ class EvaluationStatisticsTests(unittest.TestCase):
         self.assertTrue(result.significant)
         self.assertEqual(result.details["a_correct_b_wrong"], 0)
         self.assertEqual(result.details["a_wrong_b_correct"], 8)
+
+    def test_compare_predictions_preserves_metric_name_for_mcnemar(self) -> None:
+        y_true = [0, 1] * 10
+        pred_a = y_true.copy()
+        pred_b = y_true.copy()
+        pred_a[0] = 1 - pred_a[0]
+        pred_a[1] = 1 - pred_a[1]
+
+        result = compare_predictions(
+            y_true,
+            pred_a,
+            pred_b,
+            method="mcnemar",
+            metric_name="verdict_accuracy",
+        )
+
+        self.assertEqual(result.metric_name, "verdict_accuracy")
 
     def test_holm_bonferroni_corrects_multiple_comparisons(self) -> None:
         entries = holm_bonferroni(

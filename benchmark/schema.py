@@ -239,15 +239,104 @@ def _serialize_json_safe(value: Any) -> Any:
     return value
 
 
+def _normalize_public_text(value: Any) -> str | None:
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _normalize_public_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidate = _normalize_public_text(value)
+        return [candidate] if candidate is not None else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        candidate = _normalize_public_text(item)
+        if candidate is None or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def sanitize_public_variable_descriptions(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    descriptions: dict[str, str] = {}
+    for raw_variable, raw_description in value.items():
+        variable = _normalize_public_text(raw_variable)
+        if variable is None:
+            continue
+        description: str | None = None
+        if isinstance(raw_description, dict):
+            for candidate_key in ("public", "description", "text", "summary"):
+                description = _normalize_public_text(raw_description.get(candidate_key))
+                if description is not None:
+                    break
+        else:
+            description = _normalize_public_text(raw_description)
+        if description is not None:
+            descriptions[variable] = description
+    return descriptions
+
+
+def sanitize_public_measurement_semantics(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    semantics: dict[str, dict[str, Any]] = {}
+    for raw_variable, raw_entry in value.items():
+        variable = _normalize_public_text(raw_variable)
+        if variable is None or not isinstance(raw_entry, dict):
+            continue
+        entry: dict[str, Any] = {}
+        measurement_view = _normalize_public_text(raw_entry.get("measurement_view"))
+        if measurement_view is not None:
+            entry["measurement_view"] = measurement_view
+        notes = _normalize_public_text_list(raw_entry.get("notes"))
+        if notes:
+            entry["notes"] = notes
+        if entry:
+            semantics[variable] = entry
+    return semantics
+
+
+def _sanitize_public_metadata_value(key: str, value: Any) -> Any:
+    if key == "ood_split":
+        return _normalize_public_text(value)
+    if key == "selection_ratio":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    if key == "task_level":
+        return _normalize_public_text(value)
+    if key == "variable_descriptions":
+        return sanitize_public_variable_descriptions(value)
+    if key == "measurement_semantics":
+        return sanitize_public_measurement_semantics(value)
+    return _serialize_json_safe(value)
+
+
 def _sanitize_metadata(value: Any, *, root: bool = False) -> Any:
     if isinstance(value, dict):
-        allowed_keys = _PUBLIC_METADATA_ALLOWED_KEYS if root else None
+        if root:
+            sanitized: dict[str, Any] = {}
+            for raw_key, item in value.items():
+                key = str(raw_key)
+                if key in _SANITIZED_METADATA_KEYS or key not in _PUBLIC_METADATA_ALLOWED_KEYS:
+                    continue
+                cleaned = _sanitize_public_metadata_value(key, item)
+                if cleaned is None:
+                    continue
+                sanitized[key] = cleaned
+            return sanitized
         return {
             key: _sanitize_metadata(item)
             for raw_key, item in value.items()
             for key in (str(raw_key),)
             if key not in _SANITIZED_METADATA_KEYS
-            and (allowed_keys is None or key in allowed_keys)
         }
     if isinstance(value, list):
         return [_sanitize_metadata(item, root=False) for item in value]
