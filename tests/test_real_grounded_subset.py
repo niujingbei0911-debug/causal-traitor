@@ -132,6 +132,60 @@ class RealGroundedSubsetTests(unittest.TestCase):
                 }
             )
 
+    def test_real_grounded_case_requires_information_contract_and_identifying_assumptions(self) -> None:
+        claim = _build_claim("real_grounded_claim_004")
+
+        with self.assertRaises(ValueError):
+            RealGroundedCase(
+                case_id="rg_missing_contract",
+                grounding_type="literature_grounded",
+                claim=claim,
+                source_citation=SourceCitation(citation_text="Nguyen (2025), Policy Studies."),
+                public_evidence_summary="Summary without an explicit visible-vs-hidden contract.",
+                witness_note="Missing information contract should fail.",
+            )
+
+        with self.assertRaises(ValueError):
+            RealGroundedCase(
+                case_id="rg_missing_assumptions",
+                grounding_type="literature_grounded",
+                claim=claim,
+                source_citation=SourceCitation(citation_text="Nguyen (2025), Policy Studies."),
+                public_evidence_summary="Summary with an explicit information contract but no identifying assumptions.",
+                information_contract={
+                    "visible_information": ["Public estimate"],
+                    "hidden_information": ["Reviewer memo"],
+                },
+                witness_note="Missing identifying assumptions should fail.",
+            )
+
+    def test_real_grounded_case_rejects_conflicting_claim_meta_contract_fields(self) -> None:
+        claim = _build_claim("real_grounded_claim_005")
+        claim.meta = {
+            "grounding_type": "semi_real",
+            "real_grounded_case_id": "stale_case_id",
+            "source_citation": {"citation_text": "Stale citation"},
+            "information_contract": {
+                "visible_information": ["Wrong public evidence"],
+                "hidden_information": ["Wrong hidden evidence"],
+            },
+        }
+
+        with self.assertRaises(ValueError):
+            RealGroundedCase(
+                case_id="rg_policy_005",
+                grounding_type="literature_grounded",
+                claim=claim,
+                source_citation=SourceCitation(citation_text="Patel (2024), Causal Policy Review."),
+                public_evidence_summary="Updated public evidence summary.",
+                information_contract={
+                    "visible_information": ["Observed cohort table"],
+                    "hidden_information": ["Auditor-only sensitivity notes"],
+                },
+                identifying_assumptions=["Conditional ignorability"],
+                witness_note="Conflicting claim meta should not be silently preserved.",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,6 +131,10 @@ class InformationContract:
         self.visible_information = _normalize_str_list(self.visible_information)
         self.hidden_information = _normalize_str_list(self.hidden_information)
         self.note = str(self.note).strip()
+        if not self.visible_information:
+            raise ValueError("information_contract.visible_information must contain at least one item.")
+        if not self.hidden_information:
+            raise ValueError("information_contract.hidden_information must contain at least one item.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -152,7 +156,7 @@ def _normalize_information_contract(
     value: InformationContract | dict[str, Any] | None,
 ) -> InformationContract:
     if value is None:
-        return InformationContract()
+        raise ValueError("information_contract is required for RealGroundedCase.")
     if isinstance(value, InformationContract):
         return InformationContract.from_dict(value.to_dict())
     if isinstance(value, dict):
@@ -187,17 +191,27 @@ class RealGroundedCase:
         )
         self.information_contract = _normalize_information_contract(self.information_contract)
         self.identifying_assumptions = _normalize_str_list(self.identifying_assumptions)
+        if not self.identifying_assumptions:
+            raise ValueError("identifying_assumptions must contain at least one item for RealGroundedCase.")
         self.witness_note = _require_non_empty_string(self.witness_note, field_name="witness_note")
         self.metadata = dict(self.metadata)
 
         claim_meta = dict(self.claim.meta)
-        claim_meta.setdefault("data_origin", "real_grounded")
-        claim_meta.setdefault("grounding_type", self.grounding_type.value)
-        claim_meta.setdefault("real_grounded_case_id", self.case_id)
-        claim_meta.setdefault("source_citation", self.source_citation.to_dict())
-        claim_meta.setdefault("public_evidence_summary", self.public_evidence_summary)
-        claim_meta.setdefault("information_contract", self.information_contract.to_dict())
-        claim_meta.setdefault("witness_note", self.witness_note)
+        authoritative_meta = {
+            "data_origin": "real_grounded",
+            "grounding_type": self.grounding_type.value,
+            "real_grounded_case_id": self.case_id,
+            "source_citation": self.source_citation.to_dict(),
+            "public_evidence_summary": self.public_evidence_summary,
+            "information_contract": self.information_contract.to_dict(),
+            "witness_note": self.witness_note,
+        }
+        for key, value in authoritative_meta.items():
+            if key in claim_meta and claim_meta[key] != value:
+                raise ValueError(
+                    f"ClaimInstance.meta[{key!r}] conflicts with RealGroundedCase authoritative metadata."
+                )
+        claim_meta.update(authoritative_meta)
         self.claim.meta = claim_meta
 
         merged_assumptions = [
@@ -253,7 +267,7 @@ class RealGroundedDataset:
     """Serializable dataset wrapper for the real-grounded subset."""
 
     dataset_name: str = "real_grounded_subset"
-    version: str = "v1"
+    version: str = "v2"
     cases: list[RealGroundedCase | dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -278,7 +292,7 @@ class RealGroundedDataset:
     def from_dict(cls, payload: dict[str, Any]) -> "RealGroundedDataset":
         return cls(
             dataset_name=payload.get("dataset_name", "real_grounded_subset"),
-            version=payload.get("version", "v1"),
+            version=payload.get("version", "v2"),
             cases=list(payload.get("cases", [])),
             metadata=dict(payload.get("metadata", {})),
         )

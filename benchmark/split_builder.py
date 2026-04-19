@@ -10,6 +10,7 @@ from typing import Any
 from benchmark.schema import BenchmarkSplitManifest, ClaimInstance
 
 DEFAULT_FAMILY_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "l3_monotonicity_cross_world_failure_family",
     "l3_mediation_abduction_family",
     "l3_counterfactual_ambiguity_family",
     "l2_invalid_iv_family",
@@ -19,6 +20,28 @@ DEFAULT_LEXICAL_HOLDOUT_PRIORITY: tuple[str, ...] = (
     "truthful::cautious::average_treatment_effect",
     "truthful::formal::average_treatment_effect",
     "truthful::direct::average_treatment_effect",
+)
+DEFAULT_MECHANISM_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "cross_world_failure",
+    "counterfactual_ambiguity",
+    "frontdoor_partial_measurement",
+    "instrumental_variable",
+    "subgroup_heterogeneity",
+    "reverse_causality",
+    "selection_bias",
+    "confounding",
+)
+DEFAULT_ATTACK_FAMILY_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "counterfactual_shortcut",
+    "identification_shortcut",
+    "transport_shortcut",
+    "observational_shortcut",
+)
+DEFAULT_CONTEXT_SHIFT_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "policy",
+    "clinical",
+    "education",
+    "market",
 )
 
 
@@ -64,6 +87,23 @@ def _meta_text(instance: ClaimInstance, key: str) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _normalize_lexical_template_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    return normalized.split("::persuasion::", 1)[0]
+
+
+def _lexical_axis(instance: ClaimInstance) -> str:
+    return str(
+        _normalize_lexical_template_id(
+            _meta_text(instance, "lexical_template_id") or instance.language_template_id
+        )
+    )
 
 
 def _shuffle_ids(instance_ids: list[str], *, seed: int) -> list[str]:
@@ -200,7 +240,7 @@ def build_split_manifest(
     instances: Iterable[ClaimInstance | dict[str, Any]],
     *,
     dataset_name: str = "causal_oversight_benchmark",
-    version: str = "v1",
+    version: str = "v2",
     family_holdout: Iterable[str] | None = None,
     lexical_holdout: Iterable[str] | None = None,
     variable_renaming_holdout: bool | None = None,
@@ -219,18 +259,32 @@ def build_split_manifest(
         raise ValueError("Cannot build split manifest from an empty benchmark instance set.")
 
     families = _collect_unique(instance.graph_family for instance in normalized_instances)
-    templates = _collect_unique(instance.language_template_id for instance in normalized_instances)
+    templates = _collect_unique(_lexical_axis(instance) for instance in normalized_instances)
     renamed_available = any(_is_variable_renamed(instance) for instance in normalized_instances)
 
     selected_family_holdout = _collect_unique(family_holdout or []) if family_holdout is not None else []
-    selected_lexical_holdout = _collect_unique(lexical_holdout or []) if lexical_holdout is not None else []
+    selected_lexical_holdout = (
+        _collect_unique(
+            normalized
+            for normalized in (
+                _normalize_lexical_template_id(value) for value in (lexical_holdout or [])
+            )
+            if normalized is not None
+        )
+        if lexical_holdout is not None
+        else []
+    )
     selected_variable_renaming_holdout = (
         renamed_available if variable_renaming_holdout is None else bool(variable_renaming_holdout)
     )
     selected_mechanism_holdout = _collect_unique(mechanism_holdout or [])
     selected_attack_family_holdout = _collect_unique(attack_family_holdout or [])
     selected_context_shift_holdout = _collect_unique(context_shift_holdout or [])
-    selected_paired_flip_holdout = bool(paired_flip_holdout)
+    selected_paired_flip_holdout = (
+        any(_meta_text(instance, "paired_flip_id") is not None for instance in normalized_instances)
+        if paired_flip_holdout is None
+        else bool(paired_flip_holdout)
+    )
     selection_policy = {
         "family_holdout": "explicit" if family_holdout is not None else "default_unset",
         "lexical_holdout": "explicit" if lexical_holdout is not None else "default_unset",
@@ -242,7 +296,7 @@ def build_split_manifest(
             "explicit" if attack_family_holdout is not None else "default_unset"
         ),
         "context_shift_holdout": "explicit" if context_shift_holdout is not None else "default_unset",
-        "paired_flip_holdout": "explicit" if paired_flip_holdout is not None else "default_unset",
+        "paired_flip_holdout": "explicit" if paired_flip_holdout is not None else "auto_if_available",
     }
 
     if family_holdout is None and not selected_family_holdout and len(families) > 1:
@@ -263,7 +317,7 @@ def build_split_manifest(
         pure_lexical_counts: Counter[str] = Counter()
         overall_lexical_counts: Counter[str] = Counter()
         for instance in normalized_instances:
-            template_id = instance.language_template_id
+            template_id = _lexical_axis(instance)
             overall_lexical_counts[template_id] += 1
             if instance.graph_family in selected_family_holdout:
                 continue
@@ -289,12 +343,69 @@ def build_split_manifest(
                     else "frequency_fallback"
                 )
 
+    if mechanism_holdout is None and not selected_mechanism_holdout:
+        mechanism_counts = Counter(
+            value
+            for value in (_meta_text(instance, "mechanism_ood_tag") for instance in normalized_instances)
+            if value is not None
+        )
+        preferred_mechanism = _pick_preferred_candidate(
+            mechanism_counts,
+            preferred_order=DEFAULT_MECHANISM_HOLDOUT_PRIORITY,
+        )
+        fallback_mechanism = preferred_mechanism or _pick_frequency_candidate(mechanism_counts)
+        if fallback_mechanism is not None:
+            selected_mechanism_holdout = [fallback_mechanism]
+            selection_policy["mechanism_holdout"] = (
+                "preferred_stable_default"
+                if preferred_mechanism is not None
+                else "frequency_fallback"
+            )
+
+    if attack_family_holdout is None and not selected_attack_family_holdout:
+        attack_family_counts = Counter(
+            value
+            for value in (_meta_text(instance, "attack_family") for instance in normalized_instances)
+            if value is not None
+        )
+        preferred_attack_family = _pick_preferred_candidate(
+            attack_family_counts,
+            preferred_order=DEFAULT_ATTACK_FAMILY_HOLDOUT_PRIORITY,
+        )
+        fallback_attack_family = preferred_attack_family or _pick_frequency_candidate(attack_family_counts)
+        if fallback_attack_family is not None:
+            selected_attack_family_holdout = [fallback_attack_family]
+            selection_policy["attack_family_holdout"] = (
+                "preferred_stable_default"
+                if preferred_attack_family is not None
+                else "frequency_fallback"
+            )
+
+    if context_shift_holdout is None and not selected_context_shift_holdout:
+        context_counts = Counter(
+            value
+            for value in (_meta_text(instance, "context_shift_group") for instance in normalized_instances)
+            if value is not None
+        )
+        preferred_context_group = _pick_preferred_candidate(
+            context_counts,
+            preferred_order=DEFAULT_CONTEXT_SHIFT_HOLDOUT_PRIORITY,
+        )
+        fallback_context_group = preferred_context_group or _pick_frequency_candidate(context_counts)
+        if fallback_context_group is not None:
+            selected_context_shift_holdout = [fallback_context_group]
+            selection_policy["context_shift_holdout"] = (
+                "preferred_stable_default"
+                if preferred_context_group is not None
+                else "frequency_fallback"
+            )
+
     ood_reasons: dict[str, list[str]] = {}
     for instance in normalized_instances:
         reasons: list[str] = []
         if instance.graph_family in selected_family_holdout:
             reasons.append("family_holdout")
-        if instance.language_template_id in selected_lexical_holdout:
+        if _lexical_axis(instance) in selected_lexical_holdout:
             reasons.append("lexical_holdout")
         if selected_variable_renaming_holdout and _is_variable_renamed(instance):
             reasons.append("variable_renaming_holdout")
@@ -356,7 +467,7 @@ def build_split_manifest(
         for instance in normalized_instances
     }
     metadata = {
-        "builder": "split_builder_v1",
+        "builder": "split_builder_v2",
         "seed": int(seed),
         "n_instances": len(normalized_instances),
         "split_counts": {

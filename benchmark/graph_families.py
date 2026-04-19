@@ -354,17 +354,13 @@ def _build_l1_latent_confounding_family(seed: int) -> GraphFamilyBlueprint:
     edges = [
         (latent, treatment),
         (latent, outcome),
+        (latent, proxy),
         (context, treatment),
         (context, outcome),
         (treatment, outcome),
     ]
-    if rng.random() < 0.5:
-        edges.append((latent, proxy))
-        observed_variables = [context, treatment, outcome, proxy]
-        proxy_variables = [proxy]
-    else:
-        observed_variables = [context, treatment, outcome]
-        proxy_variables = []
+    observed_variables = [context, proxy, treatment, outcome]
+    proxy_variables = [proxy]
 
     return _make_blueprint(
         family_name="l1_latent_confounding_family",
@@ -393,6 +389,10 @@ def _build_l1_latent_confounding_family(seed: int) -> GraphFamilyBlueprint:
             paired_flip_candidates=["invalid", "unidentifiable"],
             extra={
             "attack_modes": ["association_overclaim", "hidden_confounder_denial"],
+            "attack_modes_by_label": {
+                "invalid": ["hidden_confounder_denial"],
+                "unidentifiable": ["association_overclaim"],
+            },
             "observational_equivalence_risk": True,
             "preferred_observed_subset": list(observed_variables),
             },
@@ -519,6 +519,58 @@ def _build_l1_proxy_disambiguation_family(seed: int) -> GraphFamilyBlueprint:
             "attack_modes": ["association_overclaim"],
             "identifying_variables": [adjuster, proxy],
             "selection_mechanism": "none",
+            },
+        ),
+    )
+
+
+def _build_l1_reverse_causality_family(seed: int) -> GraphFamilyBlueprint:
+    rng = _stable_rng("l1_reverse_causality_family", seed)
+    used: set[str] = set()
+    treatment = _sample_unique_name(rng, "treatment", used)
+    outcome = _sample_unique_name(rng, "outcome", used)
+    temporal_marker = _sample_unique_name(rng, "observed_context", used)
+    proxy = _sample_unique_name(rng, "proxy", used)
+
+    edges = [
+        (temporal_marker, outcome),
+        (outcome, treatment),
+        (outcome, proxy),
+    ]
+    observed_variables = [temporal_marker, proxy, treatment, outcome]
+
+    return _make_blueprint(
+        family_name="l1_reverse_causality_family",
+        causal_level="L1",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Association-level family where the observed relation is compatible with reverse causality.",
+        seed=seed,
+        nodes=observed_variables,
+        edges=edges,
+        observed_variables=observed_variables,
+        hidden_variables=[],
+        target_variables={"treatment": treatment, "outcome": outcome},
+        proxy_variables=[proxy],
+        role_bindings={
+            "treatment": treatment,
+            "outcome": outcome,
+            "observed_context": temporal_marker,
+            "proxy": proxy,
+            "temporal_marker": temporal_marker,
+        },
+        query_types=["causal_direction", "association_strength"],
+        supported_gold_labels=["invalid", "unidentifiable"],
+        family_tags=["l1", "association", "reverse_causality"],
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="reverse_causality",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
+                "attack_modes": ["association_overclaim"],
+                "attack_modes_by_label": {
+                    "invalid": ["association_overclaim"],
+                    "unidentifiable": ["association_overclaim"],
+                },
+                "temporal_marker": temporal_marker,
             },
         ),
     )
@@ -678,8 +730,118 @@ def _build_l2_invalid_iv_family(seed: int) -> GraphFamilyBlueprint:
             paired_flip_candidates=["invalid", "unidentifiable"],
             extra={
             "attack_modes": ["weak_iv_as_valid_iv", "invalid_iv_exclusion_claim"],
+            "attack_modes_by_label": {
+                "invalid": ["invalid_iv_exclusion_claim", "weak_iv_as_valid_iv"],
+                "unidentifiable": ["weak_iv_as_valid_iv"],
+            },
             "invalidity_reason": "instrument_directly_affects_outcome",
             "selection_mechanism": "none",
+            },
+        ),
+    )
+
+
+def _build_l2_subgroup_heterogeneity_family(seed: int) -> GraphFamilyBlueprint:
+    rng = _stable_rng("l2_subgroup_heterogeneity_family", seed)
+    used: set[str] = set()
+    treatment = _sample_unique_name(rng, "treatment", used)
+    outcome = _sample_unique_name(rng, "outcome", used)
+    subgroup = _sample_unique_name(rng, "observed_context", used)
+    adjuster = _sample_unique_name(rng, "observed_adjuster", used)
+
+    edges = [
+        (subgroup, treatment),
+        (subgroup, outcome),
+        (adjuster, treatment),
+        (adjuster, outcome),
+        (treatment, outcome),
+    ]
+    observed_variables = [subgroup, adjuster, treatment, outcome]
+
+    return _make_blueprint(
+        family_name="l2_subgroup_heterogeneity_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Intervention-level family with subgroup-specific heterogeneity that tempts overgeneralization.",
+        seed=seed,
+        nodes=observed_variables,
+        edges=edges,
+        observed_variables=observed_variables,
+        hidden_variables=[],
+        target_variables={"treatment": treatment, "outcome": outcome},
+        role_bindings={
+            "treatment": treatment,
+            "outcome": outcome,
+            "observed_context": subgroup,
+            "observed_adjuster": adjuster,
+            "subgroup": subgroup,
+        },
+        query_types=["average_treatment_effect", "interventional_effect"],
+        supported_gold_labels=["invalid", "unidentifiable"],
+        family_tags=["l2", "intervention", "heterogeneity", "subgroup"],
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="subgroup_heterogeneity",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
+                "attack_modes": ["heterogeneity_overgeneralization"],
+                "attack_modes_by_label": {
+                    "invalid": ["heterogeneity_overgeneralization"],
+                    "unidentifiable": ["heterogeneity_overgeneralization"],
+                },
+                "heterogeneity_group_variable": subgroup,
+            },
+        ),
+    )
+
+
+def _build_l2_frontdoor_partial_measurement_family(seed: int) -> GraphFamilyBlueprint:
+    rng = _stable_rng("l2_frontdoor_partial_measurement_family", seed)
+    used: set[str] = set()
+    treatment = _sample_unique_name(rng, "treatment", used)
+    outcome = _sample_unique_name(rng, "outcome", used)
+    mediator = _sample_unique_name(rng, "mediator", used)
+    latent = _sample_unique_name(rng, "latent_confounder", used)
+    context = _sample_unique_name(rng, "observed_context", used)
+
+    edges = [
+        (latent, treatment),
+        (latent, outcome),
+        (context, treatment),
+        (treatment, mediator),
+        (mediator, outcome),
+    ]
+    observed_variables = [context, treatment, mediator, outcome]
+
+    return _make_blueprint(
+        family_name="l2_frontdoor_partial_measurement_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Intervention-level family where frontdoor identification is available only when mediator measurement is sufficiently complete.",
+        seed=seed,
+        nodes=observed_variables + [latent],
+        edges=edges,
+        observed_variables=observed_variables,
+        hidden_variables=[latent],
+        target_variables={"treatment": treatment, "outcome": outcome},
+        role_bindings={
+            "treatment": treatment,
+            "outcome": outcome,
+            "mediator": mediator,
+            "latent_confounder": latent,
+            "observed_context": context,
+        },
+        query_types=["average_treatment_effect", "frontdoor_effect"],
+        supported_gold_labels=["valid", "unidentifiable"],
+        family_tags=["l2", "intervention", "frontdoor", "partial_measurement"],
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="frontdoor_partial_measurement",
+            paired_flip_candidates=["valid", "unidentifiable"],
+            extra={
+                "attack_modes": ["unidentifiable_disguised_as_valid"],
+                "attack_modes_by_label": {
+                    "unidentifiable": ["unidentifiable_disguised_as_valid"],
+                },
+                "selection_mechanism": "none",
             },
         ),
     )
@@ -730,6 +892,10 @@ def _build_l3_counterfactual_ambiguity_family(seed: int) -> GraphFamilyBlueprint
             paired_flip_candidates=["unidentifiable", "invalid"],
             extra={
             "attack_modes": ["counterfactual_overclaim", "unidentifiable_disguised_as_valid"],
+            "attack_modes_by_label": {
+                "invalid": ["counterfactual_overclaim"],
+                "unidentifiable": ["unidentifiable_disguised_as_valid"],
+            },
             "requires_countermodel_search": True,
             "selection_mechanism": "none",
             },
@@ -789,6 +955,61 @@ def _build_l3_mediation_abduction_family(seed: int) -> GraphFamilyBlueprint:
     )
 
 
+def _build_l3_monotonicity_cross_world_failure_family(seed: int) -> GraphFamilyBlueprint:
+    rng = _stable_rng("l3_monotonicity_cross_world_failure_family", seed)
+    used: set[str] = set()
+    treatment = _sample_unique_name(rng, "treatment", used)
+    outcome = _sample_unique_name(rng, "outcome", used)
+    mediator = _sample_unique_name(rng, "mediator", used)
+    latent = _sample_unique_name(rng, "latent_confounder", used)
+    context = _sample_unique_name(rng, "observed_context", used)
+
+    edges = [
+        (context, treatment),
+        (latent, mediator),
+        (latent, outcome),
+        (treatment, mediator),
+        (treatment, outcome),
+        (mediator, outcome),
+    ]
+    observed_variables = [context, treatment, mediator, outcome]
+
+    return _make_blueprint(
+        family_name="l3_monotonicity_cross_world_failure_family",
+        causal_level="L3",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Counterfactual family where monotonicity or cross-world assumptions can fail even under matched observational evidence.",
+        seed=seed,
+        nodes=observed_variables + [latent],
+        edges=edges,
+        observed_variables=observed_variables,
+        hidden_variables=[latent],
+        target_variables={"treatment": treatment, "outcome": outcome},
+        role_bindings={
+            "treatment": treatment,
+            "outcome": outcome,
+            "mediator": mediator,
+            "latent_response_type": latent,
+            "observed_context": context,
+        },
+        query_types=["unit_level_counterfactual", "effect_of_treatment_on_treated"],
+        supported_gold_labels=["invalid", "unidentifiable"],
+        family_tags=["l3", "counterfactual", "cross_world_failure", "monotonicity_failure"],
+        generator_hints=_ood_generator_hints(
+            mechanism_ood_tag="cross_world_failure",
+            paired_flip_candidates=["invalid", "unidentifiable"],
+            extra={
+                "attack_modes": ["function_form_manipulation", "unidentifiable_disguised_as_valid"],
+                "attack_modes_by_label": {
+                    "invalid": ["function_form_manipulation"],
+                    "unidentifiable": ["unidentifiable_disguised_as_valid"],
+                },
+                "requires_countermodel_search": True,
+            },
+        ),
+    )
+
+
 GRAPH_FAMILY_REGISTRY: dict[str, GraphFamilyTemplate] = {
     "l1_latent_confounding_family": GraphFamilyTemplate(
         family_name="l1_latent_confounding_family",
@@ -811,6 +1032,13 @@ GRAPH_FAMILY_REGISTRY: dict[str, GraphFamilyTemplate] = {
         description="Association family with proxy-assisted disambiguation.",
         builder=_build_l1_proxy_disambiguation_family,
     ),
+    "l1_reverse_causality_family": GraphFamilyTemplate(
+        family_name="l1_reverse_causality_family",
+        causal_level="L1",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Association family with reverse-causality ambiguity.",
+        builder=_build_l1_reverse_causality_family,
+    ),
     "l2_valid_backdoor_family": GraphFamilyTemplate(
         family_name="l2_valid_backdoor_family",
         causal_level="L2",
@@ -832,6 +1060,20 @@ GRAPH_FAMILY_REGISTRY: dict[str, GraphFamilyTemplate] = {
         description="Intervention family with an invalid instrument.",
         builder=_build_l2_invalid_iv_family,
     ),
+    "l2_subgroup_heterogeneity_family": GraphFamilyTemplate(
+        family_name="l2_subgroup_heterogeneity_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Intervention family with subgroup-specific heterogeneity.",
+        builder=_build_l2_subgroup_heterogeneity_family,
+    ),
+    "l2_frontdoor_partial_measurement_family": GraphFamilyTemplate(
+        family_name="l2_frontdoor_partial_measurement_family",
+        causal_level="L2",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Intervention family with frontdoor identification under partial measurement.",
+        builder=_build_l2_frontdoor_partial_measurement_family,
+    ),
     "l3_counterfactual_ambiguity_family": GraphFamilyTemplate(
         family_name="l3_counterfactual_ambiguity_family",
         causal_level="L3",
@@ -845,6 +1087,13 @@ GRAPH_FAMILY_REGISTRY: dict[str, GraphFamilyTemplate] = {
         identifiability=IdentifiabilityStatus.IDENTIFIABLE,
         description="Counterfactual family with observed mediation and abduction-friendly structure.",
         builder=_build_l3_mediation_abduction_family,
+    ),
+    "l3_monotonicity_cross_world_failure_family": GraphFamilyTemplate(
+        family_name="l3_monotonicity_cross_world_failure_family",
+        causal_level="L3",
+        identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
+        description="Counterfactual family with monotonicity and cross-world failure modes.",
+        builder=_build_l3_monotonicity_cross_world_failure_family,
     ),
 }
 

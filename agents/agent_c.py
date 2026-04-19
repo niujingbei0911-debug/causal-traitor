@@ -779,7 +779,7 @@ class AgentC:
             return 0.0
         lowered = text.lower()
         if level == 1 and any(token in lowered for token in ["混杂", "未观测", "共同原因", "confound", "latent"]):
-            difficulty = float(getattr(scenario, "difficulty", 0.5)) if scenario is not None else 0.5
+            difficulty = 0.5
             scaled = max(0.0, min(1.0, (difficulty - 0.82) / 0.13))
             return 0.04 + 0.10 * scaled
         if level == 2 and any(token in lowered for token in ["工具变量", "iv", "后门", "heterogeneity", "att", "atu"]):

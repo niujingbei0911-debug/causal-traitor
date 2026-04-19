@@ -155,12 +155,15 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(list(public.data.columns), list(self.observed_data.columns))
         self.assertFalse(hasattr(public, "verdict"))
         self.assertFalse(hasattr(public, "gold_label"))
+        self.assertEqual(public.difficulty, 0.5)
         self.assertEqual(public.difficulty_config, {})
         self.assertNotIn("instrument_variables", public.verifier_visible_fields)
         self.assertNotIn("mediator_variables", public.verifier_visible_fields)
         self.assertNotIn("selection_variables", public.verifier_visible_fields)
         self.assertNotIn("instrument_variables", public.to_dict())
         self.assertNotIn("selection_variables", public.to_dict())
+        self.assertNotIn("difficulty", public.to_dict())
+        self.assertNotIn("difficulty_config", public.to_dict())
 
     def test_gold_verdict_selective_fields_round_trip_without_leaking_to_public_view(self) -> None:
         self.gold.verdict = VerifierVerdict(
@@ -174,6 +177,8 @@ class InformationPartitionTests(unittest.TestCase):
                 required_evidence=["public support for the claimed identifying bridge"],
                 note="Need public identification evidence before endorsing the claim.",
             ),
+            assumption_ledger=[{"name": "valid adjustment set", "status": "unresolved"}],
+            support_witness={"witness_type": "support", "description": "Public support remains partial."},
             metadata={"decision_stage": 3},
         )
 
@@ -185,6 +190,11 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertIs(self.gold.verdict.identification_status, IdentificationStatus.UNDERDETERMINED)
         self.assertEqual(payload["identification_status"], "underdetermined")
         self.assertEqual(payload["refusal_reason"], "missing_identifying_support")
+        self.assertEqual(payload["assumption_ledger"], [{"name": "valid adjustment set", "status": "unresolved"}])
+        self.assertEqual(
+            payload["support_witness"],
+            {"witness_type": "support", "description": "Public support remains partial."},
+        )
         self.assertEqual(
             payload["missing_information_spec"],
             {
@@ -449,9 +459,9 @@ class InformationPartitionTests(unittest.TestCase):
         public = gold.to_public()
 
         self.assertEqual(public.description, gold.metadata["public_description"])
-        self.assertEqual(public.metadata["task_level"], "L2")
         self.assertIn("variable_descriptions", public.metadata)
         self.assertIn("measurement_semantics", public.metadata)
+        self.assertNotIn("task_level", public.metadata)
 
     def test_public_metadata_sanitizer_strips_nested_supervision_fields_from_allowed_roots(self) -> None:
         gold = GoldCausalInstance(
@@ -491,6 +501,7 @@ class InformationPartitionTests(unittest.TestCase):
                 "notes": ["safe note"],
             },
         )
+        self.assertNotIn("task_level", public.metadata)
 
     def test_public_schema_normalizes_variables_to_observed_columns(self) -> None:
         public = PublicCausalInstance(

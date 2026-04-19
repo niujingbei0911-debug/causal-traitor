@@ -1808,5 +1808,43 @@ class PipelineTests(unittest.TestCase):
             )
 
 
+class SelectiveOutputValidationTests(unittest.TestCase):
+    def test_selective_output_rejects_non_mapping_witness_payloads(self) -> None:
+        with self.assertRaises(TypeError):
+            SelectiveVerifierOutput(label="valid", witness="bad")
+        with self.assertRaises(TypeError):
+            SelectiveVerifierOutput(label="valid", support_witness=3.14)
+        with self.assertRaises(TypeError):
+            SelectiveVerifierOutput(label="unidentifiable", countermodel_witness="bad")
+
+    def test_selective_output_rejects_non_structured_trace_and_ledger(self) -> None:
+        with self.assertRaises(TypeError):
+            SelectiveVerifierOutput(label="valid", tool_trace=["raw-trace"])
+        with self.assertRaises(TypeError):
+            SelectiveVerifierOutput(label="valid", assumption_ledger=["raw-ledger"])
+
+    def test_selective_output_validates_numeric_contract(self) -> None:
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(label="valid", confidence=1.7)
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(label="valid", probabilities={"valid": 9.0, "foo": -3.0})
+
+    def test_selective_output_normalizes_valid_probability_weights(self) -> None:
+        payload = SelectiveVerifierOutput(
+            label="valid",
+            confidence=0.7,
+            probabilities={"valid": 2.0, "invalid": 1.0, "unidentifiable": 1.0},
+        ).to_dict()
+
+        self.assertEqual(
+            payload["probabilities"],
+            {
+                "valid": 0.5,
+                "invalid": 0.25,
+                "unidentifiable": 0.25,
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

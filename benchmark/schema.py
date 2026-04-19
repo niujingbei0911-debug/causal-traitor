@@ -27,8 +27,6 @@ VERIFIER_VISIBLE_FIELDS: tuple[str, ...] = (
     "observed_data",
     "data",
     "causal_level",
-    "difficulty",
-    "difficulty_config",
     "metadata",
 )
 
@@ -87,18 +85,15 @@ _SANITIZED_METADATA_KEYS = frozenset(
 )
 _PUBLIC_METADATA_ALLOWED_KEYS = frozenset(
     {
-        "ood_split",
-        "selection_ratio",
-        "task_level",
         "variable_descriptions",
         "measurement_semantics",
+        "context_shift_group",
+        "context_shift_id",
+        "context_shift_profile",
+        "public_evidence_contract",
     }
 )
-_PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset(
-    {
-        "task_level",
-    }
-)
+_PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset()
 
 
 class VerdictLabel(str, Enum):
@@ -451,6 +446,21 @@ def _normalize_optional_mapping(value: Any, *, none_as_empty: bool) -> dict[str,
     raise TypeError(f"Expected mapping-compatible payload, got {type(value)!r}.")
 
 
+def _normalize_mapping_sequence(value: Any, *, field_name: str) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list/tuple of mappings, got {type(value)!r}.")
+
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        mapping = _normalize_optional_mapping(item, none_as_empty=False)
+        if mapping is None:
+            raise TypeError(f"{field_name} items must be mapping-compatible, got {type(item)!r}.")
+        normalized.append(mapping)
+    return normalized
+
+
 def default_identification_status(
     label: VerdictLabel | str | None,
 ) -> IdentificationStatus | None:
@@ -586,7 +596,12 @@ class VerifierVerdict:
     identification_status: IdentificationStatus | str | None = None
     refusal_reason: str | None = None
     missing_information_spec: MissingInformationSpec | dict[str, Any] | None = None
+    probabilities: dict[str, float] = field(default_factory=dict)
+    assumption_ledger: list[dict[str, Any]] = field(default_factory=list)
+    witness: dict[str, Any] | None = None
+    support_witness: dict[str, Any] | None = None
     countermodel_witness: dict[str, Any] | None = None
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
     confidence: float | None = None
     reasoning_summary: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -607,9 +622,23 @@ class VerifierVerdict:
             and self.reasoning_summary
         ):
             self.missing_information_spec.note = self.reasoning_summary
+        self.probabilities = {
+            str(key): float(value)
+            for key, value in (_normalize_optional_mapping(self.probabilities, none_as_empty=True) or {}).items()
+        }
+        self.assumption_ledger = _normalize_mapping_sequence(
+            self.assumption_ledger,
+            field_name="verdict.assumption_ledger",
+        )
+        self.witness = _normalize_optional_mapping(self.witness, none_as_empty=False)
+        self.support_witness = _normalize_optional_mapping(self.support_witness, none_as_empty=False)
         self.countermodel_witness = _normalize_optional_mapping(
             self.countermodel_witness,
             none_as_empty=False,
+        )
+        self.tool_trace = _normalize_mapping_sequence(
+            self.tool_trace,
+            field_name="verdict.tool_trace",
         )
         self.metadata = _normalize_optional_mapping(self.metadata, none_as_empty=True) or {}
         self.refusal_reason = derive_refusal_reason(
@@ -637,9 +666,16 @@ class VerifierVerdict:
             ),
             "refusal_reason": self.refusal_reason,
             "missing_information_spec": self.missing_information_spec.to_dict(),
+            "probabilities": dict(self.probabilities),
+            "assumption_ledger": [dict(entry) for entry in self.assumption_ledger],
+            "witness": dict(self.witness) if self.witness is not None else None,
+            "support_witness": (
+                dict(self.support_witness) if self.support_witness is not None else None
+            ),
             "countermodel_witness": (
                 dict(self.countermodel_witness) if self.countermodel_witness is not None else None
             ),
+            "tool_trace": [dict(entry) for entry in self.tool_trace],
             "confidence": self.confidence,
             "reasoning_summary": self.reasoning_summary,
             "metadata": dict(self.metadata),
@@ -657,7 +693,12 @@ def _normalize_verdict(
             identification_status=value.identification_status,
             refusal_reason=value.refusal_reason,
             missing_information_spec=value.missing_information_spec,
+            probabilities=dict(value.probabilities),
+            assumption_ledger=list(value.assumption_ledger),
+            witness=value.witness,
+            support_witness=value.support_witness,
             countermodel_witness=value.countermodel_witness,
+            tool_trace=list(value.tool_trace),
             confidence=value.confidence,
             reasoning_summary=value.reasoning_summary,
             metadata=dict(value.metadata),
@@ -668,7 +709,12 @@ def _normalize_verdict(
             identification_status=value.get("identification_status"),
             refusal_reason=value.get("refusal_reason"),
             missing_information_spec=value.get("missing_information_spec"),
+            probabilities=value.get("probabilities", {}),
+            assumption_ledger=value.get("assumption_ledger", []),
+            witness=value.get("witness"),
+            support_witness=value.get("support_witness"),
             countermodel_witness=value.get("countermodel_witness"),
+            tool_trace=value.get("tool_trace", []),
             confidence=value.get("confidence"),
             reasoning_summary=str(value.get("reasoning_summary", "")),
             metadata=value.get("metadata"),
@@ -728,7 +774,8 @@ class PublicCausalInstance:
         )
         self.observed_data = observed
         self.data = _copy_frame(observed)
-        self.difficulty_config = _sanitize_difficulty_config(self.difficulty_config)
+        self.difficulty = 0.5
+        self.difficulty_config = {}
         self.metadata = dict(_sanitize_metadata(metadata, root=True))
 
     def to_dict(self) -> dict[str, Any]:
@@ -741,8 +788,6 @@ class PublicCausalInstance:
             "observed_data": _serialize_frame(self.observed_data),
             "data": _serialize_frame(self.data),
             "causal_level": self.causal_level,
-            "difficulty": self.difficulty,
-            "difficulty_config": dict(self.difficulty_config),
             "metadata": dict(self.metadata),
         }
 
@@ -1099,7 +1144,7 @@ class BenchmarkSplitManifest:
     """Serializable split manifest for train/dev/test_iid/test_ood benchmark partitions."""
 
     dataset_name: str = "causal_oversight_benchmark"
-    version: str = "v1"
+    version: str = "v2"
     train: list[str] = field(default_factory=list)
     dev: list[str] = field(default_factory=list)
     test_iid: list[str] = field(default_factory=list)
@@ -1150,7 +1195,7 @@ class BenchmarkSplitManifest:
         holdout_strategy = dict(payload.get("holdout_strategy", {}))
         return cls(
             dataset_name=str(payload.get("dataset_name", "causal_oversight_benchmark")),
-            version=str(payload.get("version", "v1")),
+            version=str(payload.get("version", "v2")),
             train=list(splits.get("train", payload.get("train", []))),
             dev=list(splits.get("dev", payload.get("dev", []))),
             test_iid=list(splits.get("test_iid", payload.get("test_iid", []))),

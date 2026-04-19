@@ -46,6 +46,21 @@ from benchmark.witnesses import (
 )
 from game.data_generator import DataGenerator
 
+EXPECTED_SYNTHETIC_CORE_FAMILIES = {
+    "l1_latent_confounding_family": "L1",
+    "l1_selection_bias_family": "L1",
+    "l1_proxy_disambiguation_family": "L1",
+    "l1_reverse_causality_family": "L1",
+    "l2_valid_backdoor_family": "L2",
+    "l2_valid_iv_family": "L2",
+    "l2_invalid_iv_family": "L2",
+    "l2_subgroup_heterogeneity_family": "L2",
+    "l2_frontdoor_partial_measurement_family": "L2",
+    "l3_counterfactual_ambiguity_family": "L3",
+    "l3_mediation_abduction_family": "L3",
+    "l3_monotonicity_cross_world_failure_family": "L3",
+}
+
 
 def _build_claim_instance_for_split(
     instance_id: str,
@@ -277,18 +292,11 @@ class GraphFamilyTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(len(list_graph_families(causal_level="L2")), 2)
         self.assertGreaterEqual(len(list_graph_families(causal_level="L3")), 2)
 
-    def test_generate_graph_family_by_name_returns_reusable_blueprint(self) -> None:
-        required_families = {
-            "l1_latent_confounding_family": "L1",
-            "l1_selection_bias_family": "L1",
-            "l2_valid_backdoor_family": "L2",
-            "l2_valid_iv_family": "L2",
-            "l2_invalid_iv_family": "L2",
-            "l3_counterfactual_ambiguity_family": "L3",
-            "l3_mediation_abduction_family": "L3",
-        }
+    def test_graph_family_registry_matches_v2_synthetic_core_coverage(self) -> None:
+        self.assertEqual(set(list_graph_families()), set(EXPECTED_SYNTHETIC_CORE_FAMILIES))
 
-        for family_name, causal_level in required_families.items():
+    def test_generate_graph_family_by_name_returns_reusable_blueprint(self) -> None:
+        for family_name, causal_level in EXPECTED_SYNTHETIC_CORE_FAMILIES.items():
             with self.subTest(family_name=family_name):
                 template = get_graph_family_template(family_name)
                 blueprint = generate_graph_family(family_name, seed=17)
@@ -340,11 +348,15 @@ class GraphFamilyTemplateTests(unittest.TestCase):
             "l1_latent_confounding_family": "confounding",
             "l1_selection_bias_family": "selection_bias",
             "l1_proxy_disambiguation_family": "proxy_disambiguation",
+            "l1_reverse_causality_family": "reverse_causality",
             "l2_valid_backdoor_family": "backdoor_adjustment",
             "l2_valid_iv_family": "instrumental_variable",
             "l2_invalid_iv_family": "instrumental_variable",
+            "l2_subgroup_heterogeneity_family": "subgroup_heterogeneity",
+            "l2_frontdoor_partial_measurement_family": "frontdoor_partial_measurement",
             "l3_counterfactual_ambiguity_family": "counterfactual_ambiguity",
             "l3_mediation_abduction_family": "mediation",
+            "l3_monotonicity_cross_world_failure_family": "cross_world_failure",
         }
 
         for family_name, mechanism in expected_mechanisms.items():
@@ -734,6 +746,9 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertNotIn("generator_seed", sample.public.difficulty_config)
         self.assertNotIn("hidden_strength", sample.public.difficulty_config)
         self.assertNotIn("selection_bias_strength", sample.public.difficulty_config)
+        self.assertEqual(sample.public.difficulty, 0.5)
+        self.assertNotIn("difficulty", sample.public.to_dict())
+        self.assertNotIn("difficulty_config", sample.public.to_dict())
 
     def test_programmatic_public_view_exposes_typed_proxy_and_selection_hints(self) -> None:
         sample = BenchmarkGenerator(seed=41).generate_benchmark_sample(
@@ -755,12 +770,11 @@ class ShowcaseMigrationTests(unittest.TestCase):
             seed=0,
         )
 
-        self.assertEqual(sample.public.metadata["task_level"], "L2")
-        self.assertEqual(sample.public.difficulty_config["task_level"], "L2")
         self.assertNotIn("difficulty_family", sample.public.metadata)
         self.assertIn("measurement_semantics", sample.public.metadata)
         self.assertIn("variable_descriptions", sample.public.metadata)
-        self.assertNotIn("difficulty_family", sample.public.difficulty_config)
+        self.assertNotIn("task_level", sample.public.metadata)
+        self.assertEqual(sample.public.difficulty_config, {})
         self.assertNotIn("instrument_variables", sample.public.verifier_visible_fields)
         self.assertNotIn("mediator_variables", sample.public.verifier_visible_fields)
         self.assertNotIn("selection_variables", sample.public.verifier_visible_fields)
@@ -825,9 +839,53 @@ class ShowcaseMigrationTests(unittest.TestCase):
         )
 
         self.assertEqual(claim.meta["claim_mode"], "attack")
-        self.assertIn(claim.meta["persuasion_style_id"], PERSUASION_STYLE_SPACE)
-        self.assertEqual(claim.meta["pressure_type"], claim.meta["persuasion_style_id"])
+        self.assertEqual(claim.meta["persuasion_style_id"], "none")
+        self.assertEqual(claim.meta["pressure_type"], "none")
         self.assertIn(claim.meta["persuasion_style_id"], claim.language_template_id)
+
+    def test_benchmark_generator_supports_explicit_pressure_style_overrides(self) -> None:
+        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="authority_pressure",
+        )
+
+        self.assertEqual(claim.meta["persuasion_style_id"], "authority_pressure")
+        self.assertEqual(claim.meta["pressure_type"], "authority_pressure")
+        self.assertIn("authority_pressure", claim.language_template_id)
+
+    def test_invalid_and_unidentifiable_samples_do_not_share_the_same_public_contract(self) -> None:
+        generator = BenchmarkGenerator(seed=29)
+        families = (
+            "l1_latent_confounding_family",
+            "l1_selection_bias_family",
+            "l2_invalid_iv_family",
+            "l3_counterfactual_ambiguity_family",
+        )
+
+        for family_name in families:
+            with self.subTest(family_name=family_name):
+                invalid = generator.generate_benchmark_sample(
+                    family_name=family_name,
+                    difficulty=0.35,
+                    seed=29,
+                    gold_label_override=VerdictLabel.INVALID,
+                )
+                unidentifiable = generator.generate_benchmark_sample(
+                    family_name=family_name,
+                    difficulty=0.35,
+                    seed=29,
+                    gold_label_override=VerdictLabel.UNIDENTIFIABLE,
+                )
+
+                invalid_contract = invalid.public.metadata["public_evidence_contract"]
+                unidentifiable_contract = unidentifiable.public.metadata["public_evidence_contract"]
+                self.assertEqual(invalid_contract["contract_label"], "invalid")
+                self.assertEqual(unidentifiable_contract["contract_label"], "unidentifiable")
+                self.assertNotEqual(invalid_contract["contract_status"], unidentifiable_contract["contract_status"])
+                self.assertFalse(invalid.gold.observed_data.equals(unidentifiable.gold.observed_data))
+                self.assertNotEqual(invalid.public.to_dict(), unidentifiable.public.to_dict())
 
     def test_benchmark_generator_produces_claim_instance_level_sample_bundle(self) -> None:
         generator = BenchmarkGenerator(seed=29)
@@ -879,6 +937,35 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertIn("attack_family", claim.meta["ood_axes"])
         self.assertIn("mechanism_ood_tag", claim.meta["ood_axes"])
         self.assertIn("context_shift_group", claim.meta["ood_axes"])
+
+    def test_context_shift_override_changes_data_semantics_and_claim_language(self) -> None:
+        generator = BenchmarkGenerator(seed=23)
+        policy = generator.generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.35,
+            seed=23,
+            gold_label_override=VerdictLabel.INVALID,
+            context_shift_group="policy",
+            persuasion_style_id="none",
+        )
+        clinical = generator.generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.35,
+            seed=23,
+            gold_label_override=VerdictLabel.INVALID,
+            context_shift_group="clinical",
+            persuasion_style_id="none",
+        )
+
+        self.assertEqual(policy.claim.meta["context_shift_group"], "policy")
+        self.assertEqual(clinical.claim.meta["context_shift_group"], "clinical")
+        self.assertNotEqual(policy.public.metadata["context_shift_profile"], clinical.public.metadata["context_shift_profile"])
+        self.assertNotEqual(
+            policy.public.metadata["variable_descriptions"],
+            clinical.public.metadata["variable_descriptions"],
+        )
+        self.assertFalse(policy.gold.observed_data.equals(clinical.gold.observed_data))
+        self.assertNotEqual(policy.claim.claim_text, clinical.claim.claim_text)
 
     def test_benchmark_generator_can_generate_paired_flip_samples(self) -> None:
         anchor, flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
@@ -1327,6 +1414,72 @@ class SplitBuilderTests(unittest.TestCase):
                 "paired_flip_holdout": True,
             },
         )
+
+    def test_split_builder_default_manifest_auto_selects_mechanism_ood(self) -> None:
+        generator = BenchmarkGenerator(seed=31)
+        claims = generator.generate_claim_instances(
+            num_samples=24,
+            family_names=list(EXPECTED_SYNTHETIC_CORE_FAMILIES),
+            difficulty=0.35,
+            seed=31,
+        )
+
+        manifest = build_split_manifest(claims, seed=31)
+
+        self.assertTrue(manifest.metadata["extended_holdout_strategy"]["mechanism_holdout"])
+        self.assertGreater(manifest.metadata["ood_reason_counts"].get("mechanism_holdout", 0), 0)
+
+    def test_split_builder_lexical_holdout_ignores_persuasion_suffixes(self) -> None:
+        base_template = "attack::weak_iv_as_valid_iv::assertive"
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_authority",
+                graph_family="l2_invalid_iv_family",
+                language_template_id=f"{base_template}::persuasion::authority_pressure",
+                observed_variables=["I", "J", "K"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_confidence",
+                graph_family="l2_invalid_iv_family",
+                language_template_id=f"{base_template}::persuasion::confidence_pressure",
+                observed_variables=["L", "M", "N"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_1",
+                graph_family="l1_proxy_disambiguation_family",
+                language_template_id="truthful::direct::average_treatment_effect",
+                observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_2",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="truthful::cautious::average_treatment_effect",
+                observed_variables=["A", "B", "C"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_3",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="truthful::formal::average_treatment_effect",
+                observed_variables=["T", "M", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_in_domain_4",
+                graph_family="l3_mediation_abduction_family",
+                language_template_id="truthful::direct::unit_level_counterfactual",
+                observed_variables=["Q", "R", "S"],
+            ),
+        ]
+
+        manifest = build_split_manifest(
+            instances,
+            family_holdout=[],
+            lexical_holdout=[base_template],
+            variable_renaming_holdout=False,
+            seed=17,
+        )
+
+        self.assertIn("inst_authority", manifest.test_ood)
+        self.assertIn("inst_confidence", manifest.test_ood)
 
     def test_split_builder_default_holdouts_use_stable_policy_instead_of_last_sorted_values(self) -> None:
         instances = [

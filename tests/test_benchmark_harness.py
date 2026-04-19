@@ -15,6 +15,7 @@ from experiments.benchmark_harness import (
     build_seed_attack_benchmark_run,
     compare_system_predictions,
     evaluate_system_on_samples,
+    predict_sample,
     summarize_protocol_compliance,
     validate_system_names,
     write_artifacts,
@@ -154,6 +155,8 @@ class BenchmarkHarnessTests(unittest.TestCase):
             record["public_evidence_summary"]["selection_mechanism"],
             sample.public.selection_mechanism,
         )
+        self.assertIn("persuasion_style_id", record)
+        self.assertIn("pressure_type", record)
 
     def test_shared_harness_rejects_leakage_study_system_name_alias(self) -> None:
         with self.assertRaises(ValueError):
@@ -350,7 +353,47 @@ class BenchmarkHarnessTests(unittest.TestCase):
             self.assertTrue(samples)
             for sample in samples:
                 self.assertEqual(sample.claim.meta.get("ood_split"), split_name)
-                self.assertEqual(sample.public.metadata.get("ood_split"), split_name)
+                self.assertNotIn("ood_split", sample.public.metadata)
+
+    def test_build_seed_benchmark_run_accepts_extended_holdout_axes(self) -> None:
+        run = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=3,
+            family_holdout=[],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            mechanism_holdout=["instrumental_variable"],
+            attack_family_holdout=["counterfactual_shortcut"],
+            context_shift_holdout=["policy"],
+            paired_flip_holdout=True,
+        )
+
+        self.assertEqual(
+            run.manifest.metadata["extended_holdout_strategy"],
+            {
+                "mechanism_holdout": ["instrumental_variable"],
+                "attack_family_holdout": ["counterfactual_shortcut"],
+                "context_shift_holdout": ["policy"],
+                "paired_flip_holdout": True,
+            },
+        )
+        self.assertTrue(any(sample.claim.meta.get("paired_flip_id") for sample in run.samples))
+
+    def test_baseline_predictors_emit_selective_verdict_contract(self) -> None:
+        sample = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=1,
+        ).split_samples["test_iid"][0]
+
+        for system_name in ("tool_only", "debate_reduced", "claim_only_family"):
+            with self.subTest(system_name=system_name):
+                verdict = predict_sample(sample, system_name=system_name)["verdict"]
+                self.assertEqual(verdict["final_verdict"], verdict["label"])
+                self.assertIn("identification_status", verdict)
+                self.assertIn("refusal_reason", verdict)
+                self.assertIn("missing_information_spec", verdict)
 
     def test_protocol_compliance_tracks_non_seed_requirements(self) -> None:
         protocol = summarize_protocol_compliance(

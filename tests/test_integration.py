@@ -142,6 +142,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "scenario": SimpleNamespace(gold_label="valid", ground_truth={"label": "valid"}),
                 "audit_verdict": {
                     "verifier_verdict": {
+                        "final_verdict": "valid",
+                        "identification_status": "identified",
+                        "refusal_reason": None,
+                        "missing_information_spec": {
+                            "missing_assumptions": [],
+                            "required_evidence": [],
+                            "note": "",
+                        },
                         "probabilities": {
                             "valid": 0.55,
                             "invalid": 0.30,
@@ -160,6 +168,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "unidentifiable": 0.15,
             },
         )
+        self.assertEqual(payload["verifier_verdict"]["final_verdict"], "valid")
+        self.assertEqual(payload["verifier_verdict"]["identification_status"], "identified")
 
     async def test_exp1_defaults_to_verdict_centric_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -314,7 +324,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("## Significance:", robustness_payload["markdown_summary"])
 
-            for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood"):
+            for bucket_name in (
+                "graph_family_ood",
+                "mechanism_ood",
+                "attack_family_ood",
+                "context_shift_ood",
+                "paired_flip_ood",
+            ):
                 self.assertIn(bucket_name, ood_payload["aggregated_metrics"])
                 self.assertIn(bucket_name, ood_payload["ood_gap"])
                 self.assertIn(bucket_name, ood_payload["significance"])
@@ -436,7 +452,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
         sample = next(
             candidate
-            for candidate in run.split_samples["test_iid"]
+            for candidate in run.samples
             if candidate.claim.graph_family == "l2_invalid_iv_family"
         )
         public = _build_oracle_leaking_public_partition(sample)
@@ -830,8 +846,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             seed_bucket_results = payload["per_seed_bucket_results"][0]
             for bucket_name, expected_reason in (
                 ("graph_family_ood", ["family_holdout"]),
-                ("lexical_ood", ["lexical_holdout"]),
-                ("variable_naming_ood", ["variable_renaming_holdout"]),
+                ("mechanism_ood", ["mechanism_holdout"]),
+                ("attack_family_ood", ["attack_family_holdout"]),
+                ("context_shift_ood", ["context_shift_holdout"]),
+                ("paired_flip_ood", ["paired_flip_holdout"]),
             ):
                 self.assertTrue(seed_bucket_results[bucket_name]["predictions"])
                 for record in seed_bucket_results[bucket_name]["predictions"]:
@@ -843,7 +861,13 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_ood_generalization_default.json"),
             )
 
-            for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood"):
+            for bucket_name in (
+                "graph_family_ood",
+                "mechanism_ood",
+                "attack_family_ood",
+                "context_shift_ood",
+                "paired_flip_ood",
+            ):
                 self.assertIsNotNone(payload["aggregated_metrics"][bucket_name])
                 self.assertTrue(payload["ood_gap"][bucket_name]["available"])
                 self.assertEqual(

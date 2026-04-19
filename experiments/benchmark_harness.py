@@ -22,7 +22,7 @@ from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import parse_claim
 from verifier.countermodel_search import CountermodelSearchResult, search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
-from verifier.outputs import ClaimPolarity, ClaimStrength, QueryType
+from verifier.outputs import ClaimPolarity, ClaimStrength, QueryType, SelectiveVerifierOutput
 from verifier.pipeline import VerifierPipeline
 
 DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
@@ -406,7 +406,6 @@ def _apply_split_metadata_to_samples(
             sample.claim.meta["ood_split"] = split_name
             if instance_id in ood_reasons:
                 sample.claim.meta["ood_reasons"] = list(ood_reasons[instance_id])
-            sample.public.metadata["ood_split"] = split_name
 
 
 def build_seed_benchmark_run(
@@ -418,6 +417,10 @@ def build_seed_benchmark_run(
     family_holdout: list[str] | tuple[str, ...] | None = None,
     lexical_holdout: list[str] | tuple[str, ...] | None = None,
     variable_renaming_holdout: bool | None = None,
+    mechanism_holdout: list[str] | tuple[str, ...] | None = None,
+    attack_family_holdout: list[str] | tuple[str, ...] | None = None,
+    context_shift_holdout: list[str] | tuple[str, ...] | None = None,
+    paired_flip_holdout: bool | None = None,
 ) -> SeedBenchmarkRun:
     families = list(family_names or default_benchmark_families())
     generator = BenchmarkGenerator(seed=seed)
@@ -426,15 +429,30 @@ def build_seed_benchmark_run(
     samples: list[BenchmarkSample] = []
     sample_index = 0
     for family_name in families:
-        for _ in range(resolved_samples_per_family):
+        for sample_slot in range(resolved_samples_per_family):
             sample_seed = _stable_sample_seed(seed, family_name, sample_index)
-            samples.append(
-                generator.generate_benchmark_sample(
+            if paired_flip_holdout and sample_slot == 0:
+                anchor, flipped = generator.generate_paired_flip_samples(
                     family_name=family_name,
                     difficulty=resolved_difficulty,
                     seed=sample_seed,
                 )
-            )
+                samples.extend([anchor, flipped])
+                samples.append(
+                    generator.generate_benchmark_sample(
+                        family_name=family_name,
+                        difficulty=resolved_difficulty,
+                        seed=sample_seed + 17,
+                    )
+                )
+            else:
+                samples.append(
+                    generator.generate_benchmark_sample(
+                        family_name=family_name,
+                        difficulty=resolved_difficulty,
+                        seed=sample_seed,
+                    )
+                )
             sample_index += 1
 
     manifest = build_benchmark_splits(
@@ -443,6 +461,10 @@ def build_seed_benchmark_run(
         family_holdout=family_holdout,
         lexical_holdout=lexical_holdout,
         variable_renaming_holdout=variable_renaming_holdout,
+        mechanism_holdout=mechanism_holdout,
+        attack_family_holdout=attack_family_holdout,
+        context_shift_holdout=context_shift_holdout,
+        paired_flip_holdout=paired_flip_holdout,
     )
     sample_by_id = {sample.claim.instance_id: sample for sample in samples}
     _apply_split_metadata_to_samples(sample_by_id=sample_by_id, manifest=manifest)
@@ -912,6 +934,10 @@ def _label_probabilities(label: str, confidence: float) -> dict[str, float]:
     return probabilities
 
 
+def _canonicalize_verdict_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+
+
 def _run_tool_only_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
     tool_context = _verifier_tool_context(sample)
@@ -946,24 +972,26 @@ def _run_tool_only_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     return {
         "predicted_label": label,
         "confidence": confidence,
-        "verdict": {
-            "label": label,
-            "confidence": confidence,
-            "probabilities": _label_probabilities(label, confidence),
-            "assumption_ledger": [],
-            "witness": None,
-            "support_witness": None,
-            "countermodel_witness": None,
-            "tool_trace": tool_trace,
-            "reasoning_summary": (
-                "Tool-only baseline judges the claim from public tool traces alone, without an "
-                "assumption ledger or countermodel search."
-            ),
-            "metadata": {
-                "baseline_category": "Tool",
-                "baseline_system": "tool_only",
-            },
-        },
+        "verdict": _canonicalize_verdict_payload(
+            {
+                "label": label,
+                "confidence": confidence,
+                "probabilities": _label_probabilities(label, confidence),
+                "assumption_ledger": [],
+                "witness": None,
+                "support_witness": None,
+                "countermodel_witness": None,
+                "tool_trace": tool_trace,
+                "reasoning_summary": (
+                    "Tool-only baseline judges the claim from public tool traces alone, without an "
+                    "assumption ledger or countermodel search."
+                ),
+                "metadata": {
+                    "baseline_category": "Tool",
+                    "baseline_system": "tool_only",
+                },
+            }
+        ),
         "tool_report": {
             "selected_tools": list(tool_report["selected_tools"]),
             "claim_stance": tool_report["claim_stance"],
@@ -1039,26 +1067,28 @@ def _run_debate_reduced_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     return {
         "predicted_label": label,
         "confidence": confidence,
-        "verdict": {
-            "label": label,
-            "confidence": confidence,
-            "probabilities": _label_probabilities(label, confidence),
-            "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
-            "witness": None,
-            "support_witness": None,
-            "countermodel_witness": None,
-            "tool_trace": tool_trace,
-            "reasoning_summary": (
-                "Reduced debate baseline combines a proposer-style direct judge with a rebuttal pass over "
-                f"the public evidence; here the rebuttal argues that {rebuttal_reason}."
-            ),
-            "metadata": {
-                "baseline_category": "Debate",
-                "baseline_system": "debate_reduced",
-                "proposer_label": proposer_label,
-                "rebuttal_label": rebuttal_label,
-            },
-        },
+        "verdict": _canonicalize_verdict_payload(
+            {
+                "label": label,
+                "confidence": confidence,
+                "probabilities": _label_probabilities(label, confidence),
+                "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
+                "witness": None,
+                "support_witness": None,
+                "countermodel_witness": None,
+                "tool_trace": tool_trace,
+                "reasoning_summary": (
+                    "Reduced debate baseline combines a proposer-style direct judge with a rebuttal pass over "
+                    f"the public evidence; here the rebuttal argues that {rebuttal_reason}."
+                ),
+                "metadata": {
+                    "baseline_category": "Debate",
+                    "baseline_system": "debate_reduced",
+                    "proposer_label": proposer_label,
+                    "rebuttal_label": rebuttal_label,
+                },
+            }
+        ),
         "tool_report": {
             "selected_tools": list(tool_report["selected_tools"]),
             "claim_stance": tool_report["claim_stance"],
@@ -1183,6 +1213,11 @@ def _apply_no_abstention(sample: BenchmarkSample, payload: dict[str, Any]) -> di
         verdict["witness"] = None
         verdict["support_witness"] = None
         verdict["countermodel_witness"] = None
+        verdict["identification_status"] = (
+            "contradicted" if forced_label == VerdictLabel.INVALID.value else "identified"
+        )
+        verdict["refusal_reason"] = None
+        verdict["missing_information_spec"] = {}
         verdict["reasoning_summary"] = (
             "No-abstention ablation forced a committed "
             f"{forced_label} verdict after the base verifier abstained. "
@@ -1204,7 +1239,7 @@ def _apply_no_abstention(sample: BenchmarkSample, payload: dict[str, Any]) -> di
         }
         adjusted["predicted_label"] = forced_label
         adjusted["confidence"] = float(verdict["confidence"])
-        adjusted["verdict"] = verdict
+        adjusted["verdict"] = _canonicalize_verdict_payload(verdict)
         adjusted["system_notes"] = list(payload.get("system_notes", [])) + ["abstention_disabled"]
     return adjusted
 
@@ -1233,21 +1268,23 @@ def _run_claim_only_family(sample: BenchmarkSample) -> dict[str, Any]:
     return {
         "predicted_label": label,
         "confidence": confidence,
-        "verdict": {
-            "label": label,
-            "confidence": confidence,
-            "probabilities": probabilities,
-            "assumption_ledger": [],
-            "witness": None,
-            "support_witness": None,
-            "countermodel_witness": None,
-            "tool_trace": [],
-            "reasoning_summary": (
-                "Claim-only family ignores the public benchmark tools and defaults to the surface rhetorical force "
-                "of the claim text, so strong positive claims are usually endorsed without an identifiability check."
-            ),
-            "metadata": {"predictor_family": "claim_only_family"},
-        },
+        "verdict": _canonicalize_verdict_payload(
+            {
+                "label": label,
+                "confidence": confidence,
+                "probabilities": probabilities,
+                "assumption_ledger": [],
+                "witness": None,
+                "support_witness": None,
+                "countermodel_witness": None,
+                "tool_trace": [],
+                "reasoning_summary": (
+                    "Claim-only family ignores the public benchmark tools and defaults to the surface rhetorical force "
+                    "of the claim text, so strong positive claims are usually endorsed without an identifiability check."
+                ),
+                "metadata": {"predictor_family": "claim_only_family"},
+            }
+        ),
         "tool_report": {
             "selected_tools": [],
             "claim_stance": "pro_causal",
@@ -1343,13 +1380,31 @@ def _apply_family_postprocessing(
 
     verdict["label"] = label
     verdict["confidence"] = confidence
+    if label == VerdictLabel.VALID.value:
+        verdict["identification_status"] = "identified"
+        verdict["refusal_reason"] = None
+        verdict["missing_information_spec"] = {}
+    elif label == VerdictLabel.INVALID.value:
+        verdict["identification_status"] = "contradicted"
+        verdict["refusal_reason"] = None
+        verdict["missing_information_spec"] = {}
+    else:
+        verdict["identification_status"] = "underdetermined"
+        verdict.setdefault(
+            "missing_information_spec",
+            {
+                "missing_assumptions": [],
+                "required_evidence": [],
+                "note": str(verdict.get("reasoning_summary", "")).strip(),
+            },
+        )
     verdict["metadata"] = {
         **dict(verdict.get("metadata", {})),
         "predictor_family": family_name,
     }
     adjusted["predicted_label"] = label
     adjusted["confidence"] = confidence
-    adjusted["verdict"] = verdict
+    adjusted["verdict"] = _canonicalize_verdict_payload(verdict)
     adjusted["system_notes"] = list(payload.get("system_notes", [])) + [family_name]
     return adjusted
 
@@ -1478,6 +1533,15 @@ def evaluate_system_on_samples(
             "query_type": sample.claim.query_type,
             "attack_name": sample.claim.meta.get("attack_name"),
             "style_id": sample.claim.meta.get("style_id"),
+            "lexical_template_id": sample.claim.meta.get(
+                "lexical_template_id",
+                sample.claim.language_template_id,
+            ),
+            "persuasion_style_id": sample.claim.meta.get("persuasion_style_id"),
+            "pressure_type": sample.claim.meta.get("pressure_type"),
+            "mechanism_ood_tag": sample.claim.meta.get("mechanism_ood_tag"),
+            "context_shift_group": sample.claim.meta.get("context_shift_group"),
+            "paired_flip_id": sample.claim.meta.get("paired_flip_id"),
             "claim_mode": sample.claim.meta.get("claim_mode"),
             "gold_label": sample.claim.gold_label.value,
             "predicted_label": payload["predicted_label"],
@@ -1709,6 +1773,7 @@ def write_artifacts(
 
 
 def manifest_metadata(run: SeedBenchmarkRun) -> dict[str, Any]:
+    extended_holdout_strategy = dict(run.manifest.metadata.get("extended_holdout_strategy", {}))
     return {
         "dataset_name": run.manifest.dataset_name,
         "version": run.manifest.version,
@@ -1716,6 +1781,7 @@ def manifest_metadata(run: SeedBenchmarkRun) -> dict[str, Any]:
             "family_holdout": list(run.manifest.family_holdout),
             "lexical_holdout": list(run.manifest.lexical_holdout),
             "variable_renaming_holdout": bool(run.manifest.variable_renaming_holdout),
+            **extended_holdout_strategy,
         },
         "metadata": dict(run.manifest.metadata),
     }

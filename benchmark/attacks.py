@@ -931,9 +931,10 @@ def generate_attack_sample(
     )
 
     candidate_names: list[str] = []
+    label_hints = blueprint.generator_hints.get("attack_modes_by_label", {})
     hinted = [
         name
-        for name in blueprint.generator_hints.get("attack_modes", [])
+        for name in label_hints.get(str(normalized_label), blueprint.generator_hints.get("attack_modes", []))
         if name in ATTACK_TEMPLATE_REGISTRY
     ]
     if attack_name is not None:

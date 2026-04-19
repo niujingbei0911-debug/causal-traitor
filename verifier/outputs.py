@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 from typing import Any
 
 from benchmark.schema import (
     IdentificationStatus,
     MissingInformationSpec,
     VerdictLabel,
+    VERDICT_LABEL_SPACE,
     default_identification_status,
     derive_refusal_reason,
     validate_selective_verdict_state,
@@ -101,7 +103,7 @@ def _normalize_payload_mapping(value: Any) -> dict[str, Any] | None:
         serialized = value.to_dict()
         if isinstance(serialized, dict):
             return dict(serialized)
-    return {"value": value}
+    raise TypeError(f"Expected mapping-compatible payload, got {type(value)!r}.")
 
 
 def _normalize_payload_trace(value: list[Any] | tuple[Any, ...] | None) -> list[dict[str, Any]]:
@@ -113,9 +115,11 @@ def _normalize_payload_trace(value: list[Any] | tuple[Any, ...] | None) -> list[
             normalized.append(dict(item))
         elif hasattr(item, "to_dict") and callable(item.to_dict):
             serialized = item.to_dict()
-            normalized.append(dict(serialized) if isinstance(serialized, dict) else {"value": serialized})
+            if not isinstance(serialized, dict):
+                raise TypeError(f"tool_trace items must serialize to dict, got {type(serialized)!r}.")
+            normalized.append(dict(serialized))
         else:
-            normalized.append({"summary": str(item)})
+            raise TypeError(f"tool_trace items must be mapping-compatible, got {type(item)!r}.")
     return normalized
 
 
@@ -130,7 +134,51 @@ def _normalize_assumption_ledger(value: list[Any] | tuple[Any, ...] | None) -> l
             serialized = item.to_dict()
             if isinstance(serialized, dict):
                 normalized.append(dict(serialized))
+            else:
+                raise TypeError(
+                    f"assumption_ledger items must serialize to dict, got {type(serialized)!r}."
+                )
+        else:
+            raise TypeError(f"assumption_ledger items must be mapping-compatible, got {type(item)!r}.")
     return normalized
+
+
+def _normalize_confidence(value: float | None) -> float | None:
+    if value is None:
+        return None
+    normalized = float(value)
+    if not math.isfinite(normalized) or not (0.0 <= normalized <= 1.0):
+        raise ValueError(f"confidence must be in [0, 1], got {value!r}.")
+    return normalized
+
+
+def _normalize_probabilities(value: Any) -> dict[str, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"probabilities must be a mapping, got {type(value)!r}.")
+
+    unknown_labels = sorted(set(str(key) for key in value) - set(VERDICT_LABEL_SPACE))
+    if unknown_labels:
+        raise ValueError(
+            f"probabilities contains labels outside the frozen verdict space: {unknown_labels!r}."
+        )
+
+    weights: dict[str, float] = {label: 0.0 for label in VERDICT_LABEL_SPACE}
+    for raw_key, raw_value in value.items():
+        weight = float(raw_value)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(f"probabilities must contain finite non-negative weights, got {raw_value!r}.")
+        weights[str(raw_key)] = weight
+
+    total = sum(weights.values())
+    if total == 0.0:
+        return weights
+
+    return {
+        label: round(weights[label] / total, 12)
+        for label in VERDICT_LABEL_SPACE
+    }
 
 
 def _derive_missing_information_spec(
@@ -234,7 +282,7 @@ class SelectiveVerifierOutput:
 
     def __post_init__(self) -> None:
         self.label = _coerce_verdict_label(self.label)
-        self.confidence = None if self.confidence is None else float(self.confidence)
+        self.confidence = _normalize_confidence(self.confidence)
         self.reasoning_summary = str(self.reasoning_summary).strip()
         self.assumption_ledger = _normalize_assumption_ledger(self.assumption_ledger)
         self.metadata = dict(self.metadata or {})
@@ -242,10 +290,7 @@ class SelectiveVerifierOutput:
         self.support_witness = _normalize_payload_mapping(self.support_witness)
         self.countermodel_witness = _normalize_payload_mapping(self.countermodel_witness)
         self.tool_trace = _normalize_payload_trace(self.tool_trace)
-        self.probabilities = {
-            str(key): float(value)
-            for key, value in dict(self.probabilities or {}).items()
-        }
+        self.probabilities = _normalize_probabilities(self.probabilities)
         self.identification_status = _coerce_identification_status(
             self.identification_status
         ) or default_identification_status(self.label)
