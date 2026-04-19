@@ -39,7 +39,6 @@ TOOL_REGISTRY: dict[str, dict[str, str]] = {
         "counterfactual": "causal_tools.l3_counterfactual.counterfactual_inference",
         "counterfactual_inference": "causal_tools.l3_counterfactual.counterfactual_inference",
         "sensitivity": "causal_tools.l3_counterfactual.sensitivity_analysis",
-        "sensitivity_analysis": "causal_tools.l3_counterfactual.sensitivity_analysis",
         "nde": "causal_tools.l3_counterfactual.natural_direct_effect",
         "natural_direct_effect": "causal_tools.l3_counterfactual.natural_direct_effect",
         "pn": "causal_tools.l3_counterfactual.probability_of_necessity",

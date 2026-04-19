@@ -152,6 +152,16 @@ class ToolTests(unittest.TestCase):
         self.assertIn("abduction_action_prediction", l3_selected)
         self.assertIn("probability_of_necessity", l3_selected)
         self.assertIn("probability_of_sufficiency", l3_selected)
+        self.assertIs(
+            selector.get_tool("sensitivity_analysis"),
+            sensitivity_analysis,
+        )
+        from causal_tools.l3_counterfactual import sensitivity_analysis as l3_sensitivity_analysis
+
+        self.assertIs(
+            selector.get_tool("sensitivity"),
+            l3_sensitivity_analysis,
+        )
 
         logic = argument_logic_check("相关就说明因果，而且这是唯一解释")
         self.assertGreaterEqual(logic["n_fallacies_detected"], 1)
