@@ -452,6 +452,33 @@ class BenchmarkHarnessTests(unittest.TestCase):
             max(payload["verdict"]["probabilities"], key=payload["verdict"]["probabilities"].get),
             "valid",
         )
+        self.assertAlmostEqual(sum(payload["verdict"]["probabilities"].values()), 1.0, places=6)
+
+    def test_claim_only_family_probability_distribution_is_normalized_for_all_labels(self) -> None:
+        cases = (
+            (
+                "The evidence clearly shows that treatment definitely causes outcome.",
+                "valid",
+            ),
+            (
+                "Treatment does not cause outcome once we look carefully at the evidence.",
+                "invalid",
+            ),
+            (
+                "Treatment may affect outcome, but the evidence is only suggestive.",
+                "unidentifiable",
+            ),
+        )
+
+        for claim_text, expected_label in cases:
+            with self.subTest(expected_label=expected_label):
+                sample = SimpleNamespace(claim=SimpleNamespace(claim_text=claim_text))
+                payload = _run_claim_only_family(sample)
+                probabilities = payload["verdict"]["probabilities"]
+
+                self.assertEqual(payload["predicted_label"], expected_label)
+                self.assertAlmostEqual(sum(probabilities.values()), 1.0, places=6)
+                self.assertEqual(max(probabilities, key=probabilities.get), expected_label)
 
 
 if __name__ == "__main__":

@@ -961,17 +961,20 @@ def _run_claim_only_family(sample: BenchmarkSample) -> dict[str, Any]:
     else:
         label = VerdictLabel.VALID.value
         confidence = 0.72 if parsed_claim.claim_strength is ClaimStrength.ABSOLUTE else 0.68
+    off_label_mass = max(0.0, 1.0 - float(confidence)) / 2.0
+    probabilities = {
+        VerdictLabel.VALID.value: off_label_mass,
+        VerdictLabel.INVALID.value: off_label_mass,
+        VerdictLabel.UNIDENTIFIABLE.value: off_label_mass,
+    }
+    probabilities[label] = float(confidence)
     return {
         "predicted_label": label,
         "confidence": confidence,
         "verdict": {
             "label": label,
             "confidence": confidence,
-            "probabilities": {
-                VerdictLabel.VALID.value: 0.72 if label == VerdictLabel.VALID.value else 0.14,
-                VerdictLabel.INVALID.value: 0.67 if label == VerdictLabel.INVALID.value else 0.09,
-                VerdictLabel.UNIDENTIFIABLE.value: 0.57 if label == VerdictLabel.UNIDENTIFIABLE.value else 0.14,
-            },
+            "probabilities": probabilities,
             "assumption_ledger": [],
             "witness": None,
             "support_witness": None,
