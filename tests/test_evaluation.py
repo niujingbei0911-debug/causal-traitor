@@ -433,28 +433,58 @@ class EvaluationStatisticsTests(unittest.TestCase):
                 {
                     "annotator_a_verifier_label_reasonable": "yes",
                     "annotator_b_verifier_label_reasonable": "yes",
-                    "annotator_a_witness_persuasive": "no",
-                    "annotator_b_witness_persuasive": "yes",
+                    "annotator_a_witness_quality_reasonable": "no",
+                    "annotator_b_witness_quality_reasonable": "yes",
                 },
                 {
                     "annotator_a_verifier_label_reasonable": "no",
                     "annotator_b_verifier_label_reasonable": "no",
-                    "annotator_a_witness_persuasive": "yes",
-                    "annotator_b_witness_persuasive": "yes",
+                    "annotator_a_witness_quality_reasonable": "yes",
+                    "annotator_b_witness_quality_reasonable": "yes",
                 },
             ],
-            fields=["verifier_label_reasonable", "witness_persuasive"],
+            fields=["verifier_label_reasonable", "witness_quality_reasonable"],
         )
 
         self.assertEqual(summary["n_records"], 2)
         verifier = summary["fields"]["verifier_label_reasonable"]
-        witness = summary["fields"]["witness_persuasive"]
+        witness = summary["fields"]["witness_quality_reasonable"]
         self.assertEqual(verifier["n_scored"], 2)
         self.assertAlmostEqual(verifier["percent_agreement"], 1.0, places=8)
         self.assertAlmostEqual(verifier["cohen_kappa"], 1.0, places=8)
         self.assertEqual(witness["n_scored"], 2)
         self.assertAlmostEqual(witness["percent_agreement"], 0.5, places=8)
         self.assertLess(witness["cohen_kappa"], 1.0)
+
+    def test_human_audit_agreement_normalizes_binary_aliases_and_drops_na_values(self) -> None:
+        summary = summarize_human_audit_agreement(
+            [
+                {
+                    "annotator_a_verifier_label_reasonable": "y",
+                    "annotator_b_verifier_label_reasonable": "yes",
+                    "annotator_a_witness_quality_reasonable": "n/a",
+                    "annotator_b_witness_quality_reasonable": "skip",
+                },
+                {
+                    "annotator_a_verifier_label_reasonable": True,
+                    "annotator_b_verifier_label_reasonable": "YES",
+                    "annotator_a_witness_quality_reasonable": "no",
+                    "annotator_b_witness_quality_reasonable": "n",
+                },
+            ],
+            fields=["verifier_label_reasonable", "witness_quality_reasonable"],
+        )
+
+        verifier = summary["fields"]["verifier_label_reasonable"]
+        witness = summary["fields"]["witness_quality_reasonable"]
+        self.assertEqual(verifier["n_scored"], 2)
+        self.assertEqual(verifier["annotator_a_distribution"], {"yes": 2})
+        self.assertEqual(verifier["annotator_b_distribution"], {"yes": 2})
+        self.assertAlmostEqual(verifier["cohen_kappa"], 1.0, places=8)
+        self.assertEqual(witness["n_scored"], 1)
+        self.assertEqual(witness["annotator_a_distribution"], {"no": 1})
+        self.assertEqual(witness["annotator_b_distribution"], {"no": 1})
+        self.assertEqual(witness["invalid_label_count"], 0)
 
 if __name__ == "__main__":
     unittest.main()

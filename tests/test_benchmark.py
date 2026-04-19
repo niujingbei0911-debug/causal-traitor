@@ -1066,6 +1066,69 @@ class SplitBuilderTests(unittest.TestCase):
             ["family_holdout"],
         )
 
+    def test_split_builder_default_holdouts_use_stable_policy_instead_of_last_sorted_values(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_train_1",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_2",
+                graph_family="l1_proxy_disambiguation_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["A", "B", "C"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_3",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_gamma",
+                observed_variables=["T", "M", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_4",
+                graph_family="l2_valid_iv_family",
+                language_template_id="tmpl_delta",
+                observed_variables=["I", "J", "K"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_train_5",
+                graph_family="l3_counterfactual_ambiguity_family",
+                language_template_id="tmpl_epsilon",
+                observed_variables=["Q", "R", "S"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_preferred_family",
+                graph_family="l3_mediation_abduction_family",
+                language_template_id="tmpl_zeta",
+                observed_variables=["L", "M", "N"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_preferred_lexical",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="attack::association_overclaim::plainspoken",
+                observed_variables=["P", "Q", "R"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_last_sorted",
+                graph_family="zz_new_family",
+                language_template_id="zz_template",
+                observed_variables=["U", "V", "W"],
+            ),
+        ]
+
+        manifest = build_split_manifest(
+            instances,
+            seed=13,
+        )
+
+        self.assertEqual(manifest.family_holdout, ["l3_mediation_abduction_family"])
+        self.assertEqual(manifest.lexical_holdout, ["attack::association_overclaim::plainspoken"])
+        self.assertIn("inst_preferred_family", manifest.test_ood)
+        self.assertIn("inst_preferred_lexical", manifest.test_ood)
+        self.assertNotIn("inst_last_sorted", manifest.test_ood)
+
     def test_split_builder_rejects_manifests_without_non_empty_four_way_split(self) -> None:
         instances = [
             _build_claim_instance_for_split(

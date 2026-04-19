@@ -32,16 +32,45 @@ OOD_BUCKETS: tuple[tuple[str, str | None], ...] = (
 )
 
 
+def _bucket_sample_count_summary(per_seed_bucket_counts: dict[int, dict[str, int]], bucket_name: str) -> dict[str, Any]:
+    per_seed = {
+        int(seed): int(bucket_counts.get(bucket_name, 0))
+        for seed, bucket_counts in sorted(per_seed_bucket_counts.items())
+    }
+    counts = list(per_seed.values())
+    total = sum(counts)
+    return {
+        "per_seed": per_seed,
+        "total": total,
+        "min": min(counts) if counts else 0,
+        "max": max(counts) if counts else 0,
+        "mean": (total / len(counts)) if counts else 0.0,
+    }
+
+
+def _small_bucket_warnings(bucket_sample_counts: dict[str, dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    for bucket_name, summary in bucket_sample_counts.items():
+        if bucket_name == "test_iid":
+            continue
+        if int(summary["min"]) < 5:
+            warnings.append(
+                f"{bucket_name} has a small pure-bucket support: per-seed counts={list(summary['per_seed'].values())}."
+            )
+    return warnings
+
+
 def _markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
         "# OOD Generalization",
         "",
-        "| Bucket | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness |",
-        "| --- | --- | --- | --- | --- |",
+        "| Bucket | Sample Count | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for bucket_name, metrics in payload["aggregated_metrics"].items():
+        counts = payload["bucket_sample_counts"][bucket_name]
         lines.append(
-            f"| {bucket_name} | {metrics['verdict_accuracy']['formatted']} | "
+            f"| {bucket_name} | {list(counts['per_seed'].values())} | {metrics['verdict_accuracy']['formatted']} | "
             f"{metrics['macro_f1']['formatted']} | {metrics['invalid_claim_acceptance_rate']['formatted']} | "
             f"{metrics['unidentifiable_awareness']['formatted']} |"
         )
@@ -51,6 +80,20 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             f"- {bucket_name}: accuracy gap={gap['verdict_accuracy_gap']:.4f}, "
             f"macro_f1 gap={gap['macro_f1_gap']:.4f}"
         )
+    if payload["bucket_warnings"]:
+        lines.extend(["", "## Bucket Warnings", ""])
+        for warning in payload["bucket_warnings"]:
+            lines.append(f"- {warning}")
+    for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood"):
+        comparison = payload["significance"].get(bucket_name)
+        if comparison is None:
+            continue
+        lines.extend(["", f"## Significance: {bucket_name}", ""])
+        for row in comparison["comparisons"]:
+            lines.append(
+                f"- {row['comparison']}: diff={row['observed_difference']:.4f}, "
+                f"p={row['p_value']:.4f}, adjusted={row.get('adjusted_p_value')}"
+            )
     return "\n".join(lines)
 
 
@@ -79,6 +122,7 @@ def run_experiment(
     raw_predictions: list[dict[str, Any]] = []
     per_seed_results: dict[int, Any] = {}
     per_seed_bucket_results: dict[int, dict[str, Any]] = {}
+    per_seed_bucket_counts: dict[int, dict[str, int]] = {}
     manifests: dict[int, dict[str, Any]] = {}
 
     for seed in resolved_seeds:
@@ -104,6 +148,9 @@ def run_experiment(
         bucket_payload: dict[str, Any] = {
             "test_iid": seed_payload["test_iid"],
         }
+        bucket_counts: dict[str, int] = {
+            "test_iid": len(seed_payload["test_iid"]["predictions"]),
+        }
         test_ood_predictions = list(seed_payload["test_ood"]["predictions"])
         for bucket_name, reason_name in OOD_BUCKETS:
             if reason_name is None:
@@ -116,13 +163,15 @@ def run_experiment(
                 bucket_predictions = [
                     record
                     for record in test_ood_predictions
-                    if reason_name in record.get("ood_reasons", [])
+                    if record.get("ood_reasons", []) == [reason_name]
                 ]
+            bucket_counts[bucket_name] = len(bucket_predictions)
             bucket_payload[bucket_name] = score_prediction_records(
                 bucket_predictions,
                 game_id=f"{SYSTEM_NAME}_{bucket_name}_seed_{seed}",
             )
         per_seed_bucket_results[seed] = bucket_payload
+        per_seed_bucket_counts[seed] = bucket_counts
 
     aggregated_metrics = {
         split_name: aggregate_seed_metrics(
@@ -133,6 +182,10 @@ def run_experiment(
             split_name=split_name,
         )
         for split_name in ("test_iid", "graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
+    }
+    bucket_sample_counts = {
+        bucket_name: _bucket_sample_count_summary(per_seed_bucket_counts, bucket_name)
+        for bucket_name in ("test_iid", "graph_family_ood", "lexical_ood", "variable_naming_ood", "mixed_ood")
     }
     ood_gap = {
         bucket_name: {
@@ -183,7 +236,10 @@ def run_experiment(
         "manifests": manifests,
         "per_seed_results": per_seed_results,
         "per_seed_bucket_results": per_seed_bucket_results,
+        "per_seed_bucket_counts": per_seed_bucket_counts,
         "aggregated_metrics": aggregated_metrics,
+        "bucket_sample_counts": bucket_sample_counts,
+        "bucket_warnings": _small_bucket_warnings(bucket_sample_counts),
         "ood_gap": ood_gap,
         "significance": significance,
         "global_multiple_comparison_correction": global_multiple_comparison_correction,

@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections import Counter
 import random
 from typing import Any
 
 from benchmark.schema import BenchmarkSplitManifest, ClaimInstance
+
+DEFAULT_FAMILY_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "l3_mediation_abduction_family",
+    "l3_counterfactual_ambiguity_family",
+    "l2_invalid_iv_family",
+)
+DEFAULT_LEXICAL_HOLDOUT_PRIORITY: tuple[str, ...] = (
+    "attack::association_overclaim::plainspoken",
+    "truthful::cautious::average_treatment_effect",
+    "truthful::formal::average_treatment_effect",
+    "truthful::direct::average_treatment_effect",
+)
 
 
 def _normalize_instances(
@@ -92,6 +105,29 @@ def _collect_unique(values: Iterable[str]) -> list[str]:
     return sorted({str(value) for value in values})
 
 
+def _pick_preferred_candidate(
+    available: Iterable[str],
+    *,
+    preferred_order: tuple[str, ...],
+) -> str | None:
+    available_set = {str(value) for value in available}
+    for candidate in preferred_order:
+        if candidate in available_set:
+            return candidate
+    return None
+
+
+def _pick_frequency_candidate(
+    counts: Counter[str],
+) -> str | None:
+    if not counts:
+        return None
+    return min(
+        counts,
+        key=lambda name: (-int(counts[name]), str(name)),
+    )
+
+
 def build_split_manifest(
     instances: Iterable[ClaimInstance | dict[str, Any]],
     *,
@@ -119,11 +155,57 @@ def build_split_manifest(
     selected_variable_renaming_holdout = (
         renamed_available if variable_renaming_holdout is None else bool(variable_renaming_holdout)
     )
+    selection_policy = {
+        "family_holdout": "explicit" if family_holdout is not None else "default_unset",
+        "lexical_holdout": "explicit" if lexical_holdout is not None else "default_unset",
+        "variable_renaming_holdout": (
+            "explicit" if variable_renaming_holdout is not None else "auto_if_available"
+        ),
+    }
 
     if family_holdout is None and not selected_family_holdout and len(families) > 1:
-        selected_family_holdout = [families[-1]]
+        preferred_family = _pick_preferred_candidate(
+            families,
+            preferred_order=DEFAULT_FAMILY_HOLDOUT_PRIORITY,
+        )
+        if preferred_family is not None:
+            selected_family_holdout = [preferred_family]
+            selection_policy["family_holdout"] = "preferred_stable_default"
+        else:
+            family_counts = Counter(instance.graph_family for instance in normalized_instances)
+            fallback_family = _pick_frequency_candidate(family_counts)
+            if fallback_family is not None:
+                selected_family_holdout = [fallback_family]
+                selection_policy["family_holdout"] = "frequency_fallback"
     if lexical_holdout is None and not selected_lexical_holdout and len(templates) > 1:
-        selected_lexical_holdout = [templates[-1]]
+        pure_lexical_counts: Counter[str] = Counter()
+        overall_lexical_counts: Counter[str] = Counter()
+        for instance in normalized_instances:
+            template_id = instance.language_template_id
+            overall_lexical_counts[template_id] += 1
+            if instance.graph_family in selected_family_holdout:
+                continue
+            if selected_variable_renaming_holdout and _is_variable_renamed(instance):
+                continue
+            pure_lexical_counts[template_id] += 1
+
+        preferred_template = _pick_preferred_candidate(
+            pure_lexical_counts,
+            preferred_order=DEFAULT_LEXICAL_HOLDOUT_PRIORITY,
+        )
+        if preferred_template is not None:
+            selected_lexical_holdout = [preferred_template]
+            selection_policy["lexical_holdout"] = "preferred_stable_default"
+        else:
+            fallback_counts = pure_lexical_counts or overall_lexical_counts
+            fallback_template = _pick_frequency_candidate(fallback_counts)
+            if fallback_template is not None:
+                selected_lexical_holdout = [fallback_template]
+                selection_policy["lexical_holdout"] = (
+                    "pure_frequency_fallback"
+                    if pure_lexical_counts
+                    else "frequency_fallback"
+                )
 
     ood_reasons: dict[str, list[str]] = {}
     for instance in normalized_instances:
@@ -184,6 +266,7 @@ def build_split_manifest(
             "test_iid": len(split_map["test_iid"]),
             "test_ood": len(test_ood_ids),
         },
+        "holdout_selection_policy": selection_policy,
         "ood_reasons": ood_reasons,
     }
 

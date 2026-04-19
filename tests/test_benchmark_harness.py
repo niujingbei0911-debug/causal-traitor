@@ -1,13 +1,21 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from experiments.benchmark_harness import (
     _apply_no_abstention,
     _apply_family_postprocessing,
     aggregate_seed_metrics,
+    build_seed_benchmark_run,
     build_seed_attack_benchmark_run,
     compare_system_predictions,
+    evaluate_system_on_samples,
     summarize_protocol_compliance,
+    validate_system_names,
+    write_artifacts,
 )
 from experiments.exp_leakage_study.run import _mcnemar_significance
 
@@ -30,6 +38,122 @@ def _prediction_record(
 
 
 class BenchmarkHarnessTests(unittest.TestCase):
+    def test_write_artifacts_emits_phase4_sidecars(self) -> None:
+        payload = {
+            "config": {"samples_per_family": 10, "difficulty": 0.55},
+            "requested_config": {"samples_per_family": 10, "difficulty": 0.55},
+            "seeds": [0, 1, 2],
+            "aggregated_metrics": {
+                "test_iid": {
+                    "verdict_accuracy": {
+                        "mean": 0.8,
+                        "std": 0.02,
+                        "ci_lower": 0.76,
+                        "ci_upper": 0.84,
+                        "formatted": "0.8000 ± 0.0200 (95% CI: 0.7600, 0.8400)",
+                    }
+                }
+            },
+            "raw_predictions": [{"instance_id": "inst_1", "predicted_label": "valid"}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifacts = write_artifacts(
+                output_path=Path(tmp_dir) / "exp_phase4.json",
+                payload=payload,
+                markdown_summary="# Summary\n",
+            )
+
+            for key in (
+                "json",
+                "raw_predictions",
+                "markdown_summary",
+                "config",
+                "seed_list",
+                "aggregated_metrics",
+                "ci",
+            ):
+                self.assertIn(key, artifacts)
+                self.assertTrue(Path(artifacts[key]).exists())
+
+            config_payload = json.loads(Path(artifacts["config"]).read_text(encoding="utf-8"))
+            self.assertEqual(config_payload["effective"], payload["config"])
+            self.assertEqual(config_payload["requested"], payload["requested_config"])
+
+            seed_payload = json.loads(Path(artifacts["seed_list"]).read_text(encoding="utf-8"))
+            self.assertEqual(seed_payload["seeds"], payload["seeds"])
+
+            metrics_payload = json.loads(Path(artifacts["aggregated_metrics"]).read_text(encoding="utf-8"))
+            self.assertEqual(metrics_payload, payload["aggregated_metrics"])
+
+            ci_payload = json.loads(Path(artifacts["ci"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                ci_payload["test_iid"]["verdict_accuracy"],
+                {
+                    "ci_lower": 0.76,
+                    "ci_upper": 0.84,
+                    "mean": 0.8,
+                    "std": 0.02,
+                    "formatted": "0.8000 ± 0.0200 (95% CI: 0.7600, 0.8400)",
+                },
+            )
+
+    def test_evaluate_system_on_samples_uses_current_public_schema_contract(self) -> None:
+        run = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=1,
+        )
+        sample = run.split_samples["test_iid"][0]
+        self.assertNotIn("selection_variables", sample.public.to_dict())
+
+        predicted_label = sample.claim.gold_label.value
+        with patch(
+            "experiments.benchmark_harness.predict_sample",
+            return_value={
+                "predicted_label": predicted_label,
+                "confidence": 0.8,
+                "supports_public_only": True,
+                "tool_report": {
+                    "selected_tools": [],
+                    "claim_stance": "pro_causal",
+                    "identified_issues": [],
+                    "supporting_evidence": [],
+                    "counter_evidence": [],
+                    "tool_trace": [],
+                },
+                "countermodel_found": False,
+                "countermodel_type": None,
+                "system_notes": [],
+                "verdict": {
+                    "label": predicted_label,
+                    "confidence": 0.8,
+                    "probabilities": {
+                        "valid": 0.8 if predicted_label == "valid" else 0.1,
+                        "invalid": 0.8 if predicted_label == "invalid" else 0.1,
+                        "unidentifiable": 0.8 if predicted_label == "unidentifiable" else 0.1,
+                    },
+                },
+            },
+        ):
+            evaluated = evaluate_system_on_samples(
+                [sample],
+                seed=0,
+                split_name="test_iid",
+                system_name="countermodel_grounded",
+            )
+
+        record = evaluated["predictions"][0]
+        self.assertNotIn("selection_variables", record["public_evidence_summary"])
+        self.assertEqual(
+            record["public_evidence_summary"]["selection_mechanism"],
+            sample.public.selection_mechanism,
+        )
+
+    def test_shared_harness_rejects_leakage_study_system_name_alias(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_system_names(["oracle_leaking_partition"])
+
     def test_compare_system_predictions_aligns_by_sample_identity(self) -> None:
         baseline_records = [
             _prediction_record(

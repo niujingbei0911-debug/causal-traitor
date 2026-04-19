@@ -49,6 +49,15 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                 f"{metrics['invalid_claim_acceptance_rate']['formatted']} | "
                 f"{metrics['unidentifiable_awareness']['formatted']} |"
             )
+    for split_name, comparison in payload.get("significance", {}).items():
+        if comparison is None:
+            continue
+        lines.extend(["", f"## Significance: {split_name}", ""])
+        for row in comparison["comparisons"]:
+            lines.append(
+                f"- {row['comparison']}: diff={row['observed_difference']:.4f}, "
+                f"p={row['p_value']:.4f}, adjusted={row.get('adjusted_p_value')}"
+            )
     return "\n".join(lines)
 
 

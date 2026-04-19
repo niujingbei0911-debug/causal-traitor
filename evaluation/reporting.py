@@ -315,18 +315,46 @@ def compare_prediction_groups(
     )
 
 
-def _normalize_annotation_value(value: Any) -> str | None:
+_TRUE_ANNOTATION_LABELS = {"1", "t", "true", "y", "yes"}
+_FALSE_ANNOTATION_LABELS = {"0", "f", "false", "n", "no"}
+_MISSING_ANNOTATION_LABELS = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "skip",
+    "skipped",
+    "not applicable",
+    "not_applicable",
+}
+
+
+def _normalize_annotation_value_details(value: Any) -> tuple[str | None, bool]:
     if value is None:
-        return None
+        return None, False
     if isinstance(value, bool):
-        return "yes" if value else "no"
+        return ("yes" if value else "no"), False
+    if isinstance(value, int) and value in {0, 1}:
+        return ("yes" if value else "no"), False
     normalized = str(value).strip().lower()
-    return normalized or None
+    if normalized in _TRUE_ANNOTATION_LABELS:
+        return "yes", False
+    if normalized in _FALSE_ANNOTATION_LABELS:
+        return "no", False
+    if normalized in _MISSING_ANNOTATION_LABELS:
+        return None, False
+    return None, bool(normalized)
+
+
+def normalize_human_audit_label(value: Any) -> str | None:
+    normalized, _ = _normalize_annotation_value_details(value)
+    return normalized
 
 
 def _cohen_kappa(labels_a: Sequence[Any], labels_b: Sequence[Any]) -> float:
     paired = [
-        (_normalize_annotation_value(left), _normalize_annotation_value(right))
+        (normalize_human_audit_label(left), normalize_human_audit_label(right))
         for left, right in zip(labels_a, labels_b)
     ]
     paired = [(left, right) for left, right in paired if left is not None and right is not None]
@@ -365,14 +393,19 @@ def summarize_human_audit_agreement(
 
     summary: Dict[str, Any] = {"n_records": len(records), "fields": {}}
     for field_name in fields:
+        invalid_label_count = 0
         labels_a = [
-            _normalize_annotation_value(record.get(f"{annotator_a_prefix}{field_name}"))
+            _normalize_annotation_value_details(record.get(f"{annotator_a_prefix}{field_name}"))[0]
             for record in records
         ]
         labels_b = [
-            _normalize_annotation_value(record.get(f"{annotator_b_prefix}{field_name}"))
+            _normalize_annotation_value_details(record.get(f"{annotator_b_prefix}{field_name}"))[0]
             for record in records
         ]
+        for record in records:
+            _, left_invalid = _normalize_annotation_value_details(record.get(f"{annotator_a_prefix}{field_name}"))
+            _, right_invalid = _normalize_annotation_value_details(record.get(f"{annotator_b_prefix}{field_name}"))
+            invalid_label_count += int(left_invalid) + int(right_invalid)
         paired = [
             (left, right)
             for left, right in zip(labels_a, labels_b)
@@ -395,5 +428,6 @@ def summarize_human_audit_agreement(
             "cohen_kappa": _cohen_kappa(labels_a, labels_b),
             "annotator_a_distribution": distribution_a,
             "annotator_b_distribution": distribution_b,
+            "invalid_label_count": invalid_label_count,
         }
     return summary

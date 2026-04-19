@@ -166,6 +166,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             transfer_payload = run_cross_model_transfer(
                 seeds=[0],
                 samples_per_family=1,
+                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer.json"),
             )
@@ -182,6 +183,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("verdict_accuracy", main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"])
             self.assertFalse(main_payload["protocol"]["compliant"])
             self.assertTrue(main_payload["protocol"]["override_used"])
+            for artifact_key in (
+                "config",
+                "seed_list",
+                "aggregated_metrics",
+                "ci",
+            ):
+                self.assertIn(artifact_key, main_payload["artifacts"])
+                self.assertTrue(Path(main_payload["artifacts"][artifact_key]).exists())
 
             leaking_predictions = [
                 record
@@ -241,6 +250,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     for key in attack_texts_by_instance
                 )
             )
+            self.assertIn("## Significance:", robustness_payload["markdown_summary"])
 
             for bucket_name in ("graph_family_ood", "lexical_ood", "variable_naming_ood"):
                 self.assertIn(bucket_name, ood_payload["aggregated_metrics"])
@@ -248,6 +258,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(bucket_name, ood_payload["significance"])
             self.assertFalse(ood_payload["protocol"]["compliant"])
             self.assertTrue(ood_payload["protocol"]["override_used"])
+            self.assertIn("Sample Count", ood_payload["markdown_summary"])
+            self.assertIn("## Significance:", ood_payload["markdown_summary"])
 
             self.assertGreaterEqual(len(transfer_payload["systems"]), 2)
             self.assertGreaterEqual(len(transfer_payload["attacker_families"]), 2)
@@ -273,6 +285,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "verifier_probabilities",
             ):
                 self.assertIn(field_name, human_payload["annotation_package"][0])
+            self.assertIn(
+                "witness_quality_reasonable",
+                human_payload["annotation_package"][0]["annotation_questions"],
+            )
+            self.assertIn(
+                "annotator_a_witness_quality_reasonable",
+                human_payload["annotation_package"][0],
+            )
             for artifact_path in human_payload["artifacts"].values():
                 self.assertTrue(Path(artifact_path).exists())
 
@@ -416,6 +436,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 run_cross_model_transfer(
                     seeds=[0],
+                    allow_surrogate_transfer=True,
                     output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_invalid.json"),
                 )
             with self.assertRaises(ValueError):
@@ -465,6 +486,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 seeds=[0],
                 samples_per_family=0,
                 difficulty=1.5,
+                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_effective.json"),
             )
@@ -511,6 +533,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             transfer_payload = run_cross_model_transfer(
                 samples_per_family=1,
+                allow_surrogate_transfer=True,
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_toy.json"),
             )
@@ -577,6 +600,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 run_cross_model_transfer(
                     seeds=[0, 0, 1],
+                    allow_surrogate_transfer=True,
                     allow_protocol_violations=True,
                     output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_duplicate_seeds.json"),
                 )
@@ -613,15 +637,15 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 csv_payload["annotation_package"][0]["public_evidence_summary"]["causal_level"],
             )
             self.assertIn(
-                "countermodel_witness_persuasive",
+                "witness_quality_reasonable",
                 csv_payload["annotation_package"][0]["annotation_questions"],
             )
             self.assertIn(
-                "annotator_a_countermodel_witness_persuasive",
+                "annotator_a_witness_quality_reasonable",
                 csv_payload["annotation_package"][0],
             )
             self.assertNotIn(
-                "annotator_a_witness_persuasive",
+                "annotator_a_countermodel_witness_persuasive",
                 csv_payload["annotation_package"][0],
             )
 
@@ -632,8 +656,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "annotator_b_gold_label_reasonable": "yes",
                     "annotator_a_verifier_label_reasonable": "yes",
                     "annotator_b_verifier_label_reasonable": "yes",
-                    "annotator_a_countermodel_witness_persuasive": "yes",
-                    "annotator_b_countermodel_witness_persuasive": "yes",
+                    "annotator_a_witness_quality_reasonable": "yes",
+                    "annotator_b_witness_quality_reasonable": "yes",
                     "annotator_a_explanation_faithful": "yes",
                     "annotator_b_explanation_faithful": "yes",
                 }
@@ -649,6 +673,75 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     allow_protocol_violations=True,
                     annotations_path=str(fake_path),
                     output_path=str(Path(tmp_dir) / "exp_human_audit_fake.json"),
+                )
+
+    def test_phase4_ood_runner_keeps_primary_buckets_pure_and_routes_overlap_to_mixed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_ood_generalization(
+                seeds=[0],
+                samples_per_family=10,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_ood_generalization_pure.json"),
+            )
+
+            seed_bucket_results = payload["per_seed_bucket_results"][0]
+            for bucket_name, expected_reason in (
+                ("graph_family_ood", ["family_holdout"]),
+                ("lexical_ood", ["lexical_holdout"]),
+                ("variable_naming_ood", ["variable_renaming_holdout"]),
+            ):
+                for record in seed_bucket_results[bucket_name]["predictions"]:
+                    self.assertEqual(record["ood_reasons"], expected_reason)
+            for record in seed_bucket_results["mixed_ood"]["predictions"]:
+                self.assertGreater(len(record["ood_reasons"]), 1)
+
+    def test_cross_model_transfer_requires_explicit_surrogate_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                run_cross_model_transfer(
+                    seeds=[0, 1, 2],
+                    output_path=str(Path(tmp_dir) / "exp_cross_model_transfer_default_guard.json"),
+                )
+
+    def test_human_audit_rejects_duplicate_ids_and_stale_package_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_path = Path(tmp_dir) / "exp_human_audit_base.json"
+            payload = run_human_audit(
+                seeds=[0],
+                samples_per_family=1,
+                audit_subset_size=4,
+                allow_protocol_violations=True,
+                output_path=str(base_path),
+            )
+            package = json.loads(Path(payload["artifacts"]["annotation_package_json"]).read_text(encoding="utf-8"))
+
+            duplicate_annotations = [dict(package[0]), dict(package[0]), dict(package[2]), dict(package[3])]
+            duplicate_path = Path(tmp_dir) / "duplicate_annotations.json"
+            duplicate_path.write_text(json.dumps(duplicate_annotations, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                run_human_audit(
+                    seeds=[0],
+                    samples_per_family=1,
+                    audit_subset_size=4,
+                    allow_protocol_violations=True,
+                    annotations_path=str(duplicate_path),
+                    output_path=str(Path(tmp_dir) / "exp_human_audit_duplicate.json"),
+                )
+
+            stale_annotations = [dict(row) for row in package]
+            stale_annotations[0]["reasoning_summary"] = "stale package content"
+            stale_path = Path(tmp_dir) / "stale_annotations.json"
+            stale_path.write_text(json.dumps(stale_annotations, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                run_human_audit(
+                    seeds=[0],
+                    samples_per_family=1,
+                    audit_subset_size=4,
+                    allow_protocol_violations=True,
+                    annotations_path=str(stale_path),
+                    output_path=str(Path(tmp_dir) / "exp_human_audit_stale.json"),
                 )
 
     async def test_phase5_appendix_and_demo_stay_on_public_schema(self) -> None:

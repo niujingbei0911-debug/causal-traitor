@@ -87,9 +87,16 @@ def run_experiment(
     attacker_families: list[str] | None = None,
     samples_per_family: int = MIN_FORMAL_SAMPLES_PER_FAMILY,
     difficulty: float = 0.55,
+    allow_surrogate_transfer: bool = False,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
 ) -> dict[str, Any]:
+    if not allow_surrogate_transfer:
+        raise ValueError(
+            "exp_cross_model_transfer currently runs only a predictor-family surrogate study, "
+            "not the Phase 4 P4-S4 cross-model-family experiment. Re-run with "
+            "allow_surrogate_transfer=True only for exploratory analysis."
+        )
     resolved_seeds = normalize_experiment_seeds(
         seeds,
         minimum_count=MIN_FORMAL_SEED_COUNT,
@@ -195,6 +202,7 @@ def run_experiment(
         "requested_config": {
             "samples_per_family": int(samples_per_family),
             "difficulty": float(difficulty),
+            "allow_surrogate_transfer": bool(allow_surrogate_transfer),
             "allow_protocol_violations": bool(allow_protocol_violations),
         },
         "systems": resolved_systems,
@@ -238,6 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
     parser.add_argument(
+        "--allow-surrogate-transfer",
+        action="store_true",
+        help="Acknowledge that this runner is still a surrogate predictor-family study.",
+    )
+    parser.add_argument(
         "--allow-protocol-violations",
         action="store_true",
         help="Allow exploratory runs that violate the formal >=3-seed Phase 4 protocol.",
@@ -254,6 +267,7 @@ def main() -> None:
         attacker_families=args.attacker_families,
         samples_per_family=args.samples_per_family,
         difficulty=args.difficulty,
+        allow_surrogate_transfer=args.allow_surrogate_transfer,
         allow_protocol_violations=args.allow_protocol_violations,
         output_path=args.output,
     )

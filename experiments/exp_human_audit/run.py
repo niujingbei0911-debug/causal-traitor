@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from evaluation.reporting import summarize_human_audit_agreement
+from evaluation.reporting import normalize_human_audit_label, summarize_human_audit_agreement
 from experiments.benchmark_harness import (
     MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_HUMAN_AUDIT_SUBSET_SIZE,
@@ -30,23 +30,21 @@ DEFAULT_SAMPLES_PER_FAMILY = 15
 AUDIT_FIELDS: tuple[str, ...] = (
     "gold_label_reasonable",
     "verifier_label_reasonable",
-    "countermodel_witness_persuasive",
+    "witness_quality_reasonable",
     "explanation_faithful",
 )
-PACKAGE_IDENTITY_FIELDS: tuple[str, ...] = (
-    "audit_id",
-    "seed",
-    "split",
-    "instance_id",
-    "causal_level",
-    "graph_family",
-    "query_type",
-    "attack_name",
-    "claim_text",
-    "gold_label",
-    "predicted_label",
-    "public_evidence_summary",
-    "observed_data",
+ANNOTATION_MUTABLE_FIELDS: tuple[str, ...] = (
+    "annotator_a_gold_label_reasonable",
+    "annotator_a_verifier_label_reasonable",
+    "annotator_a_witness_quality_reasonable",
+    "annotator_a_explanation_faithful",
+    "annotator_a_notes",
+    "annotator_b_gold_label_reasonable",
+    "annotator_b_verifier_label_reasonable",
+    "annotator_b_witness_quality_reasonable",
+    "annotator_b_explanation_faithful",
+    "annotator_b_notes",
+    "arbiter_notes",
 )
 
 
@@ -86,6 +84,26 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
 def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
     verdict = dict(record["verdict"])
     witness = verdict.get("witness") or {}
+    support_witness = verdict.get("support_witness")
+    countermodel_witness = verdict.get("countermodel_witness")
+    primary_witness = countermodel_witness or support_witness or witness or None
+    primary_witness_role = "none"
+    witness_question = "If no witness is present, mark N/A for witness quality."
+    if countermodel_witness is not None:
+        primary_witness_role = "countermodel"
+        witness_question = (
+            "If a countermodel witness is present, is it persuasive enough to justify the verifier's decision?"
+        )
+    elif support_witness is not None:
+        primary_witness_role = "support"
+        witness_question = (
+            "If a support witness is present, is it persuasive enough to justify the verifier's decision?"
+        )
+    elif primary_witness:
+        primary_witness_role = str(primary_witness.get("witness_type") or "generic")
+        witness_question = (
+            "If a witness is present, is it persuasive enough to justify the verifier's decision?"
+        )
     public_payload = dict(record.get("public_evidence_summary", {}))
     return {
         "audit_id": f"{record['split']}::{record['instance_id']}",
@@ -105,29 +123,29 @@ def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
         "reasoning_summary": verdict.get("reasoning_summary"),
         "witness_description": witness.get("description"),
         "witness_type": witness.get("witness_type"),
+        "primary_witness_role": primary_witness_role,
         "public_evidence_summary": dict(record.get("public_evidence_summary", {})),
         "observed_data": record.get("observed_data"),
         "supporting_evidence": list(record.get("supporting_evidence", [])),
         "counter_evidence": list(record.get("counter_evidence", [])),
         "tool_trace": list(record.get("tool_trace", [])),
-        "support_witness": verdict.get("support_witness"),
-        "countermodel_witness": verdict.get("countermodel_witness"),
+        "support_witness": support_witness,
+        "countermodel_witness": countermodel_witness,
+        "primary_witness": primary_witness,
         "annotation_questions": {
             "gold_label_reasonable": "Is the gold label itself reasonable for this claim and public evidence?",
             "verifier_label_reasonable": "Is the verifier label reasonable given the public evidence?",
-            "countermodel_witness_persuasive": (
-                "If a countermodel witness is present, is it persuasive enough to justify the verifier's decision?"
-            ),
+            "witness_quality_reasonable": witness_question,
             "explanation_faithful": "Is the reasoning summary faithful to the witness and tool evidence?",
         },
         "annotator_a_gold_label_reasonable": None,
         "annotator_a_verifier_label_reasonable": None,
-        "annotator_a_countermodel_witness_persuasive": None,
+        "annotator_a_witness_quality_reasonable": None,
         "annotator_a_explanation_faithful": None,
         "annotator_a_notes": "",
         "annotator_b_gold_label_reasonable": None,
         "annotator_b_verifier_label_reasonable": None,
-        "annotator_b_countermodel_witness_persuasive": None,
+        "annotator_b_witness_quality_reasonable": None,
         "annotator_b_explanation_faithful": None,
         "annotator_b_notes": "",
         "arbiter_notes": "",
@@ -152,6 +170,13 @@ def _canonicalize_annotation_value(value: Any) -> Any:
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
+            return None
+        lowered = stripped.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered == "null":
             return None
         try:
             return _canonicalize_annotation_value(json.loads(stripped))
@@ -180,6 +205,13 @@ def _validate_loaded_annotations(
         for record in annotation_package
     }
     loaded_ids = [str(record.get("audit_id", "")).strip() for record in loaded_annotations]
+    duplicate_ids = sorted(
+        audit_id
+        for audit_id in {item for item in loaded_ids if item}
+        if loaded_ids.count(audit_id) > 1
+    )
+    if duplicate_ids:
+        raise ValueError(f"Loaded annotations contain duplicate audit_id values: {duplicate_ids!r}.")
     if set(loaded_ids) != set(expected_by_id):
         raise ValueError("Loaded annotations do not match the current audit package identities.")
 
@@ -187,12 +219,27 @@ def _validate_loaded_annotations(
     for record in loaded_annotations:
         audit_id = str(record.get("audit_id", "")).strip()
         expected = expected_by_id[audit_id]
-        for field_name in PACKAGE_IDENTITY_FIELDS:
+        locked_fields = sorted(set(expected) - set(ANNOTATION_MUTABLE_FIELDS))
+        unexpected_locked_fields = sorted(
+            field_name
+            for field_name in record
+            if field_name not in expected and field_name not in ANNOTATION_MUTABLE_FIELDS
+        )
+        if unexpected_locked_fields:
+            raise ValueError(
+                f"Loaded annotations contain unexpected locked fields for audit_id={audit_id!r}: "
+                f"{unexpected_locked_fields!r}."
+            )
+        for field_name in locked_fields:
             if _canonicalize_annotation_value(record.get(field_name)) != _canonicalize_annotation_value(expected.get(field_name)):
                 raise ValueError(
                     f"Loaded annotations do not match the current audit package for audit_id={audit_id!r}, field={field_name!r}."
                 )
-        validated.append({**expected, **dict(record)})
+        validated_record = dict(expected)
+        for field_name in ANNOTATION_MUTABLE_FIELDS:
+            if field_name in record:
+                validated_record[field_name] = record[field_name]
+        validated.append(validated_record)
     return validated
 
 
@@ -203,8 +250,8 @@ def _conflict_summary(records: list[dict[str, Any]] | None) -> dict[str, Any] | 
     for record in records:
         conflicting_fields: list[str] = []
         for field_name in AUDIT_FIELDS:
-            left = str(record.get(f"annotator_a_{field_name}", "")).strip().lower()
-            right = str(record.get(f"annotator_b_{field_name}", "")).strip().lower()
+            left = normalize_human_audit_label(record.get(f"annotator_a_{field_name}"))
+            right = normalize_human_audit_label(record.get(f"annotator_b_{field_name}"))
             if left and right and left != right:
                 conflicting_fields.append(field_name)
         if conflicting_fields:

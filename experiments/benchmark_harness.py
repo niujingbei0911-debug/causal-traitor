@@ -47,7 +47,6 @@ SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
     "no_ledger",
     "no_countermodel",
     "no_abstention",
-    "oracle_leaking_partition",
     "claim_only_family",
     "skeptical_family",
     "optimistic_family",
@@ -1094,43 +1093,6 @@ def predict_sample(
         return _run_manual_variant(sample, use_ledger=True, use_countermodel=False, use_tools=True)
     if system_name == "no_abstention":
         return _apply_no_abstention(sample, _run_main_verifier(sample))
-    if system_name == "oracle_leaking_partition":
-        gold_label = sample.gold.gold_label.value
-        return {
-            "predicted_label": gold_label,
-            "confidence": 0.999,
-            "verdict": {
-                "label": gold_label,
-                "confidence": 0.999,
-                "assumption_ledger": [],
-                "witness": None,
-                "support_witness": None,
-                "countermodel_witness": None,
-                "tool_trace": [],
-                "reasoning_summary": (
-                    "Oracle supervision upper bound: this control reads gold_label directly and "
-                    "does not rerun the verifier on a faithfully leaking public partition."
-                ),
-                "metadata": {
-                    "leakage_mode": "oracle_gold_label_supervision",
-                    "oracle_fields": ["gold_label"],
-                    "control_interpretation": "oracle_supervision_upper_bound",
-                    "same_verifier_pipeline": False,
-                },
-            },
-            "tool_report": {
-                "selected_tools": [],
-                "claim_stance": "pro_causal",
-                "identified_issues": [],
-                "supporting_evidence": [],
-                "counter_evidence": [],
-                "tool_trace": [],
-            },
-            "countermodel_found": False,
-            "countermodel_type": None,
-            "supports_public_only": False,
-            "system_notes": ["oracle_leakage", "oracle_supervision_upper_bound"],
-        }
     if system_name == "claim_only_family":
         return _run_claim_only_family(sample)
     if system_name in {"skeptical_family", "optimistic_family"}:
@@ -1234,7 +1196,6 @@ def evaluate_system_on_samples(
                 "description": public_payload["description"],
                 "variables": list(public_payload["variables"]),
                 "proxy_variables": list(public_payload["proxy_variables"]),
-                "selection_variables": list(public_payload["selection_variables"]),
                 "selection_mechanism": public_payload["selection_mechanism"],
                 "causal_level": public_payload["causal_level"],
             },
@@ -1361,6 +1322,26 @@ def compare_system_predictions(
     return report.to_dict()
 
 
+def _extract_confidence_interval_view(node: Any) -> Any:
+    if isinstance(node, dict):
+        metric_keys = {"mean", "std", "ci_lower", "ci_upper", "formatted"}
+        if metric_keys.issubset(set(node)):
+            return {
+                "mean": node["mean"],
+                "std": node["std"],
+                "ci_lower": node["ci_lower"],
+                "ci_upper": node["ci_upper"],
+                "formatted": node["formatted"],
+            }
+        extracted: dict[str, Any] = {}
+        for key, value in node.items():
+            child = _extract_confidence_interval_view(value)
+            if child is not None:
+                extracted[str(key)] = child
+        return extracted or None
+    return None
+
+
 def write_artifacts(
     *,
     output_path: str | Path,
@@ -1378,10 +1359,46 @@ def write_artifacts(
 
     markdown_path = json_path.with_suffix(".md")
     markdown_path.write_text(markdown_summary.rstrip() + "\n", encoding="utf-8")
+
+    config_path = json_path.with_name(f"{json_path.stem}_config.json")
+    config_path.write_text(
+        json.dumps(
+            {
+                "effective": payload.get("config"),
+                "requested": payload.get("requested_config"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    seed_list_path = json_path.with_name(f"{json_path.stem}_seed_list.json")
+    seed_list_path.write_text(
+        json.dumps({"seeds": list(payload.get("seeds", []))}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    aggregated_metrics_path = json_path.with_name(f"{json_path.stem}_aggregated_metrics.json")
+    aggregated_metrics_path.write_text(
+        json.dumps(payload.get("aggregated_metrics", {}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    ci_path = json_path.with_name(f"{json_path.stem}_ci.json")
+    ci_payload = _extract_confidence_interval_view(payload.get("aggregated_metrics", {})) or {}
+    ci_path.write_text(
+        json.dumps(ci_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return {
         "json": str(json_path),
         "raw_predictions": str(raw_predictions_path),
         "markdown_summary": str(markdown_path),
+        "config": str(config_path),
+        "seed_list": str(seed_list_path),
+        "aggregated_metrics": str(aggregated_metrics_path),
+        "ci": str(ci_path),
     }
 
 
