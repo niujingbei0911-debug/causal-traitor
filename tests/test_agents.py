@@ -222,6 +222,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict.winner, "agent_a")
         self.assertAlmostEqual(verdict.verifier_confidence, 0.83, places=3)
         self.assertTrue(verdict.verifier_verdict)
+        self.assertEqual(verdict.verifier_verdict["final_verdict"], "valid")
+        self.assertEqual(verdict.verifier_verdict["identification_status"], "identified")
+        self.assertIn("missing_information_spec", verdict.verifier_verdict)
         self.assertIs(fake_pipeline.calls[0]["scenario"], self.public_scenario)
 
     async def test_agent_c_verifier_first_defers_tool_execution_to_pipeline(self):

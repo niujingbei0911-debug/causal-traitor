@@ -1164,6 +1164,17 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIsInstance(result, VerifierDecision)
         self.assertEqual(result.label, VerdictLabel.VALID)
+        self.assertIs(result.identification_status, IdentificationStatus.IDENTIFIED)
+        self.assertIsNone(result.refusal_reason)
+        self.assertEqual(
+            result.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": [],
+                "required_evidence": [],
+                "note": "",
+            },
+        )
+        self.assertEqual(result.to_dict()["final_verdict"], "valid")
         self.assertTrue(result.metadata["support_stage_entered"])
         self.assertIsNotNone(result.support_witness)
         self.assertTrue(result.tool_trace)

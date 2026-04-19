@@ -519,6 +519,7 @@ class VerifierVerdict:
 
     def __post_init__(self) -> None:
         self.label = _coerce_label(self.label, field_name="verdict.label")
+        self.reasoning_summary = str(self.reasoning_summary).strip()
         self.identification_status = _coerce_identification_status(
             self.identification_status,
             field_name="verdict.identification_status",
@@ -526,13 +527,18 @@ class VerifierVerdict:
         self.missing_information_spec = _normalize_missing_information_spec(
             self.missing_information_spec
         )
-        self.refusal_reason = _coerce_optional_string(self.refusal_reason)
         if (
             self.label is VerdictLabel.UNIDENTIFIABLE
-            and self.refusal_reason is None
-            and self.missing_information_spec.missing_assumptions
+            and not self.missing_information_spec.note
+            and self.reasoning_summary
         ):
-            self.refusal_reason = "missing_identifying_support"
+            self.missing_information_spec.note = self.reasoning_summary
+        self.refusal_reason = _coerce_optional_string(self.refusal_reason)
+        if self.label is VerdictLabel.UNIDENTIFIABLE and self.refusal_reason is None:
+            if self.missing_information_spec.missing_assumptions:
+                self.refusal_reason = "missing_identifying_support"
+            else:
+                self.refusal_reason = "insufficient_public_information"
         if self.confidence is not None:
             self.confidence = float(self.confidence)
         self.metadata = dict(self.metadata)
@@ -540,6 +546,7 @@ class VerifierVerdict:
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label.value if self.label is not None else None,
+            "final_verdict": self.label.value if self.label is not None else None,
             "identification_status": (
                 self.identification_status.value if self.identification_status is not None else None
             ),
@@ -568,7 +575,7 @@ def _normalize_verdict(
         )
     if isinstance(value, dict):
         return VerifierVerdict(
-            label=value.get("label"),
+            label=value.get("label", value.get("final_verdict")),
             identification_status=value.get("identification_status"),
             refusal_reason=value.get("refusal_reason"),
             missing_information_spec=value.get("missing_information_spec"),

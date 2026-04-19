@@ -27,6 +27,10 @@ from verifier.pipeline import VerifierPipeline
 
 DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
 PRIMARY_METRICS: tuple[str, ...] = (
+    "unsafe_acceptance_rate",
+    "wise_refusal_recall",
+    "wise_refusal_precision",
+    "over_refusal_rate",
     "verdict_accuracy",
     "macro_f1",
     "invalid_claim_acceptance_rate",

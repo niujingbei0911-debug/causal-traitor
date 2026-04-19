@@ -34,6 +34,71 @@ def _normalize_verdict_label(value: Any) -> str | None:
     return None
 
 
+def _nested_value(mapping: Any, key: str) -> Any:
+    if isinstance(mapping, dict):
+        return mapping.get(key)
+    return None
+
+
+def _extract_round_predicted_label(round_data: dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("verdict_label"),
+        round_data.get("predicted_label"),
+        round_data.get("final_verdict"),
+        _nested_value(round_data.get("verdict"), "final_verdict"),
+        _nested_value(round_data.get("verdict"), "label"),
+        _nested_value(round_data.get("verifier_verdict"), "final_verdict"),
+        _nested_value(round_data.get("verifier_verdict"), "label"),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_verdict_label(candidate)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _extract_round_gold_label(round_data: dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("gold_label"),
+        round_data.get("expected_label"),
+        _nested_value(round_data.get("ground_truth"), "final_verdict"),
+        _nested_value(round_data.get("ground_truth"), "label"),
+        _nested_value(round_data.get("gold_verdict"), "final_verdict"),
+        _nested_value(round_data.get("gold_verdict"), "label"),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_verdict_label(candidate)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _extract_round_confidence(round_data: dict[str, Any]) -> float:
+    candidates = [
+        round_data.get("verifier_confidence"),
+        round_data.get("confidence"),
+        _nested_value(round_data.get("verdict"), "confidence"),
+        _nested_value(round_data.get("verifier_verdict"), "confidence"),
+    ]
+    for candidate in candidates:
+        if candidate is not None:
+            return _clip01(candidate)
+    return 0.0
+
+
+def _extract_round_probabilities(round_data: dict[str, Any]) -> Any:
+    candidates = [
+        round_data.get("predicted_probabilities"),
+        round_data.get("verdict_probabilities"),
+        _nested_value(round_data.get("verdict"), "probabilities"),
+        _nested_value(round_data.get("verifier_verdict"), "probabilities"),
+    ]
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _is_committed_label(value: str | None) -> bool:
     return value in {"valid", "invalid"}
 
@@ -247,22 +312,48 @@ class CausalMetrics:
         gold_labels: Sequence[Any],
         predicted_labels: Sequence[Any],
     ) -> MetricResult:
+        return cls._unsafe_acceptance_rate_metric(
+            gold_labels,
+            predicted_labels,
+            metric_name="invalid_claim_acceptance_rate",
+        )
+
+    @classmethod
+    def unsafe_acceptance_rate(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+    ) -> MetricResult:
+        return cls._unsafe_acceptance_rate_metric(
+            gold_labels,
+            predicted_labels,
+            metric_name="unsafe_acceptance_rate",
+        )
+
+    @classmethod
+    def _unsafe_acceptance_rate_metric(
+        cls,
+        gold_labels: Sequence[Any],
+        predicted_labels: Sequence[Any],
+        *,
+        metric_name: str,
+    ) -> MetricResult:
         pairs = cls._paired_labels(gold_labels, predicted_labels)
         invalid_gold = [(gold, pred) for gold, pred in pairs if gold == "invalid"]
         if not invalid_gold:
             return cls._metric(
-                "invalid_claim_acceptance_rate",
+                metric_name,
                 0.0,
-                category="verdict",
+                category="selective",
                 details={"n_invalid": 0, "accepted_as_valid": 0},
                 is_primary=True,
                 higher_is_better=False,
             )
         accepted = sum(1 for _, pred in invalid_gold if pred == "valid")
         return cls._metric(
-            "invalid_claim_acceptance_rate",
+            metric_name,
             _safe_rate(accepted, len(invalid_gold)),
-            category="verdict",
+            category="selective",
             details={"n_invalid": len(invalid_gold), "accepted_as_valid": accepted},
             is_primary=True,
             higher_is_better=False,
@@ -971,23 +1062,10 @@ class CausalMetrics:
             for round_data in rounds:
                 verifier_verdict = round_data.get("verifier_verdict")
                 verifier_payload = verifier_verdict if isinstance(verifier_verdict, dict) else {}
-                gold_labels.append(round_data.get("gold_label"))
-                predicted_labels.append(
-                    round_data.get("verdict_label")
-                    or round_data.get("predicted_label")
-                    or verifier_payload.get("label")
-                )
-                confidences.append(
-                    round_data.get("verifier_confidence")
-                    or round_data.get("confidence")
-                    or verifier_payload.get("confidence")
-                    or 0.0
-                )
-                predicted_probabilities.append(
-                    round_data.get("predicted_probabilities")
-                    or round_data.get("verdict_probabilities")
-                    or verifier_payload.get("probabilities")
-                )
+                gold_labels.append(_extract_round_gold_label(round_data))
+                predicted_labels.append(_extract_round_predicted_label(round_data))
+                confidences.append(_extract_round_confidence(round_data))
+                predicted_probabilities.append(_extract_round_probabilities(round_data))
                 countermodel_hits.append(
                     bool(round_data.get("countermodel_found"))
                     or bool(round_data.get("countermodel_witness"))
@@ -996,7 +1074,7 @@ class CausalMetrics:
                 countermodel_applicable.append(
                     round_data.get("countermodel_applicable")
                     if "countermodel_applicable" in round_data
-                    else _normalize_verdict_label(round_data.get("gold_label")) in {"invalid", "unidentifiable"}
+                    else _extract_round_gold_label(round_data) in {"invalid", "unidentifiable"}
                 )
 
         if gold_labels:
@@ -1004,6 +1082,7 @@ class CausalMetrics:
                 [
                     cls.verdict_accuracy(gold_labels, predicted_labels),
                     cls.verdict_macro_f1(gold_labels, predicted_labels),
+                    cls.unsafe_acceptance_rate(gold_labels, predicted_labels),
                     cls.invalid_claim_acceptance_rate(gold_labels, predicted_labels),
                     cls.unidentifiable_awareness(gold_labels, predicted_labels),
                     cls.wise_refusal_recall(gold_labels, predicted_labels),

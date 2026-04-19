@@ -287,6 +287,7 @@ class SelectiveVerifierOutput:
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label.value,
+            "final_verdict": self.label.value,
             "identification_status": (
                 self.identification_status.value if self.identification_status is not None else None
             ),

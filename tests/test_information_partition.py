@@ -28,6 +28,7 @@ from benchmark.schema import (
 )
 from game.debate_engine import DebateEngine
 from game.types import CausalScenario, DebateContext
+from verifier.outputs import SelectiveVerifierOutput
 
 
 FORBIDDEN_VERIFIER_FIELDS = {
@@ -196,6 +197,32 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("verdict", public_payload)
         self.assertNotIn("missing_identifying_support", serialized_public)
         self.assertNotIn("valid adjustment set", serialized_public)
+
+    def test_benchmark_and_verifier_selective_defaults_stay_aligned(self) -> None:
+        payload = {
+            "label": "unidentifiable",
+            "confidence": 0.41,
+            "reasoning_summary": "Public evidence is insufficient to uniquely identify the claim.",
+            "metadata": {"decision_stage": 3},
+        }
+
+        benchmark_payload = VerifierVerdict(**payload).to_dict()
+        verifier_payload = SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+        comparable_keys = (
+            "label",
+            "final_verdict",
+            "identification_status",
+            "refusal_reason",
+            "missing_information_spec",
+            "confidence",
+            "reasoning_summary",
+            "metadata",
+        )
+
+        self.assertEqual(
+            {key: benchmark_payload[key] for key in comparable_keys},
+            {key: verifier_payload[key] for key in comparable_keys},
+        )
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(

@@ -12,7 +12,7 @@ from verifier.assumption_ledger import (
     AssumptionStatus,
 )
 from verifier.countermodel_search import CountermodelSearchResult
-from verifier.outputs import ParsedClaim
+from verifier.outputs import ParsedClaim, SelectiveVerifierOutput
 
 _BASELINE_ASSUMPTIONS: frozenset[str] = frozenset({"consistency", "positivity"})
 
@@ -477,7 +477,7 @@ class VerifierDecision:
         self.reasoning_summary = str(self.reasoning_summary).strip()
         self.metadata = dict(self.metadata)
 
-    def to_dict(self) -> dict[str, Any]:
+    def _base_payload(self) -> dict[str, Any]:
         return {
             "label": self.label.value,
             "confidence": self.confidence,
@@ -496,6 +496,39 @@ class VerifierDecision:
             "reasoning_summary": self.reasoning_summary,
             "metadata": dict(self.metadata),
         }
+
+    def to_selective_output(self) -> SelectiveVerifierOutput:
+        return SelectiveVerifierOutput.from_decision_payload(self._base_payload())
+
+    @property
+    def identification_status(self):
+        return self.to_selective_output().identification_status
+
+    @property
+    def refusal_reason(self):
+        return self.to_selective_output().refusal_reason
+
+    @property
+    def missing_information_spec(self):
+        return self.to_selective_output().missing_information_spec
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.to_selective_output().to_dict()
+        base_payload = self._base_payload()
+        payload.update(
+            {
+                "confidence": base_payload["confidence"],
+                "probabilities": base_payload["probabilities"],
+                "assumption_ledger": base_payload["assumption_ledger"],
+                "witness": base_payload["witness"],
+                "support_witness": base_payload["support_witness"],
+                "countermodel_witness": base_payload["countermodel_witness"],
+                "tool_trace": base_payload["tool_trace"],
+                "reasoning_summary": base_payload["reasoning_summary"],
+                "metadata": base_payload["metadata"],
+            }
+        )
+        return payload
 
 
 def decide_verdict(

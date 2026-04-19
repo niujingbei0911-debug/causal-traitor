@@ -115,7 +115,7 @@ async def run_experiment(
         )
         summary["levels"][f"L{level}"] = {
             "rounds": rounds_per_level,
-            "primary_metric": game_score.summary.get("primary_metric", "verdict_accuracy"),
+            "primary_metric": game_score.summary.get("primary_metric", "unsafe_acceptance_rate"),
             "verdict_metrics": dict(game_score.summary.get("core_metrics", {})),
             "verdict_accuracy_ci": verdict_accuracy_ci,
             "gold_label_distribution": dict(game_score.summary.get("gold_label_distribution", {})),

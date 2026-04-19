@@ -129,7 +129,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             saved = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["summary"]["n_rounds"], 1)
             self.assertEqual(payload["summary"]["n_rounds"], 1)
-            self.assertEqual(payload["summary"]["primary_metric"], "verdict_accuracy")
+            self.assertEqual(payload["summary"]["primary_metric"], "unsafe_acceptance_rate")
             self.assertIn("verdict_metrics", payload["summary"])
             self.assertIn("protocol_metrics", payload["summary"])
             self.assertIn("tracking", payload)
@@ -142,7 +142,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(output_path.exists())
             self.assertIn("levels", payload)
             for level_key, level_summary in payload["levels"].items():
-                self.assertEqual(level_summary["primary_metric"], "verdict_accuracy")
+                self.assertEqual(level_summary["primary_metric"], "unsafe_acceptance_rate")
                 self.assertIn("verdict_metrics", level_summary)
                 self.assertIn("appendix_metrics", level_summary)
                 self.assertIn("verdict_accuracy_ci", level_summary)

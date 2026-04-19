@@ -109,7 +109,7 @@ def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[
     return {
         "n_rounds": len(results),
         "scored_rounds": score.summary.get("scored_rounds", 0),
-        "primary_metric": score.summary.get("primary_metric", "verdict_accuracy"),
+        "primary_metric": score.summary.get("primary_metric", "unsafe_acceptance_rate"),
         "verdict_metrics": dict(score.summary.get("core_metrics", {})),
         "verdict_metric_summaries": core_metric_summaries,
         "verdict_accuracy_ci": verdict_accuracy_ci,

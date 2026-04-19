@@ -130,12 +130,54 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score_a.final_scores["ece"], 0.4)
         self.assertEqual(score_a.final_scores["brier"], 0.1789)
         self.assertEqual(score_a.final_scores["countermodel_coverage"], 0.5)
-        self.assertEqual(score_a.final_scores["overall"], 0.585)
+        self.assertEqual(score_a.final_scores["overall"], 0.6211)
         self.assertNotEqual(score_a.summary["appendix_metrics"], score_b.summary["appendix_metrics"])
         self.assertIn("DSR", score_a.summary["appendix_metrics"])
         self.assertIn("jury_accuracy", score_a.summary["appendix_metrics"])
         self.assertIn("jury_consensus", score_a.summary["appendix_metrics"])
         self.assertIn("ECI", score_a.summary["appendix_metrics"])
+
+    def test_score_game_summary_uses_selective_primary_metric(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "primary-metric",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "invalid",
+                        "verdict_label": "invalid",
+                        "verifier_confidence": 0.9,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(score.summary["primary_metric"], "unsafe_acceptance_rate")
+
+    def test_compute_weighted_score_prioritizes_selective_primary_metrics(self) -> None:
+        core_metrics = [
+            MetricResult(
+                name="unsafe_acceptance_rate",
+                value=0.0,
+                category="selective",
+                is_primary=True,
+                higher_is_better=False,
+            ),
+            MetricResult(name="wise_refusal_recall", value=1.0, category="selective", is_primary=True),
+            MetricResult(name="wise_refusal_precision", value=1.0, category="selective", is_primary=True),
+            MetricResult(
+                name="over_refusal_rate",
+                value=0.0,
+                category="selective",
+                is_primary=True,
+                higher_is_better=False,
+            ),
+            MetricResult(name="ece", value=0.0, category="verdict", is_primary=True, higher_is_better=False),
+            MetricResult(name="brier", value=0.0, category="verdict", is_primary=True, higher_is_better=False),
+            MetricResult(name="countermodel_coverage", value=1.0, category="verdict", is_primary=True),
+        ]
+
+        self.assertGreaterEqual(self.scorer.compute_weighted_score(core_metrics), 0.8)
 
     def test_compute_weighted_score_ignores_appendix_metrics(self) -> None:
         core_metrics = [
@@ -162,7 +204,7 @@ class EvaluationTests(unittest.TestCase):
         core_only = self.scorer.compute_weighted_score(core_metrics)
         with_appendix = self.scorer.compute_weighted_score(core_metrics + appendix_metrics)
 
-        self.assertEqual(core_only, 0.7125)
+        self.assertEqual(core_only, 0.1375)
         self.assertEqual(with_appendix, core_only)
 
     def test_ece_keeps_confidences_aligned_with_filtered_labels(self) -> None:
@@ -228,6 +270,39 @@ class EvaluationTests(unittest.TestCase):
         self.assertFalse(lookup["over_commitment_rate"].higher_is_better)
         self.assertFalse(lookup["over_refusal_rate"].higher_is_better)
 
+    def test_score_game_accepts_final_verdict_nested_payload(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "final-verdict-round",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "valid",
+                        "verifier_verdict": {"final_verdict": "valid", "confidence": 0.8},
+                    }
+                ],
+            }
+        )
+
+        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 1.0, places=4)
+
+    def test_metrics_compute_all_accepts_final_verdict_nested_payload(self) -> None:
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all(
+                {
+                    "rounds": [
+                        {
+                            "gold_label": "valid",
+                            "verifier_verdict": {"final_verdict": "valid", "confidence": 0.8},
+                        }
+                    ]
+                }
+            )
+        }
+
+        self.assertAlmostEqual(lookup["verdict_accuracy"].value, 1.0, places=4)
+
     def test_score_game_uses_explicit_verdict_probabilities_for_calibration_metrics(self) -> None:
         score = self.scorer.score_game(
             {
@@ -277,6 +352,25 @@ class EvaluationTests(unittest.TestCase):
         lookup = {result.name: result for result in results}
         self.assertEqual(lookup["countermodel_coverage"].value, 0.0)
         self.assertEqual(lookup["countermodel_coverage"].details["applicable"], 0)
+
+    def test_compute_all_preserves_explicit_zero_confidence_from_round_payload(self) -> None:
+        game_data = {
+            "rounds": [
+                {
+                    "round_id": 1,
+                    "gold_label": "valid",
+                    "verdict_label": "valid",
+                    "verifier_confidence": 0.0,
+                    "confidence": 0.9,
+                }
+            ]
+        }
+
+        score = self.scorer.score_game(game_data)
+        lookup = {result.name: result for result in CausalMetrics.compute_all(game_data)}
+
+        self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
+        self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
 
     def test_score_game_counts_missing_predictions_as_scored_failures(self) -> None:
         score = self.scorer.score_game(

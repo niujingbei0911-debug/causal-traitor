@@ -44,7 +44,10 @@ def _extract_predicted_label(round_data: Dict[str, Any]) -> str | None:
     candidates = [
         round_data.get("verdict_label"),
         round_data.get("predicted_label"),
+        round_data.get("final_verdict"),
+        _nested_value(round_data.get("verdict"), "final_verdict"),
         _nested_value(round_data.get("verdict"), "label"),
+        _nested_value(round_data.get("verifier_verdict"), "final_verdict"),
         _nested_value(round_data.get("verifier_verdict"), "label"),
     ]
     for candidate in candidates:
@@ -58,7 +61,9 @@ def _extract_gold_label(round_data: Dict[str, Any]) -> str | None:
     candidates = [
         round_data.get("gold_label"),
         round_data.get("expected_label"),
+        _nested_value(round_data.get("ground_truth"), "final_verdict"),
         _nested_value(round_data.get("ground_truth"), "label"),
+        _nested_value(round_data.get("gold_verdict"), "final_verdict"),
         _nested_value(round_data.get("gold_verdict"), "label"),
     ]
     for candidate in candidates:
@@ -154,13 +159,13 @@ class Scorer:
     """
 
     DEFAULT_WEIGHTS: Dict[str, float] = {
-        "verdict_accuracy": 0.30,
-        "macro_f1": 0.25,
-        "invalid_claim_acceptance_rate": 0.15,
-        "unidentifiable_awareness": 0.15,
+        "unsafe_acceptance_rate": 0.30,
+        "wise_refusal_recall": 0.20,
+        "wise_refusal_precision": 0.15,
+        "over_refusal_rate": 0.15,
         "ece": 0.05,
         "brier": 0.05,
-        "countermodel_coverage": 0.05,
+        "countermodel_coverage": 0.10,
     }
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
@@ -298,6 +303,7 @@ class Scorer:
         core_metrics = [
             CausalMetrics.verdict_accuracy(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.verdict_macro_f1(paired_gold_labels, paired_predicted_labels),
+            CausalMetrics.unsafe_acceptance_rate(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.invalid_claim_acceptance_rate(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.unidentifiable_awareness(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.wise_refusal_recall(paired_gold_labels, paired_predicted_labels),
@@ -350,7 +356,7 @@ class Scorer:
         predicted_distribution = _label_distribution(paired_predicted_labels)
 
         summary = {
-            "primary_metric": "verdict_accuracy",
+            "primary_metric": "unsafe_acceptance_rate",
             "total_rounds": len(round_scores),
             "scored_rounds": len(paired_gold_labels),
             "core_metrics": {metric.name: round(metric.value, 4) for metric in core_metrics},
@@ -416,7 +422,7 @@ class Scorer:
         return {
             "game_id": game_score.game_id,
             "winner": game_score.winner,
-            "primary_metric": game_score.summary.get("primary_metric", "verdict_accuracy"),
+            "primary_metric": game_score.summary.get("primary_metric", "unsafe_acceptance_rate"),
             "overall_score": game_score.final_scores.get("overall", 0.0),
             "final_scores": dict(game_score.final_scores),
             "summary": dict(game_score.summary),
