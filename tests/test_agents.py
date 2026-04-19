@@ -99,6 +99,20 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sequence[1::3], ["L2-S2", "L2-S4", "L2-S1"])
         self.assertEqual(sequence[2::3], ["L3-S2", "L3-S3", "L3-S1"])
 
+    async def test_agent_a_adapt_strategy_tracks_detected_strategy_with_current_feedback_keys(self):
+        agent = AgentA(self.config)
+
+        result = await agent.adapt_strategy(
+            {
+                "detected": True,
+                "strategy_used": "L2-S4",
+                "level": 2,
+            }
+        )
+
+        self.assertIn("avoid:L2-S4", agent.strategy_history)
+        self.assertEqual(result["history_length"], 1)
+
     async def test_agent_b_analyzes_claim(self):
         agent = AgentB(self.config)
         await agent.initialize()
@@ -122,6 +136,11 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(claim.causal_claim, "X 可能导致 Y")
         self.assertIn("候选工具变量为 Z", claim.evidence)
+
+    def test_agent_b_infer_focus_variables_rejects_empty_variable_list(self):
+        agent = AgentB(self.config)
+        with self.assertRaises(ValueError):
+            agent._infer_focus_variables("X causes Y", [], scenario=None)
 
     async def test_jury_collects_votes(self):
         jury = JuryAggregator(self.config)
@@ -170,6 +189,10 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 }
                 <= set(verdict.tool_trace[0])
             )
+
+    def test_agent_c_extract_b_confidence_tolerates_missing_metadata_attribute(self):
+        agent = AgentC(self.config)
+        self.assertEqual(agent._extract_b_confidence({}), 0.0)
 
     async def test_agent_c_default_path_calls_verifier_pipeline(self):
         agent = AgentC(self.config)

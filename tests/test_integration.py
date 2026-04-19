@@ -4,6 +4,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from agents.tool_executor import ToolExecutor
 from benchmark.schema import ensure_public_instance
@@ -19,6 +21,7 @@ from experiments.exp_human_audit.run import run_experiment as run_human_audit
 from experiments.exp_identifiability_ablation.run import run_experiment as run_identifiability_ablation
 from experiments.exp_leakage_study.run import (
     DEFAULT_SAMPLES_PER_FAMILY as LEAKAGE_DEFAULT_SAMPLES_PER_FAMILY,
+    _evaluate_partition_on_samples,
     _build_oracle_leaking_public_partition,
     _run_oracle_leaking_partition,
     _verifier_tool_context,
@@ -74,6 +77,15 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreater(higher, 0.5)
         self.assertLess(lower, higher)
+
+    def test_difficulty_controller_defaults_match_repo_baseline(self) -> None:
+        controller = DifficultyController({})
+        config = ConfigLoader().load()
+
+        self.assertEqual(controller.adjustment_rate, 0.1)
+        self.assertEqual(controller.tolerance, 0.08)
+        self.assertEqual(config["difficulty"]["adjustment_rate"], 0.1)
+        self.assertEqual(config["difficulty"]["tolerance"], 0.08)
 
     async def test_debate_engine_runs_mock_rounds(self) -> None:
         config = ConfigLoader().load()
@@ -384,6 +396,34 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(study["verdict"]["label"], sample.claim.gold_label.value)
         self.assertEqual(study["verdict"]["metadata"]["leakage_mode"], "oracle_metadata_readout")
         self.assertFalse(study["supports_public_only"])
+
+    def test_phase4_leakage_partition_passes_predicted_probabilities_into_scorer_rounds(self) -> None:
+        run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
+        sample = run.split_samples["test_iid"][0]
+        captured: dict[str, object] = {}
+
+        def _capture_score_game(game_data):
+            captured["game_data"] = game_data
+            return SimpleNamespace(summary={"core_metrics": {}, "appendix_metrics": {}})
+
+        with patch("experiments.exp_leakage_study.run.Scorer.score_game", side_effect=_capture_score_game):
+            _evaluate_partition_on_samples(
+                [sample],
+                seed=0,
+                split_name="test_iid",
+                system_name="oracle_leaking_partition",
+            )
+
+        rounds = captured["game_data"]["rounds"]
+        self.assertEqual(len(rounds), 1)
+        self.assertEqual(
+            rounds[0]["predicted_probabilities"],
+            {
+                "valid": 1.0 if sample.claim.gold_label.value == "valid" else 0.0,
+                "invalid": 1.0 if sample.claim.gold_label.value == "invalid" else 0.0,
+                "unidentifiable": 1.0 if sample.claim.gold_label.value == "unidentifiable" else 0.0,
+            },
+        )
 
     def test_phase4_main_benchmark_rejects_oracle_leaking_system(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -19,7 +19,7 @@ class DifficultyController:
     def __init__(self, config: dict):
         self.target_rate = config.get("target_deception_rate", 0.4)
         self.window_size = config.get("window_size", 5)
-        self.adjustment_rate = config.get("adjustment_rate", 0.18)
+        self.adjustment_rate = config.get("adjustment_rate", 0.1)
         self.min_difficulty = config.get("min_difficulty", 0.2)
         self.max_difficulty = config.get("max_difficulty", 0.95)
         self.current_difficulty = config.get("initial_difficulty", 0.5)

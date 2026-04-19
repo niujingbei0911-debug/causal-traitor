@@ -212,8 +212,8 @@ class AgentA:
 
     async def adapt_strategy(self, feedback: dict):
         """根据历史反馈调整欺骗策略"""
-        if feedback.get("caught"):
-            self.strategy_history.append(f"avoid:{feedback.get('strategy', '')}")
+        if feedback.get("detected"):
+            self.strategy_history.append(f"avoid:{feedback.get('strategy_used', '')}")
         return {
             "history_length": len(self.strategy_history),
             "next_preference": self._choose_strategy(feedback.get("level", 1)),

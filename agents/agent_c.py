@@ -752,7 +752,10 @@ class AgentC:
         return value.strip() if isinstance(value, str) else ""
 
     def _extract_b_confidence(self, debate_context) -> float:
-        claim = debate_context.metadata.get("agent_b_claim", {})
+        metadata = getattr(debate_context, "metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        claim = metadata.get("agent_b_claim", {})
         if isinstance(claim, dict):
             try:
                 return self._clamp(float(claim.get("confidence", 0.0)))

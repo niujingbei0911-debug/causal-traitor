@@ -59,7 +59,7 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
             causal_level = (record.get("public_evidence_summary") or {}).get("causal_level", 0)
         key = (
             f"{record['split']}::{record['gold_label']}::{record.get('query_type')}::{attack_name}"
-            f"::{witness_type}::{ood_bucket}::L{causal_level}"
+            f"::{witness_type}::{ood_bucket}::{causal_level}"
         )
         buckets.setdefault(key, []).append(record)
     ordered_keys = sorted(buckets)

@@ -349,6 +349,7 @@ def _evaluate_partition_on_samples(
                 "gold_label": record["gold_label"],
                 "verdict_label": record["predicted_label"],
                 "verifier_confidence": record["confidence"],
+                "predicted_probabilities": verdict.get("probabilities"),
                 "countermodel_witness": verdict.get("countermodel_witness"),
             }
         )

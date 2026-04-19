@@ -44,6 +44,7 @@ difficulty:
   target_deception_rate: 0.4
   window_size: 5
   adjustment_rate: 0.1
+  tolerance: 0.08
   min_difficulty: 0.2
   max_difficulty: 0.95
 

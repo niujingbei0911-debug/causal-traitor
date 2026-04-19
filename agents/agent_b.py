@@ -369,6 +369,8 @@ class AgentB:
         return variables
 
     def _infer_focus_variables(self, claim: str, variables: list[str], scenario=None) -> tuple[str, str]:
+        if not variables:
+            raise ValueError("Scenario must provide at least one observed variable.")
         for text in self._focus_hint_texts(claim, scenario):
             pair = self._extract_focus_pair(text, variables)
             if pair is not None:

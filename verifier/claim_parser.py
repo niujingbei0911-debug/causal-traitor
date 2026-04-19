@@ -305,18 +305,6 @@ _TENTATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"{_CHINESE_TENTATIVE_TERMS}"),
 )
 
-_STRONG_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bclearly\b", re.IGNORECASE),
-    re.compile(r"\bstrongly\b", re.IGNORECASE),
-    re.compile(r"\bis identified\b", re.IGNORECASE),
-    re.compile(r"\benough to\b", re.IGNORECASE),
-    re.compile(r"\bsupports?\b", re.IGNORECASE),
-    re.compile(r"\btrustworthy\b", re.IGNORECASE),
-    re.compile(r"\bclean\b", re.IGNORECASE),
-    re.compile(r"\bsettled\b", re.IGNORECASE),
-    re.compile(r"明确|清楚|可靠|足以"),
-)
-
 _POSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(cause|causes|affect|affects|drive|drives|determine|determines|change|changes|influence|influences|identify|identified)\b",
@@ -607,8 +595,6 @@ def _infer_claim_strength(text: str) -> ClaimStrength:
         return ClaimStrength.ABSOLUTE
     if any(pattern.search(text) for pattern in _TENTATIVE_PATTERNS):
         return ClaimStrength.TENTATIVE
-    if any(pattern.search(text) for pattern in _STRONG_PATTERNS):
-        return ClaimStrength.STRONG
     return ClaimStrength.STRONG
 
 
