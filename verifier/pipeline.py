@@ -28,15 +28,26 @@ _FORBIDDEN_TOOL_CONTEXT_KEYS = frozenset(
         "graph",
         "scm",
         "variables",
-        "instrument",
-        "mediator",
         "true_dag",
         "hidden_variables",
         "true_scm",
         "ground_truth",
         "gold_label",
+        "role_bindings",
+        "generator_hints",
+        "gold_assumptions",
+        "support_witness",
+        "countermodel_witness",
+        "assumption_witness",
+        "verdict",
+        "winner",
+        "supported_gold_labels",
+        "identifiability",
+        "seed",
     }
 )
+_PUBLIC_ROLE_HINT_KEYS = frozenset({"instrument", "mediator"})
+_TOOL_CONTEXT_DROP = object()
 
 
 @dataclass(slots=True)
@@ -115,16 +126,61 @@ class VerifierPipeline:
         *,
         scenario: PublicCausalInstance | None,
     ) -> dict[str, Any]:
-        sanitized: dict[str, Any] = {}
-        for raw_key, value in (tool_context or {}).items():
-            key = str(raw_key)
-            if key in _FORBIDDEN_TOOL_CONTEXT_KEYS:
-                continue
+        observed_variables = set(getattr(scenario, "variables", []) or [])
+        if scenario is not None and isinstance(getattr(scenario, "observed_data", None), pd.DataFrame):
+            observed_variables.update(str(column) for column in scenario.observed_data.columns)
+
+        def sanitize_value(
+            value: Any,
+            *,
+            top_level: bool = False,
+        ) -> Any:
             if isinstance(value, (pd.DataFrame, PublicCausalInstance)):
-                continue
-            if any(hasattr(value, field_name) for field_name in ("true_dag", "hidden_variables", "true_scm", "full_data")):
-                continue
-            sanitized[key] = value
+                return _TOOL_CONTEXT_DROP
+            if any(
+                hasattr(value, field_name)
+                for field_name in ("true_dag", "hidden_variables", "true_scm", "full_data")
+            ):
+                return _TOOL_CONTEXT_DROP
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            if isinstance(value, dict):
+                sanitized_mapping: dict[str, Any] = {}
+                for raw_key, item in value.items():
+                    key = str(raw_key)
+                    if top_level and key in _PUBLIC_ROLE_HINT_KEYS:
+                        candidate = str(item).strip()
+                        if candidate in observed_variables:
+                            sanitized_mapping[key] = candidate
+                        continue
+                    if key in _FORBIDDEN_TOOL_CONTEXT_KEYS:
+                        continue
+                    cleaned = sanitize_value(item, top_level=False)
+                    if cleaned is _TOOL_CONTEXT_DROP:
+                        continue
+                    sanitized_mapping[key] = cleaned
+                return sanitized_mapping
+            if isinstance(value, list):
+                sanitized_items = [
+                    cleaned
+                    for item in value
+                    for cleaned in [sanitize_value(item, top_level=False)]
+                    if cleaned is not _TOOL_CONTEXT_DROP
+                ]
+                return sanitized_items
+            if isinstance(value, tuple):
+                sanitized_items = [
+                    cleaned
+                    for item in value
+                    for cleaned in [sanitize_value(item, top_level=False)]
+                    if cleaned is not _TOOL_CONTEXT_DROP
+                ]
+                return tuple(sanitized_items)
+            return _TOOL_CONTEXT_DROP
+
+        sanitized = sanitize_value(tool_context or {}, top_level=True)
+        if not isinstance(sanitized, dict):
+            sanitized = {}
 
         if scenario is not None:
             sanitized["proxy_variables"] = list(getattr(scenario, "proxy_variables", []))

@@ -213,6 +213,54 @@ class BenchmarkSchemaTests(unittest.TestCase):
         self.assertEqual(restored.context_shift_holdout, ["policy"])
         self.assertTrue(restored.paired_flip_holdout)
 
+    def test_split_manifest_from_dict_normalizes_singleton_strings_and_string_bools(self) -> None:
+        manifest = BenchmarkSplitManifest.from_dict(
+            {
+                "dataset_name": "singleton_manifest",
+                "version": "v2",
+                "splits": {
+                    "train": "inst_train",
+                    "dev": "inst_dev",
+                    "test_iid": "inst_test_iid",
+                    "test_ood": "inst_test_ood",
+                },
+                "holdout_strategy": {
+                    "family_holdout": "l2_invalid_iv_family",
+                    "mechanism_holdout": "instrumental_variable",
+                    "attack_family_holdout": "identification_shortcut",
+                    "context_shift_holdout": "policy",
+                    "paired_flip_holdout": "false",
+                },
+            }
+        )
+
+        self.assertEqual(manifest.train, ["inst_train"])
+        self.assertEqual(manifest.dev, ["inst_dev"])
+        self.assertEqual(manifest.test_iid, ["inst_test_iid"])
+        self.assertEqual(manifest.test_ood, ["inst_test_ood"])
+        self.assertEqual(manifest.family_holdout, ["l2_invalid_iv_family"])
+        self.assertEqual(manifest.mechanism_holdout, ["instrumental_variable"])
+        self.assertEqual(manifest.attack_family_holdout, ["identification_shortcut"])
+        self.assertEqual(manifest.context_shift_holdout, ["policy"])
+        self.assertFalse(manifest.paired_flip_holdout)
+
+    def test_split_manifest_rejects_duplicate_or_overlapping_split_ids(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate instance_id"):
+            BenchmarkSplitManifest(
+                train=["inst_a", "inst_a"],
+                dev=["inst_b"],
+                test_iid=["inst_c"],
+                test_ood=["inst_d"],
+            )
+
+        with self.assertRaisesRegex(ValueError, "multiple splits"):
+            BenchmarkSplitManifest(
+                train=["inst_a"],
+                dev=["inst_a"],
+                test_iid=["inst_c"],
+                test_ood=["inst_d"],
+            )
+
     def test_claim_instance_rejects_missing_gold_label(self) -> None:
         with self.assertRaises(ValueError):
             ClaimInstance(
@@ -999,7 +1047,6 @@ class ShowcaseMigrationTests(unittest.TestCase):
             "l1_latent_confounding_family",
             "l1_selection_bias_family",
             "l2_invalid_iv_family",
-            "l3_counterfactual_ambiguity_family",
         )
 
         for family_name in families:
@@ -1219,6 +1266,51 @@ class ShowcaseMigrationTests(unittest.TestCase):
                 seed=29,
                 persuasion_style_id="not_a_style",
             )
+
+    def test_paired_flip_generation_uses_distinct_pair_ids_per_persuasion_variant(self) -> None:
+        authority_anchor, _ = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="authority_pressure",
+        )
+        none_anchor, _ = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="none",
+        )
+
+        self.assertNotEqual(
+            authority_anchor.claim.meta["paired_flip_id"],
+            none_anchor.claim.meta["paired_flip_id"],
+        )
+
+    def test_paired_flip_generation_defaults_to_deterministic_pressure_style(self) -> None:
+        first_anchor, first_flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+        )
+        second_anchor, second_flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+        )
+
+        self.assertIn(first_anchor.claim.meta["persuasion_style_id"], PERSUASION_STYLE_SPACE)
+        self.assertEqual(
+            first_anchor.claim.meta["persuasion_style_id"],
+            first_flipped.claim.meta["persuasion_style_id"],
+        )
+        self.assertEqual(
+            first_anchor.claim.meta["persuasion_style_id"],
+            second_anchor.claim.meta["persuasion_style_id"],
+        )
+        self.assertEqual(
+            first_flipped.claim.meta["persuasion_style_id"],
+            second_flipped.claim.meta["persuasion_style_id"],
+        )
 
     def test_selection_bias_invalid_samples_keep_visible_nonconstant_selection_signal(self) -> None:
         generator = BenchmarkGenerator(seed=17)
@@ -1592,6 +1684,29 @@ class SplitBuilderTests(unittest.TestCase):
             ["context_shift_holdout"],
         )
 
+    def test_load_split_instances_rejects_duplicate_source_instance_ids(self) -> None:
+        first = _build_claim_instance_for_split(
+            "inst_duplicate",
+            graph_family="l1_latent_confounding_family",
+            language_template_id="tmpl_alpha",
+            observed_variables=["X", "Z", "Y"],
+        )
+        second = _build_claim_instance_for_split(
+            "inst_duplicate",
+            graph_family="l1_selection_bias_family",
+            language_template_id="tmpl_beta",
+            observed_variables=["A", "B", "C"],
+        )
+        manifest = BenchmarkSplitManifest(
+            train=["inst_duplicate"],
+            dev=[],
+            test_iid=[],
+            test_ood=[],
+        )
+
+        with self.assertRaisesRegex(ValueError, "Duplicate instance_id"):
+            load_split_instances([first, second], manifest)
+
     def test_split_builder_supports_harder_ood_reasons_and_manifest_metadata(self) -> None:
         instances = [
             _build_claim_instance_for_split(
@@ -1807,6 +1922,103 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertIn("pair_b", manifest.test_ood)
         self.assertEqual(manifest.metadata["ood_reasons"]["pair_a"], ["lexical_holdout"])
         self.assertEqual(manifest.metadata["ood_reasons"]["pair_b"], ["paired_group_holdout"])
+
+    def test_split_builder_rejects_explicit_paired_flip_holdout_without_paired_samples(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_a",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["X", "Z", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_b",
+                graph_family="l1_selection_bias_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["A", "B", "C"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_c",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_gamma",
+                observed_variables=["T", "M", "Y"],
+            ),
+            _build_claim_instance_for_split(
+                "inst_d",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_delta",
+                observed_variables=["Q", "R", "S"],
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "paired_flip_holdout"):
+            build_split_manifest(
+                instances,
+                family_holdout=[],
+                lexical_holdout=[],
+                variable_renaming_holdout=False,
+                paired_flip_holdout=True,
+                seed=17,
+            )
+
+    def test_split_builder_rejects_invalid_paired_flip_group_sizes(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "pair_a",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_pair_a",
+                observed_variables=["X", "Z", "Y"],
+                meta={"paired_flip_id": "pair::broken", "paired_flip_role": "anchor"},
+            ),
+            _build_claim_instance_for_split(
+                "pair_b",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_pair_b",
+                observed_variables=["X", "Z", "Y"],
+                meta={"paired_flip_id": "pair::broken", "paired_flip_role": "flip"},
+            ),
+            _build_claim_instance_for_split(
+                "pair_c",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="tmpl_pair_c",
+                observed_variables=["X", "Z", "Y"],
+                meta={"paired_flip_id": "pair::broken", "paired_flip_role": "anchor"},
+            ),
+            _build_claim_instance_for_split(
+                "train_1",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["A", "B", "C"],
+            ),
+            _build_claim_instance_for_split(
+                "train_2",
+                graph_family="l1_proxy_disambiguation_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["D", "E", "F"],
+            ),
+            _build_claim_instance_for_split(
+                "train_3",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_gamma",
+                observed_variables=["G", "H", "I"],
+            ),
+            _build_claim_instance_for_split(
+                "train_4",
+                graph_family="l3_mediation_abduction_family",
+                language_template_id="tmpl_delta",
+                observed_variables=["J", "K", "L"],
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "paired_flip_id"):
+            build_split_manifest(
+                instances,
+                family_holdout=[],
+                lexical_holdout=["tmpl_pair_a"],
+                variable_renaming_holdout=False,
+                paired_flip_holdout=False,
+                seed=23,
+            )
 
     def test_split_builder_default_manifest_auto_selects_mechanism_ood(self) -> None:
         generator = BenchmarkGenerator(seed=31)

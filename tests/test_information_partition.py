@@ -336,15 +336,40 @@ class InformationPartitionTests(unittest.TestCase):
             missing_information_spec={"missing_assumptions": [""], "required_evidence": ["   "]},
         )
 
+        self.assertEqual(verdict.missing_information_spec.missing_assumptions, [])
+        self.assertEqual(verdict.missing_information_spec.required_evidence, [])
+        self.assertTrue(verdict.missing_information_spec.note)
+        self.assertEqual(verdict.refusal_reason, "insufficient_public_information")
+
+    def test_unidentifiable_defaults_emit_substantive_missing_information(self) -> None:
+        benchmark_payload = VerifierVerdict(label="unidentifiable").to_dict()
+        verifier_payload = SelectiveVerifierOutput(label="unidentifiable").to_dict()
+
+        for payload in (benchmark_payload, verifier_payload):
+            self.assertEqual(payload["refusal_reason"], "insufficient_public_information")
+            self.assertTrue(
+                payload["missing_information_spec"]["missing_assumptions"]
+                or payload["missing_information_spec"]["required_evidence"]
+                or payload["missing_information_spec"]["note"]
+            )
+
+    def test_missing_information_spec_wraps_scalar_strings_instead_of_splitting_characters(self) -> None:
+        verdict = VerifierVerdict(
+            label="unidentifiable",
+            missing_information_spec={
+                "missing_assumptions": "positivity",
+                "required_evidence": "frontdoor proxy measurements",
+            },
+        )
+
         self.assertEqual(
             verdict.missing_information_spec.to_dict(),
             {
-                "missing_assumptions": [],
-                "required_evidence": [],
+                "missing_assumptions": ["positivity"],
+                "required_evidence": ["frontdoor proxy measurements"],
                 "note": "",
             },
         )
-        self.assertEqual(verdict.refusal_reason, "insufficient_public_information")
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(

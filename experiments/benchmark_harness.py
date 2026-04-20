@@ -13,6 +13,7 @@ from typing import Any
 from agents.tool_executor import ToolExecutor
 from benchmark.attacks import generate_attack_sample
 from benchmark.generator import BenchmarkGenerator, BenchmarkSample, list_supported_benchmark_families
+from benchmark.persuasion_overlays import list_persuasion_overlays, normalize_persuasion_style_id
 from benchmark.schema import BenchmarkSplitManifest, ClaimInstance, PublicCausalInstance, VerdictLabel
 from benchmark.split_builder import build_benchmark_splits
 from evaluation.reporting import compare_prediction_groups, summarize_metrics
@@ -42,18 +43,74 @@ DEFAULT_MODEL_FAMILIES: tuple[str, ...] = (
     "claude_like",
     "qwen_like",
 )
-SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = (
-    "judge_direct",
-    "debate_reduced",
-    "tool_only",
-    "countermodel_grounded",
-    "no_tools",
-    "no_ledger",
-    "no_countermodel",
-    "no_abstention",
-    "claim_only_family",
-    "skeptical_family",
-    "optimistic_family",
+BASELINE_REGISTRY: dict[str, dict[str, Any]] = {
+    "direct_judge": {
+        "display_name": "Direct Judge",
+        "baseline_category": "Judge",
+        "description": "Single-pass surface-level judge without explicit decomposition or tool use.",
+        "legacy_aliases": ("judge_direct",),
+    },
+    "cot_judge": {
+        "display_name": "CoT Judge",
+        "baseline_category": "Judge",
+        "description": "Single-pass judge with explicit assumption-led reasoning but without tools or countermodel search.",
+        "legacy_aliases": (),
+    },
+    "self_consistency_judge": {
+        "display_name": "Self-Consistency Judge",
+        "baseline_category": "Judge",
+        "description": "Aggregates multiple judge-style reasoning traces into a majority verdict.",
+        "legacy_aliases": (),
+    },
+    "tool_baseline": {
+        "display_name": "Tool Baseline",
+        "baseline_category": "Tool",
+        "description": "Uses public-facing tools without a structured assumption ledger or countermodel search.",
+        "legacy_aliases": ("tool_only",),
+    },
+    "debate_baseline": {
+        "display_name": "Debate Baseline",
+        "baseline_category": "Debate",
+        "description": "Combines a proposer-style judgment with a rebuttal pass over the public evidence.",
+        "legacy_aliases": ("debate_reduced",),
+    },
+    "refusal_aware_baseline": {
+        "display_name": "Refusal-Aware Baseline",
+        "baseline_category": "Refusal-aware",
+        "description": "Supports abstention through selective decision rules but omits explicit countermodel search.",
+        "legacy_aliases": ("no_countermodel",),
+    },
+}
+MAIN_BENCHMARK_SYSTEMS: tuple[str, ...] = tuple(BASELINE_REGISTRY) + ("countermodel_grounded",)
+
+
+def _unique_names_in_order(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for name in group:
+            if name not in seen:
+                seen.add(name)
+                ordered.append(name)
+    return tuple(ordered)
+
+
+SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = _unique_names_in_order(
+    MAIN_BENCHMARK_SYSTEMS,
+    tuple(
+        alias
+        for spec in BASELINE_REGISTRY.values()
+        for alias in spec["legacy_aliases"]
+    ),
+    (
+        "no_tools",
+        "no_ledger",
+        "no_countermodel",
+        "no_abstention",
+        "claim_only_family",
+        "skeptical_family",
+        "optimistic_family",
+    ),
 )
 OOD_SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
 MIN_FORMAL_SEED_COUNT = 3
@@ -66,8 +123,10 @@ DEFAULT_ATTACKER_FAMILIES: tuple[str, ...] = (
     "formal_attacker",
     "hidden_information_attacker",
 )
+DEFAULT_PRESSURE_TYPES: tuple[str, ...] = ("none", *list_persuasion_overlays())
 SUPPORTED_ATTACKER_FAMILIES = frozenset(DEFAULT_ATTACKER_FAMILIES)
 SUPPORTED_MODEL_FAMILIES = frozenset(DEFAULT_MODEL_FAMILIES)
+SUPPORTED_PRESSURE_TYPES = frozenset(DEFAULT_PRESSURE_TYPES)
 
 
 @dataclass(slots=True)
@@ -76,6 +135,16 @@ class SeedBenchmarkRun:
     manifest: BenchmarkSplitManifest
     samples: list[BenchmarkSample]
     split_samples: dict[str, list[BenchmarkSample]]
+
+
+def export_baseline_registry() -> dict[str, dict[str, Any]]:
+    return {
+        system_name: {
+            **dict(spec),
+            "legacy_aliases": tuple(spec["legacy_aliases"]),
+        }
+        for system_name, spec in BASELINE_REGISTRY.items()
+    }
 
 
 def default_benchmark_families() -> list[str]:
@@ -88,6 +157,15 @@ def normalize_benchmark_samples_per_family(samples_per_family: int) -> int:
 
 def normalize_benchmark_difficulty(difficulty: float) -> float:
     return float(max(0.0, min(1.0, float(difficulty))))
+
+
+def _validate_paired_flip_holdout_budget(
+    *,
+    paired_flip_holdout: bool | None,
+    samples_per_family: int,
+) -> None:
+    if paired_flip_holdout and int(samples_per_family) < 3:
+        raise ValueError("paired_flip_holdout requires samples_per_family >= 3.")
 
 
 def normalize_experiment_seeds(
@@ -165,6 +243,34 @@ def validate_model_families(
         raise ValueError(
             f"Unsupported model_family values: {unsupported!r}. "
             f"Supported values are: {sorted(SUPPORTED_MODEL_FAMILIES)!r}."
+        )
+    return resolved
+
+
+def validate_pressure_types(
+    pressure_types: list[str] | tuple[str, ...] | None,
+    *,
+    default_types: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    resolved = list(default_types or DEFAULT_PRESSURE_TYPES) if not pressure_types else [
+        normalize_persuasion_style_id(name)
+        for name in pressure_types
+    ]
+    if not resolved:
+        raise ValueError("At least one pressure_type is required.")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for pressure_type in resolved:
+        if pressure_type in seen and pressure_type not in duplicates:
+            duplicates.append(pressure_type)
+        seen.add(pressure_type)
+    if duplicates:
+        raise ValueError(f"Duplicate pressure types are not allowed: {duplicates!r}.")
+    unsupported = sorted(set(resolved) - SUPPORTED_PRESSURE_TYPES)
+    if unsupported:
+        raise ValueError(
+            f"Unsupported pressure_type values: {unsupported!r}. "
+            f"Supported values are: {sorted(SUPPORTED_PRESSURE_TYPES)!r}."
         )
     return resolved
 
@@ -423,6 +529,10 @@ def build_seed_benchmark_run(
     generator = BenchmarkGenerator(seed=seed)
     resolved_difficulty = normalize_benchmark_difficulty(difficulty)
     resolved_samples_per_family = normalize_benchmark_samples_per_family(samples_per_family)
+    _validate_paired_flip_holdout_budget(
+        paired_flip_holdout=paired_flip_holdout,
+        samples_per_family=resolved_samples_per_family,
+    )
     samples: list[BenchmarkSample] = []
     sample_index = 0
     for family_name in families:
@@ -581,6 +691,58 @@ def attack_only_samples(samples: list[BenchmarkSample]) -> list[BenchmarkSample]
         for sample in samples
         if sample.claim.meta.get("attack_name") is not None
         or sample.claim.meta.get("claim_mode") == "attack"
+    ]
+
+
+def _render_persuasion_pressure_variant(
+    sample: BenchmarkSample,
+    *,
+    pressure_type: str,
+) -> BenchmarkSample:
+    original_attack_name = str(sample.claim.meta.get("attack_name") or "").strip()
+    if not original_attack_name:
+        return sample
+
+    resolved_pressure_type = normalize_persuasion_style_id(pressure_type)
+    style_id = str(sample.claim.meta.get("style_id") or "").strip() or None
+    base_seed = int(sample.claim.meta.get("seed", 0))
+    variant = generate_attack_sample(
+        sample.blueprint,
+        gold_label=sample.claim.gold_label.value,
+        query_type=sample.claim.query_type,
+        attack_name=original_attack_name,
+        seed=base_seed,
+        style_id=style_id,
+        persuasion_style_id=resolved_pressure_type,
+    )
+    return _rewrite_claim_instance(
+        sample,
+        claim_text=variant.claim_text,
+        attacker_rationale=variant.attacker_rationale,
+        language_suffix=f"pressure_{variant.persuasion_style_id}",
+        meta_updates={
+            "attack_name": variant.attack_name,
+            "style_id": variant.style_id,
+            "persuasion_style_id": variant.persuasion_style_id,
+            "pressure_type": variant.metadata.get("pressure_type"),
+            "pressure_markers": list(variant.metadata.get("pressure_markers", [])),
+            "pressure_description": variant.metadata.get("pressure_description"),
+            "conceals_missing_information": bool(
+                variant.metadata.get("conceals_missing_information", False)
+            ),
+            "persuasion_profile_source": "structured_overlay_regeneration",
+        },
+    )
+
+
+def apply_persuasion_pressure_profile(
+    samples: list[BenchmarkSample],
+    *,
+    pressure_type: str,
+) -> list[BenchmarkSample]:
+    return [
+        _render_persuasion_pressure_variant(sample, pressure_type=pressure_type)
+        for sample in samples
     ]
 
 
@@ -960,6 +1122,44 @@ def _canonicalize_verdict_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
 
 
+def _annotate_baseline_payload(
+    payload: dict[str, Any],
+    *,
+    canonical_name: str,
+    legacy_alias: str | None = None,
+    reasoning_prefix: str | None = None,
+    metadata_updates: dict[str, Any] | None = None,
+    system_notes: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    adjusted = deepcopy(payload)
+    verdict = dict(adjusted["verdict"])
+    spec = BASELINE_REGISTRY[canonical_name]
+    summary = str(verdict.get("reasoning_summary", "")).strip()
+    if reasoning_prefix:
+        summary = f"{reasoning_prefix} {summary}".strip()
+        verdict["reasoning_summary"] = summary
+    verdict["metadata"] = {
+        **dict(verdict.get("metadata", {})),
+        "baseline_system": canonical_name,
+        "baseline_display_name": spec["display_name"],
+        "baseline_category": spec["baseline_category"],
+        **dict(metadata_updates or {}),
+    }
+    if legacy_alias is not None:
+        verdict["metadata"]["legacy_alias"] = legacy_alias
+    adjusted["verdict"] = _canonicalize_verdict_payload(verdict)
+    notes = _unique_names_in_order(
+        tuple(str(note) for note in adjusted.get("system_notes", [])),
+        (
+            f"baseline_category:{spec['baseline_category']}",
+            canonical_name,
+        ),
+        tuple(str(note) for note in (system_notes or ())),
+    )
+    adjusted["system_notes"] = list(notes)
+    return adjusted
+
+
 def _run_tool_only_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
     tool_context = _verifier_tool_context(sample)
@@ -1029,6 +1229,138 @@ def _run_tool_only_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     }
 
 
+def _run_direct_judge_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    return _annotate_baseline_payload(
+        _run_claim_only_family(sample),
+        canonical_name="direct_judge",
+        reasoning_prefix=(
+            "Direct judge baseline: a single-pass judge commits to the surface rhetorical force "
+            "of the claim without explicit decomposition."
+        ),
+    )
+
+
+def _run_cot_judge_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    return _annotate_baseline_payload(
+        _run_manual_variant(
+            sample,
+            use_ledger=True,
+            use_countermodel=False,
+            use_tools=False,
+        ),
+        canonical_name="cot_judge",
+        reasoning_prefix=(
+            "CoT judge baseline: explicit assumption-led reasoning is allowed, but the judge has no "
+            "tool access and does not search for countermodels."
+        ),
+    )
+
+
+def _run_self_consistency_judge_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    direct = _run_direct_judge_baseline(sample)
+    cot = _run_cot_judge_baseline(sample)
+    skeptical_cot = _apply_family_postprocessing("skeptical_family", cot)
+    votes = [direct, cot, skeptical_cot]
+    vote_counts = {
+        label: sum(1 for vote in votes if vote["predicted_label"] == label)
+        for label in (
+            VerdictLabel.VALID.value,
+            VerdictLabel.INVALID.value,
+            VerdictLabel.UNIDENTIFIABLE.value,
+        )
+    }
+    max_votes = max(vote_counts.values())
+    leaders = [label for label, count in vote_counts.items() if count == max_votes]
+    if len(leaders) == 1:
+        label = leaders[0]
+    elif VerdictLabel.UNIDENTIFIABLE.value in leaders:
+        label = VerdictLabel.UNIDENTIFIABLE.value
+    else:
+        label = cot["predicted_label"]
+
+    confidence_by_label = {
+        candidate: _mean(
+            [
+                float(vote["confidence"])
+                for vote in votes
+                if vote["predicted_label"] == candidate
+            ]
+        )
+        for candidate in vote_counts
+    }
+    confidence = max(
+        0.51,
+        min(
+            0.86,
+            0.45
+            + (0.15 * max_votes)
+            + (0.12 * confidence_by_label.get(label, 0.0)),
+        ),
+    )
+    probabilities = {
+        candidate: vote_counts[candidate] / len(votes)
+        for candidate in vote_counts
+    }
+    payload = {
+        "predicted_label": label,
+        "confidence": float(confidence),
+        "verdict": _canonicalize_verdict_payload(
+            {
+                "label": label,
+                "confidence": float(confidence),
+                "probabilities": probabilities,
+                "assumption_ledger": [],
+                "witness": None,
+                "support_witness": None,
+                "countermodel_witness": None,
+                "tool_trace": [],
+                "reasoning_summary": (
+                    "Self-consistency judge baseline aggregates a direct-judge vote, a CoT vote, "
+                    "and a more skeptical CoT vote, then selects the majority verdict."
+                ),
+                "metadata": {
+                    "vote_counts": vote_counts,
+                    "votes": [
+                        {
+                            "vote_id": index,
+                            "predicted_label": vote["predicted_label"],
+                            "confidence": float(vote["confidence"]),
+                        }
+                        for index, vote in enumerate(votes, start=1)
+                    ],
+                },
+            }
+        ),
+        "tool_report": {
+            "selected_tools": [],
+            "claim_stance": "pro_causal",
+            "identified_issues": [],
+            "supporting_evidence": [],
+            "counter_evidence": [],
+            "tool_trace": [],
+        },
+        "countermodel_found": False,
+        "countermodel_type": None,
+        "supports_public_only": True,
+        "system_notes": [],
+    }
+    return _annotate_baseline_payload(
+        payload,
+        canonical_name="self_consistency_judge",
+    )
+
+
+def _run_tool_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    return _annotate_baseline_payload(
+        _run_tool_only_baseline(sample),
+        canonical_name="tool_baseline",
+        reasoning_prefix=(
+            "Tool baseline: the judge reads only the public tool traces and does not maintain a "
+            "structured assumption ledger or countermodel witness."
+        ),
+    )
+
+
 def _run_judge_direct_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     payload = _run_claim_only_family(sample)
     payload["verdict"]["metadata"] = {
@@ -1038,6 +1370,17 @@ def _run_judge_direct_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     }
     payload["system_notes"] = ["baseline_category:Judge", "judge_direct"]
     return payload
+
+
+def _run_debate_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    return _annotate_baseline_payload(
+        _run_debate_reduced_baseline(sample),
+        canonical_name="debate_baseline",
+        reasoning_prefix=(
+            "Debate baseline: a proposer-style judge and a rebuttal-style critic argue over the "
+            "same public evidence before the final label is chosen."
+        ),
+    )
 
 
 def _run_debate_reduced_baseline(sample: BenchmarkSample) -> dict[str, Any]:
@@ -1124,6 +1467,22 @@ def _run_debate_reduced_baseline(sample: BenchmarkSample) -> dict[str, Any]:
         "supports_public_only": True,
         "system_notes": ["baseline_category:Debate", "debate_reduced"],
     }
+
+
+def _run_refusal_aware_baseline(sample: BenchmarkSample) -> dict[str, Any]:
+    return _annotate_baseline_payload(
+        _run_manual_variant(
+            sample,
+            use_ledger=True,
+            use_countermodel=False,
+            use_tools=True,
+        ),
+        canonical_name="refusal_aware_baseline",
+        reasoning_prefix=(
+            "Refusal-aware baseline: selective abstention is enabled through the refusal-aware decision "
+            "rule, but the system omits explicit countermodel search."
+        ),
+    )
 
 
 def _run_manual_variant(
@@ -1436,6 +1795,18 @@ def predict_sample(
     *,
     system_name: str,
 ) -> dict[str, Any]:
+    if system_name == "direct_judge":
+        return _run_direct_judge_baseline(sample)
+    if system_name == "cot_judge":
+        return _run_cot_judge_baseline(sample)
+    if system_name == "self_consistency_judge":
+        return _run_self_consistency_judge_baseline(sample)
+    if system_name == "tool_baseline":
+        return _run_tool_baseline(sample)
+    if system_name == "debate_baseline":
+        return _run_debate_baseline(sample)
+    if system_name == "refusal_aware_baseline":
+        return _run_refusal_aware_baseline(sample)
     if system_name == "judge_direct":
         return _run_judge_direct_baseline(sample)
     if system_name == "debate_reduced":

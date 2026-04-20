@@ -52,7 +52,8 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
     buckets: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         ood_bucket = "+".join(sorted(record.get("ood_reasons", []))) or "iid"
-        witness_type = (record.get("verdict") or {}).get("witness", {}).get("witness_type") or "none"
+        _, _, _, primary_witness, _, _ = _resolve_primary_witness(record.get("verdict") or {})
+        witness_type = (primary_witness or {}).get("witness_type") or "none"
         attack_name = record.get("attack_name") or "truthful"
         causal_level = record.get("causal_level")
         if causal_level is None:
@@ -81,9 +82,10 @@ def _round_robin_subset(records: list[dict[str, Any]], size: int) -> list[dict[s
     return selected
 
 
-def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
-    verdict = dict(record["verdict"])
-    witness = verdict.get("witness") or {}
+def _resolve_primary_witness(
+    verdict: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str, str]:
+    witness = dict(verdict.get("witness") or {})
     support_witness = verdict.get("support_witness")
     countermodel_witness = verdict.get("countermodel_witness")
     primary_witness = countermodel_witness or support_witness or witness or None
@@ -104,6 +106,14 @@ def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
         witness_question = (
             "If a witness is present, is it persuasive enough to justify the verifier's decision?"
         )
+    return witness, support_witness, countermodel_witness, primary_witness, primary_witness_role, witness_question
+
+
+def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
+    verdict = dict(record["verdict"])
+    _, support_witness, countermodel_witness, primary_witness, primary_witness_role, witness_question = (
+        _resolve_primary_witness(verdict)
+    )
     public_payload = dict(record.get("public_evidence_summary", {}))
     return {
         "audit_id": f"{record['split']}::{record['instance_id']}",
@@ -121,8 +131,8 @@ def _build_annotation_record(record: dict[str, Any]) -> dict[str, Any]:
         "verifier_probabilities": dict(record.get("predicted_probabilities", {})),
         "supports_public_only": bool(record.get("supports_public_only", True)),
         "reasoning_summary": verdict.get("reasoning_summary"),
-        "witness_description": witness.get("description"),
-        "witness_type": witness.get("witness_type"),
+        "witness_description": (primary_witness or {}).get("description"),
+        "witness_type": (primary_witness or {}).get("witness_type"),
         "primary_witness_role": primary_witness_role,
         "public_evidence_summary": dict(record.get("public_evidence_summary", {})),
         "observed_data": record.get("observed_data"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
@@ -142,6 +143,7 @@ class WitnessKind(str, Enum):
 
 WITNESS_KIND_SPACE: tuple[str, ...] = tuple(kind.value for kind in WitnessKind)
 BENCHMARK_SPLIT_SPACE: tuple[str, ...] = ("train", "dev", "test_iid", "test_ood")
+DEFAULT_UNIDENTIFIABLE_MISSING_INFORMATION_NOTE = "Public evidence is insufficient to identify the claim."
 
 
 def _copy_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
@@ -205,18 +207,92 @@ def _coerce_witness_kind(value: WitnessKind | str, *, field_name: str) -> Witnes
         ) from exc
 
 
-def _normalize_str_list(values: list[Any] | tuple[Any, ...] | None) -> list[str]:
+def _normalize_str_list(values: Any) -> list[str]:
     if values is None:
         return []
+    if isinstance(values, str):
+        iterable: Iterable[Any] = [values]
+    elif isinstance(values, Mapping):
+        raise TypeError("String list fields do not accept mapping values.")
+    elif isinstance(values, Iterable):
+        iterable = values
+    else:
+        iterable = [values]
     result: list[str] = []
     seen: set[str] = set()
-    for value in values:
+    for value in iterable:
         normalized = str(value).strip()
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
         result.append(normalized)
     return result
+
+
+def _coerce_string_sequence(
+    value: Any,
+    *,
+    field_name: str,
+) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return list(value)
+    raise ValueError(f"{field_name} must be a string or a sequence of strings, got {type(value)!r}.")
+
+
+def _coerce_string_list(
+    value: Any,
+    *,
+    field_name: str,
+) -> list[str]:
+    return _normalize_str_list(_coerce_string_sequence(value, field_name=field_name))
+
+
+def _coerce_split_ids(
+    value: Any,
+    *,
+    split_name: str,
+) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    normalized: list[str] = []
+    for item in _coerce_string_sequence(value, field_name=split_name):
+        candidate = str(item).strip()
+        if not candidate:
+            continue
+        if candidate in seen:
+            if candidate not in duplicates:
+                duplicates.append(candidate)
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    if duplicates:
+        joined = ", ".join(repr(item) for item in duplicates)
+        raise ValueError(f"Split {split_name!r} contains duplicate instance_id values: {joined}.")
+    return normalized
+
+
+def _coerce_bool_flag(
+    value: Any,
+    *,
+    field_name: str,
+) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"{field_name} must be a boolean-compatible value, got {value!r}.")
 
 
 def _normalize_target_variables(value: dict[str, Any] | None) -> dict[str, str]:
@@ -668,12 +744,8 @@ def _normalize_missing_information_spec(
         if raw_note is None:
             raw_note = value.get("reasoning_summary", "")
         return MissingInformationSpec(
-            missing_assumptions=list(
-                value.get("missing_assumptions", value.get("unresolved_assumptions", [])) or []
-            ),
-            required_evidence=list(
-                value.get("required_evidence", value.get("required_observations", [])) or []
-            ),
+            missing_assumptions=value.get("missing_assumptions", value.get("unresolved_assumptions", [])),
+            required_evidence=value.get("required_evidence", value.get("required_observations", [])),
             note=_coerce_optional_string(raw_note) or "",
         )
     raise TypeError(f"Unsupported missing_information_spec type: {type(value)!r}")
@@ -698,6 +770,8 @@ def derive_missing_information_spec(
         )
     if normalized_label is VerdictLabel.UNIDENTIFIABLE and not spec.note and str(reasoning_summary).strip():
         spec.note = str(reasoning_summary).strip()
+    if normalized_label is VerdictLabel.UNIDENTIFIABLE and not _has_missing_information(spec):
+        spec.note = DEFAULT_UNIDENTIFIABLE_MISSING_INFORMATION_NOTE
     return spec
 
 
@@ -760,6 +834,12 @@ def validate_selective_verdict_state(
             raise ValueError(
                 "missing_information_spec must be empty unless label='unidentifiable'."
             )
+        return
+
+    if refusal_reason is None:
+        raise ValueError("refusal_reason is required when label='unidentifiable'.")
+    if not _has_missing_information(missing_information_spec):
+        raise ValueError("missing_information_spec must be substantive when label='unidentifiable'.")
 
 
 @dataclass(slots=True)
@@ -1364,18 +1444,42 @@ class BenchmarkSplitManifest:
     def __post_init__(self) -> None:
         self.dataset_name = str(self.dataset_name)
         self.version = str(self.version)
-        self.train = _normalize_str_list(self.train)
-        self.dev = _normalize_str_list(self.dev)
-        self.test_iid = _normalize_str_list(self.test_iid)
-        self.test_ood = _normalize_str_list(self.test_ood)
-        self.family_holdout = _normalize_str_list(self.family_holdout)
-        self.lexical_holdout = _normalize_str_list(self.lexical_holdout)
-        self.variable_renaming_holdout = bool(self.variable_renaming_holdout)
-        self.mechanism_holdout = _normalize_str_list(self.mechanism_holdout)
-        self.attack_family_holdout = _normalize_str_list(self.attack_family_holdout)
-        self.context_shift_holdout = _normalize_str_list(self.context_shift_holdout)
-        self.paired_flip_holdout = bool(self.paired_flip_holdout)
+        self.train = _coerce_split_ids(self.train, split_name="train")
+        self.dev = _coerce_split_ids(self.dev, split_name="dev")
+        self.test_iid = _coerce_split_ids(self.test_iid, split_name="test_iid")
+        self.test_ood = _coerce_split_ids(self.test_ood, split_name="test_ood")
+        self.family_holdout = _coerce_string_list(self.family_holdout, field_name="family_holdout")
+        self.lexical_holdout = _coerce_string_list(self.lexical_holdout, field_name="lexical_holdout")
+        self.variable_renaming_holdout = _coerce_bool_flag(
+            self.variable_renaming_holdout,
+            field_name="variable_renaming_holdout",
+        )
+        self.mechanism_holdout = _coerce_string_list(
+            self.mechanism_holdout,
+            field_name="mechanism_holdout",
+        )
+        self.attack_family_holdout = _coerce_string_list(
+            self.attack_family_holdout,
+            field_name="attack_family_holdout",
+        )
+        self.context_shift_holdout = _coerce_string_list(
+            self.context_shift_holdout,
+            field_name="context_shift_holdout",
+        )
+        self.paired_flip_holdout = _coerce_bool_flag(
+            self.paired_flip_holdout,
+            field_name="paired_flip_holdout",
+        )
         self.metadata = dict(self.metadata)
+        split_membership: dict[str, str] = {}
+        for split_name, instance_ids in self.split_map().items():
+            for instance_id in instance_ids:
+                existing = split_membership.get(instance_id)
+                if existing is not None:
+                    raise ValueError(
+                        f"instance_id {instance_id!r} appears in multiple splits: {existing!r} and {split_name!r}."
+                    )
+                split_membership[instance_id] = split_name
 
     def split_map(self) -> dict[str, list[str]]:
         return {
@@ -1409,34 +1513,27 @@ class BenchmarkSplitManifest:
         return cls(
             dataset_name=str(payload.get("dataset_name", "causal_oversight_benchmark")),
             version=str(payload.get("version", "v2")),
-            train=list(splits.get("train", payload.get("train", []))),
-            dev=list(splits.get("dev", payload.get("dev", []))),
-            test_iid=list(splits.get("test_iid", payload.get("test_iid", []))),
-            test_ood=list(splits.get("test_ood", payload.get("test_ood", []))),
-            family_holdout=list(
-                holdout_strategy.get("family_holdout", payload.get("family_holdout", []))
-            ),
-            lexical_holdout=list(
-                holdout_strategy.get("lexical_holdout", payload.get("lexical_holdout", []))
-            ),
+            train=splits.get("train", payload.get("train", [])),
+            dev=splits.get("dev", payload.get("dev", [])),
+            test_iid=splits.get("test_iid", payload.get("test_iid", [])),
+            test_ood=splits.get("test_ood", payload.get("test_ood", [])),
+            family_holdout=holdout_strategy.get("family_holdout", payload.get("family_holdout", [])),
+            lexical_holdout=holdout_strategy.get("lexical_holdout", payload.get("lexical_holdout", [])),
             variable_renaming_holdout=holdout_strategy.get(
                 "variable_renaming_holdout",
                 payload.get("variable_renaming_holdout", False),
             ),
-            mechanism_holdout=list(
-                holdout_strategy.get("mechanism_holdout", payload.get("mechanism_holdout", []))
+            mechanism_holdout=holdout_strategy.get(
+                "mechanism_holdout",
+                payload.get("mechanism_holdout", []),
             ),
-            attack_family_holdout=list(
-                holdout_strategy.get(
-                    "attack_family_holdout",
-                    payload.get("attack_family_holdout", []),
-                )
+            attack_family_holdout=holdout_strategy.get(
+                "attack_family_holdout",
+                payload.get("attack_family_holdout", []),
             ),
-            context_shift_holdout=list(
-                holdout_strategy.get(
-                    "context_shift_holdout",
-                    payload.get("context_shift_holdout", []),
-                )
+            context_shift_holdout=holdout_strategy.get(
+                "context_shift_holdout",
+                payload.get("context_shift_holdout", []),
             ),
             paired_flip_holdout=holdout_strategy.get(
                 "paired_flip_holdout",

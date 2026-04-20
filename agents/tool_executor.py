@@ -1223,6 +1223,25 @@ class ToolExecutor:
                 return variable
         return None
 
+    def _semantic_role_match(
+        self,
+        variables: list[str],
+        claim: str,
+        *,
+        scenario: PublicCausalInstance | None,
+        measurement_views: tuple[str, ...],
+    ) -> str | None:
+        if scenario is None:
+            return None
+        normalized_views = {str(view).strip().lower() for view in measurement_views}
+        for variable in variables:
+            if not re.search(rf"\b{re.escape(variable)}\b", claim, flags=re.IGNORECASE):
+                continue
+            measurement_view = self._measurement_view(scenario, variable)
+            if measurement_view is not None and measurement_view.strip().lower() in normalized_views:
+                return variable
+        return None
+
     def _infer_claim_hints(
         self,
         claim: str,
@@ -1275,6 +1294,13 @@ class ToolExecutor:
                 remaining,
                 patterns=(r"\busing (?P<name>[A-Za-z][A-Za-z0-9_]*)\b",),
             )
+        if explicit_instrument is None:
+            explicit_instrument = self._semantic_role_match(
+                remaining,
+                claim,
+                scenario=scenario,
+                measurement_views=("assignment_signal",),
+            )
         if explicit_instrument is not None:
             hints["instrument"] = explicit_instrument
 
@@ -1287,6 +1313,13 @@ class ToolExecutor:
             claim,
             tokens=("proxy", "surrogate", "screening", "sensor", "archive"),
         )
+        if proxy is None:
+            proxy = self._semantic_role_match(
+                remaining,
+                claim,
+                scenario=scenario,
+                measurement_views=("proxy_measurement",),
+            )
         if proxy is not None:
             hints["proxy"] = proxy
             hints["proxy_variables"] = [proxy]
@@ -1296,6 +1329,13 @@ class ToolExecutor:
             claim,
             tokens=("mediator", "biomarker", "uptake", "engagement", "intermediate", "dosage", "mechanism"),
         )
+        if mediator is None:
+            mediator = self._semantic_role_match(
+                remaining,
+                claim,
+                scenario=scenario,
+                measurement_views=("intermediate_measurement",),
+            )
         if mediator is not None:
             hints["mediator"] = mediator
 
@@ -1304,6 +1344,13 @@ class ToolExecutor:
             claim,
             tokens=("selection", "screen", "record", "clinic", "audit", "portal"),
         )
+        if selection is None:
+            selection = self._semantic_role_match(
+                remaining,
+                claim,
+                scenario=scenario,
+                measurement_views=("sample_inclusion_indicator",),
+            )
         if selection is not None:
             hints["selection"] = selection
             hints["selection_variables"] = [selection]

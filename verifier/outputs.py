@@ -16,6 +16,8 @@ from benchmark.schema import (
     default_identification_status,
     derive_refusal_reason,
     validate_selective_verdict_state,
+    Witness,
+    WitnessKind,
 )
 
 
@@ -105,6 +107,39 @@ def _normalize_payload_mapping(value: Any) -> dict[str, Any] | None:
         if isinstance(serialized, dict):
             return dict(serialized)
     raise TypeError(f"Expected mapping-compatible payload, got {type(value)!r}.")
+
+
+def _normalize_witness_payload(
+    value: Any,
+    *,
+    field_name: str,
+    expected_kind: WitnessKind | None = None,
+) -> dict[str, Any] | None:
+    payload = _normalize_payload_mapping(value)
+    if payload is None:
+        return None
+    witness = Witness.from_dict(payload)
+    if expected_kind is not None and witness.witness_type is not expected_kind:
+        raise ValueError(
+            f"{field_name} must use witness_type={expected_kind.value!r}, "
+            f"got {witness.witness_type.value!r}."
+        )
+    return witness.to_dict()
+
+
+def _coerce_decision_witness_payload(
+    value: Any,
+    *,
+    expected_kind: WitnessKind,
+) -> Any:
+    payload = _normalize_payload_mapping(value)
+    if payload is None:
+        return value
+    if "witness_type" in payload or "type" in payload:
+        return payload
+    coerced = dict(payload)
+    coerced["witness_type"] = expected_kind.value
+    return coerced
 
 
 def _normalize_payload_trace(value: list[Any] | tuple[Any, ...] | None) -> list[dict[str, Any]]:
@@ -249,9 +284,17 @@ class SelectiveVerifierOutput:
         self.reasoning_summary = str(self.reasoning_summary).strip()
         self.assumption_ledger = _normalize_assumption_ledger(self.assumption_ledger)
         self.metadata = dict(self.metadata or {})
-        self.witness = _normalize_payload_mapping(self.witness)
-        self.support_witness = _normalize_payload_mapping(self.support_witness)
-        self.countermodel_witness = _normalize_payload_mapping(self.countermodel_witness)
+        self.witness = _normalize_witness_payload(self.witness, field_name="witness")
+        self.support_witness = _normalize_witness_payload(
+            self.support_witness,
+            field_name="support_witness",
+            expected_kind=WitnessKind.SUPPORT,
+        )
+        self.countermodel_witness = _normalize_witness_payload(
+            self.countermodel_witness,
+            field_name="countermodel_witness",
+            expected_kind=WitnessKind.COUNTERMODEL,
+        )
         self.tool_trace = _normalize_payload_trace(self.tool_trace)
         self.probabilities = _normalize_probabilities(self.probabilities)
         self.identification_status = _coerce_identification_status(
@@ -316,7 +359,10 @@ class SelectiveVerifierOutput:
             assumption_ledger=data.get("assumption_ledger"),
             witness=data.get("witness"),
             support_witness=data.get("support_witness"),
-            countermodel_witness=data.get("countermodel_witness"),
+            countermodel_witness=_coerce_decision_witness_payload(
+                data.get("countermodel_witness"),
+                expected_kind=WitnessKind.COUNTERMODEL,
+            ),
             tool_trace=data.get("tool_trace"),
             reasoning_summary=str(data.get("reasoning_summary", "")),
             metadata=data.get("metadata"),

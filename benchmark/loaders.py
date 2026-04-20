@@ -30,12 +30,19 @@ def _normalize_manifest_source(
 def _normalize_instances(
     instances: list[ClaimInstance | dict[str, Any]],
 ) -> list[ClaimInstance]:
-    return [
-        ClaimInstance.from_dict(item.to_dict())
-        if isinstance(item, ClaimInstance)
-        else ClaimInstance.from_dict(dict(item))
-        for item in instances
-    ]
+    normalized: list[ClaimInstance] = []
+    seen_ids: set[str] = set()
+    for item in instances:
+        instance = (
+            ClaimInstance.from_dict(item.to_dict())
+            if isinstance(item, ClaimInstance)
+            else ClaimInstance.from_dict(dict(item))
+        )
+        if instance.instance_id in seen_ids:
+            raise ValueError(f"Duplicate instance_id detected while loading splits: {instance.instance_id!r}.")
+        seen_ids.add(instance.instance_id)
+        normalized.append(instance)
+    return normalized
 
 
 def load_split_manifest(
@@ -72,7 +79,7 @@ def load_split_instances(
         resolved: list[ClaimInstance] = []
         for instance_id in ids:
             try:
-                instance = instance_by_id[instance_id]
+                instance = ClaimInstance.from_dict(instance_by_id[instance_id].to_dict())
             except KeyError as exc:
                 raise KeyError(
                     f"Manifest references unknown instance_id {instance_id!r} in split {split_name!r}."

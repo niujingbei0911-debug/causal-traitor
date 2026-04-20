@@ -71,6 +71,10 @@ class RealGroundedSubsetTests(unittest.TestCase):
         self.assertEqual(restored.claim.meta["data_origin"], "real_grounded")
         self.assertEqual(restored.claim.meta["grounding_type"], "literature_grounded")
         self.assertEqual(restored.claim.meta["real_grounded_case_id"], "rg_policy_001")
+        self.assertEqual(
+            restored.claim.meta["identifying_assumptions"],
+            ["Conditional ignorability", "Stable outcome definition"],
+        )
 
     def test_real_grounded_dataset_loader_and_serializer_round_trip(self) -> None:
         dataset = RealGroundedDataset(
@@ -188,6 +192,32 @@ class RealGroundedSubsetTests(unittest.TestCase):
                 witness_note="Missing identifying assumptions should fail.",
             )
 
+    def test_real_grounded_from_dict_normalizes_singleton_strings_without_char_splitting(self) -> None:
+        case = RealGroundedCase.from_dict(
+            {
+                "case_id": "rg_singleton_strings",
+                "grounding_type": "literature_grounded",
+                "claim": _build_claim("real_grounded_claim_singletons").to_dict(),
+                "source_citation": {
+                    "citation_text": "Smith (2024), Policy Studies.",
+                    "authors": "Smith",
+                },
+                "public_evidence_summary": "Summary with singleton string fields.",
+                "information_contract": {
+                    "visible_information": "Observed estimate",
+                    "hidden_information": "Private reviewer memo",
+                },
+                "identifying_assumptions": "Ignorability",
+                "witness_note": "Singleton strings should normalize cleanly.",
+            }
+        )
+
+        self.assertEqual(case.source_citation.authors, ["Smith"])
+        self.assertEqual(case.information_contract.visible_information, ["Observed estimate"])
+        self.assertEqual(case.information_contract.hidden_information, ["Private reviewer memo"])
+        self.assertEqual(case.identifying_assumptions, ["Ignorability"])
+        self.assertEqual(case.claim.meta["identifying_assumptions"], ["Ignorability"])
+
     def test_real_grounded_case_rejects_conflicting_claim_meta_contract_fields(self) -> None:
         claim = _build_claim("real_grounded_claim_005")
         claim.meta = {
@@ -213,6 +243,25 @@ class RealGroundedSubsetTests(unittest.TestCase):
                 },
                 identifying_assumptions=["Conditional ignorability"],
                 witness_note="Conflicting claim meta should not be silently preserved.",
+            )
+
+    def test_real_grounded_case_rejects_conflicting_identifying_assumptions_in_claim_meta(self) -> None:
+        claim = _build_claim("real_grounded_claim_006")
+        claim.meta = {"identifying_assumptions": ["STALE"]}
+
+        with self.assertRaisesRegex(ValueError, "identifying_assumptions"):
+            RealGroundedCase(
+                case_id="rg_policy_006",
+                grounding_type="literature_grounded",
+                claim=claim,
+                source_citation=SourceCitation(citation_text="Patel (2024), Causal Policy Review."),
+                public_evidence_summary="Updated public evidence summary.",
+                information_contract={
+                    "visible_information": ["Observed cohort table"],
+                    "hidden_information": ["Auditor-only sensitivity notes"],
+                },
+                identifying_assumptions=["Conditional ignorability"],
+                witness_note="Conflicting identifying assumptions should fail.",
             )
 
 

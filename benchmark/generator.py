@@ -633,7 +633,7 @@ class BenchmarkGenerator:
         difficulty: float = 0.5,
         seed: int | None = None,
         n_samples: int | None = None,
-        persuasion_style_id: str | None = "none",
+        persuasion_style_id: str | None = None,
     ) -> tuple[BenchmarkSample, BenchmarkSample]:
         """Generate a deterministic paired-flip sample pair for one family."""
 
@@ -679,7 +679,11 @@ class BenchmarkGenerator:
             sample_variant_tag=f"paired_flip::{second_label}",
         )
 
-        pair_id = f"{family_name}::seed_{resolved_seed}::query_{anchor.claim.query_type}"
+        resolved_persuasion_style_id = str(anchor.claim.meta.get("persuasion_style_id") or "none")
+        pair_id = (
+            f"{family_name}::seed_{resolved_seed}::query_{anchor.claim.query_type}"
+            f"::persuasion_{resolved_persuasion_style_id}"
+        )
         pair_meta = (
             (anchor, flipped, "anchor"),
             (flipped, anchor, "flip"),
@@ -906,11 +910,7 @@ class BenchmarkGenerator:
             query_type=query_type,
         )
         style_id = rng.choice(("direct", "cautious", "formal"))
-        resolved_persuasion_style_id = (
-            self._resolve_benchmark_persuasion_style_id(persuasion_style_id)
-            if persuasion_style_id is not None
-            else "none"
-        )
+        resolved_persuasion_style_id = self._resolve_benchmark_persuasion_style_id(persuasion_style_id)
         return {
             "style_id": str(style_id),
             "bridge_role": bridge_role,

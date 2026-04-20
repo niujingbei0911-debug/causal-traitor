@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from experiments.benchmark_harness import (
+    BASELINE_REGISTRY,
     PRIMARY_METRICS,
     _apply_no_abstention,
     _apply_family_postprocessing,
@@ -22,6 +23,7 @@ from experiments.benchmark_harness import (
     validate_system_names,
     write_artifacts,
 )
+from experiments.exp_main_benchmark.run import DEFAULT_MAIN_SYSTEMS
 from experiments.exp_leakage_study.run import _mcnemar_significance
 from verifier.assumption_ledger import AssumptionLedger
 from verifier.decision import VerifierDecision
@@ -45,6 +47,36 @@ def _prediction_record(
 
 
 class BenchmarkHarnessTests(unittest.TestCase):
+    def test_baseline_registry_exposes_phase4_main_benchmark_matrix(self) -> None:
+        self.assertEqual(
+            tuple(BASELINE_REGISTRY),
+            (
+                "direct_judge",
+                "cot_judge",
+                "self_consistency_judge",
+                "tool_baseline",
+                "debate_baseline",
+                "refusal_aware_baseline",
+            ),
+        )
+        self.assertEqual(BASELINE_REGISTRY["direct_judge"]["legacy_aliases"], ("judge_direct",))
+        self.assertEqual(BASELINE_REGISTRY["tool_baseline"]["legacy_aliases"], ("tool_only",))
+        self.assertEqual(BASELINE_REGISTRY["debate_baseline"]["legacy_aliases"], ("debate_reduced",))
+
+    def test_main_benchmark_defaults_to_canonical_phase4_baseline_matrix(self) -> None:
+        self.assertEqual(
+            DEFAULT_MAIN_SYSTEMS,
+            (
+                "direct_judge",
+                "cot_judge",
+                "self_consistency_judge",
+                "tool_baseline",
+                "debate_baseline",
+                "refusal_aware_baseline",
+                "countermodel_grounded",
+            ),
+        )
+
     def test_primary_metric_contract_uses_v2_metric_names_without_alias_duplicates(self) -> None:
         self.assertNotIn("invalid_claim_acceptance_rate", PRIMARY_METRICS)
         self.assertNotIn("unidentifiable_awareness", PRIMARY_METRICS)
@@ -468,6 +500,15 @@ class BenchmarkHarnessTests(unittest.TestCase):
             len(family_counts) * 2,
         )
 
+    def test_build_seed_benchmark_run_rejects_paired_flip_holdout_below_minimum_samples(self) -> None:
+        with self.assertRaisesRegex(ValueError, "paired_flip_holdout requires samples_per_family >= 3"):
+            build_seed_benchmark_run(
+                seed=0,
+                difficulty=0.55,
+                samples_per_family=2,
+                paired_flip_holdout=True,
+            )
+
     def test_baseline_predictors_emit_selective_verdict_contract(self) -> None:
         sample = build_seed_benchmark_run(
             seed=0,
@@ -475,7 +516,14 @@ class BenchmarkHarnessTests(unittest.TestCase):
             samples_per_family=1,
         ).split_samples["test_iid"][0]
 
-        for system_name in ("tool_only", "debate_reduced", "claim_only_family"):
+        for system_name in (
+            "direct_judge",
+            "cot_judge",
+            "self_consistency_judge",
+            "tool_baseline",
+            "debate_baseline",
+            "refusal_aware_baseline",
+        ):
             with self.subTest(system_name=system_name):
                 verdict = predict_sample(sample, system_name=system_name)["verdict"]
                 self.assertEqual(verdict["final_verdict"], verdict["label"])

@@ -733,6 +733,17 @@ def _infer_rhetorical_strategy(
 ) -> str:
     lower_text = text.lower()
 
+    # Mechanism-class claims should be treated as assumption smuggling before
+    # any generic "fully determined" false-uniqueness heuristic fires.
+    if (
+        "functional form" in lower_text
+        or "monotonic" in lower_text
+        or "regular enough" in lower_text
+        or "mechanism linking" in lower_text
+        or "pathway through" in lower_text
+    ):
+        return "assumption_smuggling"
+
     if (
         "without extra assumptions" in lower_text
         or "uniqu" in lower_text

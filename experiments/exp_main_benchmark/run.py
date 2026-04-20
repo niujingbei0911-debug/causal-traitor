@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_harness import (
+    MAIN_BENCHMARK_SYSTEMS,
     MIN_FORMAL_SAMPLES_PER_FAMILY,
     MIN_FORMAL_SEED_COUNT,
     OOD_SPLITS,
@@ -15,6 +16,7 @@ from experiments.benchmark_harness import (
     build_seed_metric_significance,
     build_seed_benchmark_run,
     evaluate_system_on_samples,
+    export_baseline_registry,
     manifest_metadata,
     normalize_benchmark_difficulty,
     normalize_benchmark_samples_per_family,
@@ -25,12 +27,7 @@ from experiments.benchmark_harness import (
 )
 from evaluation.significance import holm_bonferroni
 
-DEFAULT_MAIN_SYSTEMS: tuple[str, ...] = (
-    "judge_direct",
-    "debate_reduced",
-    "tool_only",
-    "countermodel_grounded",
-)
+DEFAULT_MAIN_SYSTEMS: tuple[str, ...] = MAIN_BENCHMARK_SYSTEMS
 DEFAULT_SAMPLES_PER_FAMILY = 10
 PAIRWISE_ALPHA = 0.05
 PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
@@ -74,9 +71,12 @@ def _build_formal_paired_significance(
 
 def _blueprint_alignment_summary(systems: list[str]) -> dict[str, Any]:
     required = {
-        "Judge": "judge_direct",
-        "Debate": "debate_reduced",
-        "Tool": "tool_only",
+        "Direct Judge": "direct_judge",
+        "CoT Judge": "cot_judge",
+        "Self-Consistency Judge": "self_consistency_judge",
+        "Tool Baseline": "tool_baseline",
+        "Debate Baseline": "debate_baseline",
+        "Refusal-Aware Baseline": "refusal_aware_baseline",
         "Ours": "countermodel_grounded",
     }
     missing = [
@@ -90,12 +90,14 @@ def _blueprint_alignment_summary(systems: list[str]) -> dict[str, Any]:
         "implemented_systems": list(systems),
         "missing_blueprint_baseline_categories": missing,
         "note": (
-            "The runner now evaluates one representative baseline for each required Phase 4 category: "
-            "Judge (`judge_direct`), Debate (`debate_reduced`), Tool (`tool_only`), and Ours (`countermodel_grounded`)."
+            "The runner now evaluates the full Phase 4 main matrix: Direct Judge (`direct_judge`), "
+            "CoT Judge (`cot_judge`), Self-Consistency Judge (`self_consistency_judge`), Tool Baseline "
+            "(`tool_baseline`), Debate Baseline (`debate_baseline`), Refusal-Aware Baseline "
+            "(`refusal_aware_baseline`), and Ours (`countermodel_grounded`)."
             if connected
             else (
                 "The current runner is missing required baseline categories from the formal "
-                "Judge / Debate / Tool / Ours matrix."
+                "Phase 4 main benchmark matrix."
             )
         ),
     }
@@ -272,6 +274,7 @@ def run_experiment(
             "allow_protocol_violations": bool(allow_protocol_violations),
         },
         "systems": resolved_systems,
+        "baseline_registry": export_baseline_registry(),
         "seeds": resolved_seeds,
         "protocol": protocol,
         "manifests": manifests,

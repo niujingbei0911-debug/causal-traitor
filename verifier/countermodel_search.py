@@ -739,7 +739,11 @@ def _l1_candidates(
             "invalid"
             if (
                 confounding_status is AssumptionStatus.CONTRADICTED
-                or parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
+                or (
+                    used_observed_data
+                    and parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
+                    and parsed_claim.rhetorical_strategy in {"association_overclaim", "confounder_denial"}
+                )
             )
             else "unidentifiable"
         )
@@ -803,8 +807,9 @@ def _l1_candidates(
         reverse_verdict = (
             "invalid"
             if (
-                parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
-                or (confounding_status is None and selection_status is None and selection_variable is None)
+                used_observed_data
+                and parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
+                and parsed_claim.rhetorical_strategy == "association_overclaim"
             )
             else "unidentifiable"
         )
@@ -827,13 +832,7 @@ def _l1_candidates(
     if selection_status in {AssumptionStatus.UNRESOLVED, AssumptionStatus.CONTRADICTED} or selection_variable is not None:
         selection_verdict = (
             "invalid"
-            if (
-                selection_status is AssumptionStatus.CONTRADICTED
-                or (
-                    selection_variable is not None
-                    and parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
-                )
-            )
+            if selection_status is AssumptionStatus.CONTRADICTED
             else "unidentifiable"
         )
         match_score = _clamp_score(
@@ -1173,8 +1172,7 @@ def _l2_candidates(
     if _has_proxy_hint(context_text, context):
         proxy_verdict = (
             "invalid"
-            if parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
-            or parsed_claim.rhetorical_strategy == "false_uniqueness"
+            if parsed_claim.rhetorical_strategy == "false_uniqueness"
             else "unidentifiable"
         )
         match_score = _clamp_score(
@@ -1257,14 +1255,7 @@ def _l3_candidates(
     used_observed_data = not observed_data.empty
 
     if has_counterfactual_overclaim:
-        strongest = (
-            AssumptionStatus.CONTRADICTED
-            if (
-                uniqueness_status is AssumptionStatus.CONTRADICTED
-                or parsed_claim.claim_strength is ClaimStrength.ABSOLUTE
-            )
-            else AssumptionStatus.UNRESOLVED
-        )
+        strongest = AssumptionStatus.UNRESOLVED
         match_score = _clamp_score(
             0.8
             + 0.08 * observed_assoc
@@ -1290,7 +1281,11 @@ def _l3_candidates(
                 observational_match_score=match_score,
                 query_disagreement=True,
                 countermodel_explanation=explanation,
-                verdict_suggestion=_verdict_from_status(strongest),
+                verdict_suggestion=(
+                    "invalid"
+                    if used_observed_data and uniqueness_status is AssumptionStatus.CONTRADICTED
+                    else "unidentifiable"
+                ),
                 triggered_assumptions=[
                     name
                     for name, status in (

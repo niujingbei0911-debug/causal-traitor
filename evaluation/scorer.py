@@ -18,11 +18,14 @@ from .metrics import (
     CausalMetrics,
     MetricResult,
     _extract_round_confidence as _metrics_extract_round_confidence,
+    _extract_round_confidence_value as _metrics_extract_round_confidence_value,
     _extract_round_gold_identification_status as _metrics_extract_round_gold_identification_status,
     _extract_round_gold_label as _metrics_extract_round_gold_label,
     _extract_round_identification_status as _metrics_extract_round_identification_status,
     _extract_round_predicted_label as _metrics_extract_round_predicted_label,
     _extract_round_probabilities as _metrics_extract_round_probabilities,
+    _has_complete_prediction_payloads as _metrics_has_complete_prediction_payloads,
+    _legacy_rounds_from_game_data as _metrics_legacy_rounds_from_game_data,
     _nested_value as _metrics_nested_value,
     _prediction_payload as _metrics_prediction_payload,
     validate_round_contracts,
@@ -145,32 +148,7 @@ class Scorer:
         rounds = list(game_data.get("rounds", []))
         if rounds:
             return rounds
-
-        gold_labels = list(game_data.get("gold_labels", []))
-        predicted_labels = list(game_data.get("predicted_labels", []))
-        confidences = list(game_data.get("confidences", []))
-        predicted_probabilities = list(game_data.get("predicted_probabilities", []))
-        countermodel_hits = list(game_data.get("countermodel_hits", []))
-        countermodel_applicable = list(game_data.get("countermodel_applicable", []))
-        count = len(gold_labels)
-
-        synthetic_rounds: list[dict[str, Any]] = []
-        for index in range(count):
-            payload: dict[str, Any] = {
-                "round_id": index + 1,
-                "gold_label": gold_labels[index],
-                "verdict_label": predicted_labels[index] if index < len(predicted_labels) else None,
-            }
-            if index < len(confidences):
-                payload["verifier_confidence"] = confidences[index]
-            if index < len(predicted_probabilities):
-                payload["predicted_probabilities"] = predicted_probabilities[index]
-            if index < len(countermodel_hits):
-                payload["countermodel_found"] = countermodel_hits[index]
-            if index < len(countermodel_applicable):
-                payload["countermodel_applicable"] = countermodel_applicable[index]
-            synthetic_rounds.append(payload)
-        return synthetic_rounds
+        return _metrics_legacy_rounds_from_game_data(game_data)
 
     def _core_score_value(self, metric: MetricResult | None) -> float:
         if metric is None:
@@ -250,13 +228,15 @@ class Scorer:
         rounds_raw = self._rounds_from_game_data(game_data)
         if list(game_data.get("rounds", [])):
             validate_round_contracts(rounds_raw)
+        elif _metrics_has_complete_prediction_payloads(rounds_raw):
+            validate_round_contracts(rounds_raw)
         round_scores = [self.score_round(round_data) for round_data in rounds_raw]
 
         gold_labels = [score.gold_label for score in round_scores if score.gold_label is not None]
         predicted_labels = [score.predicted_label for score in round_scores if score.predicted_label is not None]
         paired_gold_labels: list[str] = []
         paired_predicted_labels: list[str] = []
-        confidences: list[float] = []
+        confidences: list[float | None] = []
         predicted_probabilities: list[dict[str, float] | None] = []
         countermodel_hits: list[bool] = []
         countermodel_applicable: list[bool] = []
@@ -268,7 +248,7 @@ class Scorer:
                 continue
             paired_gold_labels.append(round_score.gold_label)
             paired_predicted_labels.append(round_score.predicted_label)
-            confidences.append(round_score.confidence)
+            confidences.append(_metrics_extract_round_confidence_value(round_data))
             predicted_probabilities.append(round_score.probabilities)
             countermodel_hits.append(_extract_countermodel_hit(round_data))
             countermodel_applicable.append(_extract_countermodel_applicable(round_data))

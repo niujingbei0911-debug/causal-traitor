@@ -110,6 +110,23 @@ def _paired_group_id(instance: ClaimInstance) -> str | None:
     return _meta_text(instance, "paired_flip_id")
 
 
+def _validate_paired_groups(paired_groups: dict[str, list[ClaimInstance]]) -> None:
+    for pair_id, members in paired_groups.items():
+        if len(members) != 2:
+            raise ValueError(
+                f"paired_flip_id {pair_id!r} must identify exactly 2 members, found {len(members)}."
+            )
+        roles = sorted(
+            role
+            for role in (_meta_text(member, "paired_flip_role") for member in members)
+            if role is not None
+        )
+        if roles and roles != ["anchor", "flip"]:
+            raise ValueError(
+                f"paired_flip_id {pair_id!r} must contain one anchor and one flip, found roles={roles!r}."
+            )
+
+
 def _shuffle_ids(instance_ids: list[str], *, seed: int) -> list[str]:
     rng = random.Random(int(seed))
     shuffled = list(instance_ids)
@@ -434,6 +451,11 @@ def build_split_manifest(
         pair_id = _paired_group_id(instance)
         if pair_id is not None:
             paired_groups.setdefault(pair_id, []).append(instance)
+    _validate_paired_groups(paired_groups)
+    if selected_paired_flip_holdout and not paired_groups:
+        raise ValueError(
+            "paired_flip_holdout=True requires at least one valid paired_flip_id group in the input instances."
+        )
 
     for pair_id, members in paired_groups.items():
         triggering_members = [

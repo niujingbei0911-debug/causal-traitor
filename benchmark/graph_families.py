@@ -885,16 +885,18 @@ def _build_l3_counterfactual_ambiguity_family(seed: int) -> GraphFamilyBlueprint
             "observed_context": context,
         },
         query_types=["unit_level_counterfactual", "effect_of_treatment_on_treated"],
-        supported_gold_labels=["unidentifiable", "invalid"],
+        supported_gold_labels=["unidentifiable"],
         family_tags=["l3", "counterfactual", "ambiguity"],
         generator_hints=_ood_generator_hints(
             mechanism_ood_tag="counterfactual_ambiguity",
-            paired_flip_candidates=["unidentifiable", "invalid"],
+            paired_flip_candidates=["unidentifiable"],
             extra={
             "attack_modes": ["counterfactual_overclaim", "unidentifiable_disguised_as_valid"],
             "attack_modes_by_label": {
-                "invalid": ["counterfactual_overclaim"],
-                "unidentifiable": ["unidentifiable_disguised_as_valid"],
+                "unidentifiable": [
+                    "counterfactual_overclaim",
+                    "unidentifiable_disguised_as_valid",
+                ],
             },
             "requires_countermodel_search": True,
             "selection_mechanism": "none",

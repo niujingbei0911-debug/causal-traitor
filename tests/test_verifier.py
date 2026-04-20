@@ -11,7 +11,7 @@ from benchmark.schema import IdentificationStatus, PublicCausalInstance, Verdict
 from benchmark.graph_families import generate_graph_family, list_graph_families
 from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import ClaimParser, parse_claim
-from verifier.countermodel_search import CountermodelSearchResult, search_countermodels
+from verifier.countermodel_search import CountermodelCandidate, CountermodelSearchResult, search_countermodels
 from verifier.decision import VerifierDecision, decide_verdict
 from verifier.outputs import (
     ClaimPolarity,
@@ -560,6 +560,24 @@ class CountermodelSearchTests(unittest.TestCase):
         self.assertTrue(result.candidates)
         self.assertTrue(any(candidate.countermodel_type == "latent_confounder_injection" for candidate in result.candidates))
 
+    def test_l1_absolute_overclaim_with_query_disagreement_stays_unidentifiable(self) -> None:
+        claim = "X definitely causes Y."
+        parsed = parse_claim(claim)
+        ledger = build_assumption_ledger(parsed)
+
+        result = search_countermodels(
+            parsed,
+            ledger,
+            context={"claim_text": claim},
+        )
+        decision = decide_verdict(parsed, ledger, result)
+
+        self.assertTrue(result.found_countermodel)
+        self.assertTrue(result.query_disagreement)
+        self.assertEqual(result.verdict_suggestion, "unidentifiable")
+        self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
+        self.assertEqual(decision.metadata["decision_stage"], 2)
+
     def test_l1_selection_countermodel_can_suggest_invalid(self) -> None:
         parsed = self.parser.parse(
             "Within the selected sample, the link between adoption_level and stability_index is clean enough to read causally."
@@ -694,12 +712,12 @@ class CountermodelSearchTests(unittest.TestCase):
 
         self.assertTrue(result.found_countermodel)
         self.assertEqual(result.countermodel_type, "observationally_equivalent_countermodel")
-        self.assertEqual(result.verdict_suggestion, "invalid")
+        self.assertEqual(result.verdict_suggestion, "unidentifiable")
         self.assertTrue(result.query_disagreement)
         self.assertIn("same-fit structural model", result.countermodel_explanation)
         self.assertTrue(any(candidate.countermodel_type == "observationally_equivalent_countermodel" for candidate in result.candidates))
         self.assertEqual(payload["found_countermodel"], True)
-        self.assertEqual(payload["verdict_suggestion"], "invalid")
+        self.assertEqual(payload["verdict_suggestion"], "unidentifiable")
         json.dumps(payload)
 
     def test_countermodel_search_result_exports_formal_witness_payload(self) -> None:
@@ -846,6 +864,37 @@ class DecisionRuleTests(unittest.TestCase):
         self.parser = ClaimParser()
 
     def test_stage_1_strong_countermodel_returns_invalid_without_support_stage(self) -> None:
+        parsed = self.parser.parse("X causes Y.")
+        ledger = build_assumption_ledger(parsed)
+        countermodel = CountermodelSearchResult(
+            found_countermodel=True,
+            countermodel_type="public_refutation",
+            observational_match_score=0.96,
+            query_disagreement=False,
+            countermodel_explanation="Public evidence directly contradicts the claim.",
+            verdict_suggestion="invalid",
+            candidates=[
+                CountermodelCandidate(
+                    countermodel_type="public_refutation",
+                    causal_level="L1",
+                    observational_match_score=0.96,
+                    query_disagreement=False,
+                    countermodel_explanation="Public evidence directly contradicts the claim.",
+                    verdict_suggestion="invalid",
+                    triggered_assumptions=["no unobserved confounding"],
+                )
+            ],
+        )
+        decision = decide_verdict(parsed, ledger, countermodel)
+
+        self.assertIsInstance(decision, VerifierDecision)
+        self.assertEqual(decision.label, VerdictLabel.INVALID)
+        self.assertFalse(decision.metadata["support_stage_entered"])
+        self.assertIsNotNone(decision.countermodel_witness)
+        self.assertEqual(decision.countermodel_witness.witness_type, WitnessKind.COUNTERMODEL)
+        self.assertIs(decision.witness, decision.countermodel_witness)
+
+    def test_absolute_query_disagreement_countermodel_returns_unidentifiable_without_support_stage(self) -> None:
         parsed = self.parser.parse(
             "For an individual with the same observed history, switching therapy_flag would definitely change recovery, so the unit-level counterfactual is uniquely identified.",
             transcript=[
@@ -857,12 +906,10 @@ class DecisionRuleTests(unittest.TestCase):
         countermodel = search_countermodels(parsed, ledger)
         decision = decide_verdict(parsed, ledger, countermodel)
 
-        self.assertIsInstance(decision, VerifierDecision)
-        self.assertEqual(decision.label, VerdictLabel.INVALID)
+        self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
+        self.assertEqual(decision.metadata["decision_stage"], 2)
         self.assertFalse(decision.metadata["support_stage_entered"])
         self.assertIsNotNone(decision.countermodel_witness)
-        self.assertEqual(decision.countermodel_witness.witness_type, WitnessKind.COUNTERMODEL)
-        self.assertIs(decision.witness, decision.countermodel_witness)
 
     def test_stage_1_countermodel_witness_payload_is_formal_evidence_object(self) -> None:
         parsed = self.parser.parse(
@@ -1356,6 +1403,31 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("observed_data", forwarded_context)
         self.assertEqual(forwarded_context["proxy_variables"], ["proxy_signal"])
 
+    def test_pipeline_recursively_sanitizes_nested_tool_context_and_preserves_public_role_hints(self) -> None:
+        scenario = _build_public_intervention_scenario()
+        tool_runner = FakeToolRunner([])
+        pipeline = VerifierPipeline(tool_runner=tool_runner)
+
+        pipeline.run(
+            "Estimate the causal effect of exposure on recovery.",
+            scenario=scenario,
+            tool_context={
+                "instrument": "assignment_lottery",
+                "safe": "ok",
+                "notes": {
+                    "public_note": "keep",
+                    "role_bindings": {"instrument": "hidden_iv"},
+                    "true_dag": "LEAK",
+                    "gold_label": "invalid",
+                },
+            },
+        )
+
+        forwarded_context = tool_runner.calls[0]["tool_context"]
+        self.assertEqual(forwarded_context["instrument"], "assignment_lottery")
+        self.assertEqual(forwarded_context["safe"], "ok")
+        self.assertEqual(forwarded_context["notes"], {"public_note": "keep"})
+
     def test_pipeline_ignores_injected_observed_data_in_tool_context_without_public_scenario(self) -> None:
         with self.assertRaises(TypeError):
             VerifierPipeline().run(
@@ -1811,7 +1883,7 @@ class PipelineTests(unittest.TestCase):
             ("l2_invalid_iv_family", 0, VerdictLabel.INVALID),
             ("l2_invalid_iv_family", 1, VerdictLabel.UNIDENTIFIABLE),
             ("l3_counterfactual_ambiguity_family", 0, VerdictLabel.UNIDENTIFIABLE),
-            ("l3_counterfactual_ambiguity_family", 1, VerdictLabel.INVALID),
+            ("l3_counterfactual_ambiguity_family", 1, VerdictLabel.UNIDENTIFIABLE),
             ("l3_mediation_abduction_family", 0, VerdictLabel.VALID),
             ("l3_mediation_abduction_family", 1, VerdictLabel.INVALID),
         )
@@ -1862,7 +1934,7 @@ class PipelineTests(unittest.TestCase):
         sample = BenchmarkGenerator(seed=17).generate_benchmark_sample(
             family_name="l3_counterfactual_ambiguity_family",
             difficulty=0.4,
-            seed=2,
+            seed=1,
         )
         claim = sample.claim
         parsed = parse_claim(claim.claim_text)
@@ -1917,7 +1989,7 @@ class PipelineTests(unittest.TestCase):
     def test_pipeline_regression_for_selection_and_counterfactual_unidentifiable_samples(self) -> None:
         cases = (
             ("l1_selection_bias_family", 9, "selection_bias_obfuscation"),
-            ("l3_counterfactual_ambiguity_family", 2, "unidentifiable_disguised_as_valid"),
+            ("l3_counterfactual_ambiguity_family", 1, "unidentifiable_disguised_as_valid"),
         )
         generator = BenchmarkGenerator(seed=17)
 
@@ -2045,6 +2117,18 @@ class SelectiveOutputValidationTests(unittest.TestCase):
             SelectiveVerifierOutput(label="valid", support_witness=3.14)
         with self.assertRaises(TypeError):
             SelectiveVerifierOutput(label="unidentifiable", countermodel_witness="bad")
+
+    def test_selective_output_rejects_witness_slot_kind_mismatch(self) -> None:
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(
+                label="valid",
+                support_witness={"witness_type": "countermodel", "description": "wrong slot"},
+            )
+        with self.assertRaises(ValueError):
+            SelectiveVerifierOutput(
+                label="invalid",
+                countermodel_witness={"witness_type": "support", "description": "wrong slot"},
+            )
 
     def test_selective_output_rejects_non_structured_trace_and_ledger(self) -> None:
         with self.assertRaises(TypeError):

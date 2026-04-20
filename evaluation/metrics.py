@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from benchmark.schema import VerifierVerdict
+
 VERDICT_LABEL_SPACE: tuple[str, ...] = ("valid", "invalid", "unidentifiable")
 IDENTIFICATION_STATUS_SPACE: tuple[str, ...] = ("identified", "contradicted", "underdetermined")
 
@@ -98,6 +100,11 @@ def _prediction_payload(round_data: dict[str, Any]) -> tuple[Any, str | None]:
     return None, None
 
 
+def _prediction_payload_mapping(round_data: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    payload, payload_key = _prediction_payload(round_data)
+    return _payload_mapping(payload), payload_key
+
+
 def _default_identification_status_for_label(label: str | None) -> str | None:
     mapping = {
         "valid": "identified",
@@ -108,15 +115,22 @@ def _default_identification_status_for_label(label: str | None) -> str | None:
 
 
 def _extract_round_predicted_label(round_data: dict[str, Any]) -> str | None:
-    candidates = [
-        round_data.get("verdict_label"),
-        round_data.get("predicted_label"),
-        round_data.get("final_verdict"),
-        _nested_value(round_data.get("verdict"), "final_verdict"),
-        _nested_value(round_data.get("verdict"), "label"),
-        _nested_value(round_data.get("verifier_verdict"), "final_verdict"),
-        _nested_value(round_data.get("verifier_verdict"), "label"),
-    ]
+    payload, _ = _prediction_payload(round_data)
+    if payload is not None:
+        candidates = [
+            _nested_value(payload, "final_verdict"),
+            _nested_value(payload, "label"),
+        ]
+    else:
+        candidates = [
+            round_data.get("verdict_label"),
+            round_data.get("predicted_label"),
+            round_data.get("final_verdict"),
+            _nested_value(round_data.get("verdict"), "final_verdict"),
+            _nested_value(round_data.get("verdict"), "label"),
+            _nested_value(round_data.get("verifier_verdict"), "final_verdict"),
+            _nested_value(round_data.get("verifier_verdict"), "label"),
+        ]
     for candidate in candidates:
         normalized = _normalize_verdict_label(candidate)
         if normalized is not None:
@@ -140,26 +154,41 @@ def _extract_round_gold_label(round_data: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_round_confidence(round_data: dict[str, Any]) -> float:
-    candidates = [
-        round_data.get("verifier_confidence"),
-        round_data.get("confidence"),
-        _nested_value(round_data.get("verdict"), "confidence"),
-        _nested_value(round_data.get("verifier_verdict"), "confidence"),
-    ]
+def _extract_round_confidence_value(round_data: dict[str, Any]) -> float | None:
+    payload, _ = _prediction_payload(round_data)
+    candidates = []
+    if payload is not None:
+        candidates.append(_nested_value(payload, "confidence"))
+    candidates.extend(
+        [
+            round_data.get("verifier_confidence"),
+            round_data.get("confidence"),
+        ]
+    )
     for candidate in candidates:
         if candidate is not None:
             return _clip01(candidate)
-    return 0.0
+    return None
+
+
+def _extract_round_confidence(round_data: dict[str, Any]) -> float:
+    confidence = _extract_round_confidence_value(round_data)
+    return 0.0 if confidence is None else confidence
 
 
 def _extract_round_probabilities(round_data: dict[str, Any]) -> Any:
-    candidates = [
-        round_data.get("predicted_probabilities"),
-        round_data.get("verdict_probabilities"),
-        _nested_value(round_data.get("verdict"), "probabilities"),
-        _nested_value(round_data.get("verifier_verdict"), "probabilities"),
-    ]
+    payload, _ = _prediction_payload(round_data)
+    candidates = []
+    if payload is not None:
+        payload_probabilities = _nested_value(payload, "probabilities")
+        if payload_probabilities not in (None, {}, [], ()):
+            candidates.append(payload_probabilities)
+    candidates.extend(
+        [
+            round_data.get("predicted_probabilities"),
+            round_data.get("verdict_probabilities"),
+        ]
+    )
     for candidate in candidates:
         if candidate is not None:
             return candidate
@@ -167,11 +196,11 @@ def _extract_round_probabilities(round_data: dict[str, Any]) -> Any:
 
 
 def _extract_round_identification_status(round_data: dict[str, Any]) -> str | None:
-    candidates = [
-        round_data.get("identification_status"),
-        _nested_value(round_data.get("verdict"), "identification_status"),
-        _nested_value(round_data.get("verifier_verdict"), "identification_status"),
-    ]
+    payload, _ = _prediction_payload(round_data)
+    candidates = []
+    if payload is not None:
+        candidates.append(_nested_value(payload, "identification_status"))
+    candidates.append(round_data.get("identification_status"))
     for candidate in candidates:
         normalized = _normalize_identification_status(candidate)
         if normalized is not None:
@@ -197,15 +226,33 @@ def _structured_verdict_contract_errors(round_data: dict[str, Any]) -> list[str]
         return []
 
     payload, payload_key = _prediction_payload(round_data)
-    if payload is None:
+    payload_mapping, _ = _prediction_payload_mapping(round_data)
+    if payload is None or payload_mapping is None:
         return ["missing prediction payload"]
 
     predicted_label = _extract_round_predicted_label(round_data)
     errors: list[str] = []
     if not (_payload_has_key(payload, "label") or _payload_has_key(payload, "final_verdict")):
         errors.append(f"{payload_key} missing label/final_verdict")
-    elif predicted_label is None:
-        errors.append(f"{payload_key} has unparseable label/final_verdict")
+    else:
+        raw_label = payload_mapping.get("label")
+        raw_final_verdict = payload_mapping.get("final_verdict")
+        normalized_label = _normalize_verdict_label(raw_label) if raw_label is not None else None
+        normalized_final_verdict = (
+            _normalize_verdict_label(raw_final_verdict) if raw_final_verdict is not None else None
+        )
+        if raw_label is not None and normalized_label is None:
+            errors.append(f"{payload_key} has unparseable label")
+        if raw_final_verdict is not None and normalized_final_verdict is None:
+            errors.append(f"{payload_key} has unparseable final_verdict")
+        if (
+            normalized_label is not None
+            and normalized_final_verdict is not None
+            and normalized_label != normalized_final_verdict
+        ):
+            errors.append(f"{payload_key} has conflicting label/final_verdict")
+        if predicted_label is None:
+            errors.append(f"{payload_key} has unparseable label/final_verdict")
 
     for key in ("identification_status", "refusal_reason", "missing_information_spec"):
         if not _payload_has_key(payload, key):
@@ -216,15 +263,36 @@ def _structured_verdict_contract_errors(round_data: dict[str, Any]) -> list[str]
 
     if _payload_has_key(payload, "missing_information_spec") and _nested_value(payload, "missing_information_spec") is None:
         errors.append(f"{payload_key} has null missing_information_spec")
-    elif predicted_label == "unidentifiable" and not _has_substantive_missing_information(
-        _nested_value(payload, "missing_information_spec")
-    ):
-        errors.append(f"{payload_key} missing substantive missing_information_spec for unidentifiable label")
+    normalized_payload: dict[str, Any] | None = None
+    if not errors:
+        try:
+            normalized_payload = VerifierVerdict(
+                label=(
+                    payload_mapping.get("label")
+                    if payload_mapping.get("label") is not None
+                    else payload_mapping.get("final_verdict")
+                ),
+                identification_status=payload_mapping.get("identification_status"),
+                refusal_reason=payload_mapping.get("refusal_reason"),
+                missing_information_spec=payload_mapping.get("missing_information_spec"),
+                probabilities=payload_mapping.get("probabilities", {}),
+                assumption_ledger=payload_mapping.get("assumption_ledger", []),
+                witness=payload_mapping.get("witness"),
+                support_witness=payload_mapping.get("support_witness"),
+                countermodel_witness=payload_mapping.get("countermodel_witness"),
+                tool_trace=payload_mapping.get("tool_trace", []),
+                confidence=payload_mapping.get("confidence"),
+                reasoning_summary=str(payload_mapping.get("reasoning_summary", "")),
+                metadata=payload_mapping.get("metadata"),
+            ).to_dict()
+        except (TypeError, ValueError) as exc:
+            errors.append(f"{payload_key} {exc}")
 
-    if predicted_label == "unidentifiable" and not _has_non_empty_refusal_reason(
-        _nested_value(payload, "refusal_reason")
-    ):
-        errors.append(f"{payload_key} missing non-empty refusal_reason for unidentifiable label")
+    if normalized_payload is not None and predicted_label == "unidentifiable":
+        if not _has_substantive_missing_information(normalized_payload.get("missing_information_spec")):
+            errors.append(f"{payload_key} missing substantive missing_information_spec for unidentifiable label")
+        if not _has_non_empty_refusal_reason(normalized_payload.get("refusal_reason")):
+            errors.append(f"{payload_key} missing non-empty refusal_reason for unidentifiable label")
 
     return errors
 
@@ -239,6 +307,50 @@ def validate_round_contracts(rounds: Sequence[dict[str, Any]]) -> None:
         violations.append(f"round {round_id}: {', '.join(errors)}")
     if violations:
         raise ValueError("Phase 1 evaluation contract violation(s): " + "; ".join(violations))
+
+
+def _legacy_rounds_from_game_data(game_data: Dict[str, Any]) -> list[dict[str, Any]]:
+    gold_labels = list(game_data.get("gold_labels", []))
+    predicted_labels = list(game_data.get("predicted_labels", []))
+    confidences = list(game_data.get("confidences", []))
+    predicted_probabilities = list(game_data.get("predicted_probabilities", []))
+    countermodel_hits = list(game_data.get("countermodel_hits", []))
+    countermodel_applicable = list(game_data.get("countermodel_applicable", []))
+    count = len(gold_labels)
+
+    synthetic_rounds: list[dict[str, Any]] = []
+    for index in range(count):
+        predicted_label = predicted_labels[index] if index < len(predicted_labels) else None
+        confidence = confidences[index] if index < len(confidences) else None
+        payload: dict[str, Any] = {
+            "round_id": index + 1,
+            "gold_label": gold_labels[index],
+        }
+        if predicted_label is not None:
+            payload["verifier_verdict"] = VerifierVerdict(
+                label=predicted_label,
+                confidence=confidence,
+            ).to_dict()
+        elif confidence is not None:
+            payload["verifier_confidence"] = confidence
+        if index < len(predicted_probabilities):
+            payload["predicted_probabilities"] = predicted_probabilities[index]
+        if index < len(countermodel_hits):
+            payload["countermodel_found"] = countermodel_hits[index]
+        if index < len(countermodel_applicable):
+            payload["countermodel_applicable"] = countermodel_applicable[index]
+        synthetic_rounds.append(payload)
+    return synthetic_rounds
+
+
+def _has_complete_prediction_payloads(rounds: Sequence[dict[str, Any]]) -> bool:
+    for round_data in rounds:
+        if _extract_round_gold_label(round_data) is None:
+            continue
+        payload, _ = _prediction_payload(round_data)
+        if payload is None:
+            return False
+    return True
 
 
 def _is_committed_label(value: str | None) -> bool:
@@ -1213,6 +1325,7 @@ class CausalMetrics:
 
         results: list[MetricResult] = []
         rounds = list(game_data.get("rounds", []))
+        legacy_rounds = False
 
         gold_labels = list(game_data.get("gold_labels", []))
         predicted_labels = list(game_data.get("predicted_labels", []))
@@ -1223,8 +1336,13 @@ class CausalMetrics:
         gold_identification_statuses: list[str | None] = []
         predicted_identification_statuses: list[str | None] = []
 
+        if not rounds and gold_labels:
+            rounds = _legacy_rounds_from_game_data(game_data)
+            legacy_rounds = True
+
         if rounds:
-            validate_round_contracts(rounds)
+            if not legacy_rounds or _has_complete_prediction_payloads(rounds):
+                validate_round_contracts(rounds)
             gold_labels = []
             predicted_labels = []
             confidences = []
@@ -1234,7 +1352,7 @@ class CausalMetrics:
             for round_data in rounds:
                 gold_labels.append(_extract_round_gold_label(round_data))
                 predicted_labels.append(_extract_round_predicted_label(round_data))
-                confidences.append(_extract_round_confidence(round_data))
+                confidences.append(_extract_round_confidence_value(round_data))
                 predicted_probabilities.append(_extract_round_probabilities(round_data))
                 countermodel_hits.append(
                     bool(round_data.get("countermodel_found"))

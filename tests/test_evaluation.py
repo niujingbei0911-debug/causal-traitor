@@ -82,15 +82,31 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertIn("missing prediction payload", str(context.exception))
 
-    def test_validate_round_contracts_rejects_empty_unidentifiable_metadata(self) -> None:
+    def test_validate_round_contracts_accepts_normalizable_unidentifiable_metadata(self) -> None:
+        validate_round_contracts(
+            [
+                {
+                    "gold_label": "unidentifiable",
+                    "verdict": {
+                        "label": "unidentifiable",
+                        "identification_status": "underdetermined",
+                        "refusal_reason": None,
+                        "missing_information_spec": {},
+                    },
+                }
+            ]
+        )
+
+    def test_validate_round_contracts_rejects_conflicting_label_and_final_verdict(self) -> None:
         with self.assertRaises(ValueError) as context:
             validate_round_contracts(
                 [
                     {
-                        "gold_label": "unidentifiable",
-                        "verdict": {
-                            "label": "unidentifiable",
-                            "identification_status": "underdetermined",
+                        "gold_label": "valid",
+                        "verifier_verdict": {
+                            "label": "invalid",
+                            "final_verdict": "valid",
+                            "identification_status": "contradicted",
                             "refusal_reason": None,
                             "missing_information_spec": {},
                         },
@@ -98,9 +114,29 @@ class EvaluationTests(unittest.TestCase):
                 ]
             )
 
+        self.assertIn("conflicting", str(context.exception))
+
+    def test_validate_round_contracts_rejects_inconsistent_selective_state(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            validate_round_contracts(
+                [
+                    {
+                        "gold_label": "valid",
+                        "verifier_verdict": {
+                            "label": "valid",
+                            "final_verdict": "valid",
+                            "identification_status": "identified",
+                            "refusal_reason": "insufficient_public_information",
+                            "missing_information_spec": {
+                                "note": "Need more public support before deciding.",
+                            },
+                        },
+                    }
+                ]
+            )
+
         message = str(context.exception)
         self.assertIn("refusal_reason", message)
-        self.assertIn("missing_information_spec", message)
 
     def test_metric_result_supports_partial_construction(self) -> None:
         metric = MetricResult(name="DAcc", value=0.0)
@@ -572,6 +608,55 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
         self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
 
+    def test_round_evaluation_prefers_verifier_verdict_over_conflicting_legacy_fields(self) -> None:
+        round_data = {
+            "round_id": 1,
+            "gold_label": "valid",
+            "verdict_label": "invalid",
+            "confidence": 0.1,
+            "identification_status": "contradicted",
+            "verdict": {
+                "label": "invalid",
+                "final_verdict": "invalid",
+                "identification_status": "contradicted",
+                "refusal_reason": None,
+                "missing_information_spec": {},
+                "confidence": 0.1,
+            },
+            "verifier_verdict": {
+                "label": "valid",
+                "final_verdict": "valid",
+                "identification_status": "identified",
+                "refusal_reason": None,
+                "missing_information_spec": {},
+                "confidence": 0.8,
+            },
+        }
+
+        score = self.scorer.score_game({"game_id": "payload-precedence", "rounds": [round_data]})
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all({"rounds": [round_data]})
+        }
+
+        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 1.0, places=4)
+        self.assertAlmostEqual(lookup["verdict_accuracy"].value, 1.0, places=4)
+        self.assertAlmostEqual(score.round_scores[0].confidence, 0.8, places=4)
+
+    def test_legacy_array_mode_keeps_brier_consistent_without_explicit_confidence(self) -> None:
+        game_data = {
+            "game_id": "legacy-array-brier",
+            "gold_labels": ["unidentifiable"],
+            "predicted_labels": ["unidentifiable"],
+        }
+
+        score = self.scorer.score_game(game_data)
+        lookup = {result.name: result for result in CausalMetrics.compute_all(game_data)}
+
+        self.assertAlmostEqual(score.final_scores["brier"], 0.0, places=4)
+        self.assertAlmostEqual(lookup["brier"].value, 0.0, places=4)
+        self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
+
     def test_compute_all_prefers_round_level_payload_over_top_level_arrays(self) -> None:
         game_data = {
             "rounds": [
@@ -627,10 +712,10 @@ class EvaluationTests(unittest.TestCase):
                             "identification_status": "contradicted",
                         },
                         "verifier_verdict": {
-                            "final_verdict": "invalid",
-                            "identification_status": "identified",
-                            "refusal_reason": None,
-                            "missing_information_spec": {},
+                            "final_verdict": "unidentifiable",
+                            "identification_status": "underdetermined",
+                            "refusal_reason": "insufficient_public_information",
+                            "missing_information_spec": {"note": "Need more public evidence."},
                             "confidence": 0.7,
                         },
                     },
@@ -666,10 +751,10 @@ class EvaluationTests(unittest.TestCase):
                                 "identification_status": "contradicted",
                             },
                             "verifier_verdict": {
-                                "final_verdict": "invalid",
-                                "identification_status": "identified",
-                                "refusal_reason": None,
-                                "missing_information_spec": {},
+                                "final_verdict": "unidentifiable",
+                                "identification_status": "underdetermined",
+                                "refusal_reason": "insufficient_public_information",
+                                "missing_information_spec": {"note": "Need more public evidence."},
                                 "confidence": 0.7,
                             },
                         },

@@ -22,6 +22,16 @@ def _normalize_str_list(values: list[Any] | tuple[Any, ...] | None) -> list[str]
     return result
 
 
+def _coerce_string_list(value: Any, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _normalize_str_list([value])
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return _normalize_str_list(list(value))
+    raise ValueError(f"{field_name} must be a string or a sequence of strings, got {type(value)!r}.")
+
+
 def _require_non_empty_string(value: Any, *, field_name: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -101,7 +111,7 @@ class SourceCitation:
             citation_text=payload.get("citation_text", payload.get("citation", "")),
             title=str(payload.get("title", "")),
             source_id=str(payload.get("source_id", payload.get("id", ""))),
-            authors=list(payload.get("authors", [])),
+            authors=_coerce_string_list(payload.get("authors", []), field_name="source_citation.authors"),
             venue=str(payload.get("venue", "")),
             year=payload.get("year"),
             url=payload.get("url"),
@@ -146,8 +156,14 @@ class InformationContract:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "InformationContract":
         return cls(
-            visible_information=list(payload.get("visible_information", [])),
-            hidden_information=list(payload.get("hidden_information", [])),
+            visible_information=_coerce_string_list(
+                payload.get("visible_information", []),
+                field_name="information_contract.visible_information",
+            ),
+            hidden_information=_coerce_string_list(
+                payload.get("hidden_information", []),
+                field_name="information_contract.hidden_information",
+            ),
             note=str(payload.get("note", "")),
         )
 
@@ -204,10 +220,17 @@ class RealGroundedCase:
             "source_citation": self.source_citation.to_dict(),
             "public_evidence_summary": self.public_evidence_summary,
             "information_contract": self.information_contract.to_dict(),
+            "identifying_assumptions": list(self.identifying_assumptions),
             "witness_note": self.witness_note,
         }
         for key, value in authoritative_meta.items():
-            if key in claim_meta and claim_meta[key] != value:
+            existing_value = claim_meta.get(key)
+            if key == "identifying_assumptions" and key in claim_meta:
+                existing_value = _coerce_string_list(
+                    existing_value,
+                    field_name="ClaimInstance.meta['identifying_assumptions']",
+                )
+            if key in claim_meta and existing_value != value:
                 raise ValueError(
                     f"ClaimInstance.meta[{key!r}] conflicts with RealGroundedCase authoritative metadata."
                 )
@@ -248,7 +271,10 @@ class RealGroundedCase:
             source_citation=payload.get("source_citation"),
             public_evidence_summary=payload.get("public_evidence_summary", ""),
             information_contract=payload.get("information_contract"),
-            identifying_assumptions=list(payload.get("identifying_assumptions", [])),
+            identifying_assumptions=_coerce_string_list(
+                payload.get("identifying_assumptions", []),
+                field_name="identifying_assumptions",
+            ),
             witness_note=payload.get("witness_note", ""),
             metadata=dict(payload.get("metadata", {})),
         )
@@ -290,10 +316,19 @@ class RealGroundedDataset:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RealGroundedDataset":
+        raw_cases = payload.get("cases", [])
+        if raw_cases is None:
+            normalized_cases: list[Any] = []
+        elif isinstance(raw_cases, dict):
+            normalized_cases = [raw_cases]
+        elif isinstance(raw_cases, list):
+            normalized_cases = list(raw_cases)
+        else:
+            raise ValueError(f"cases must be a list of case payloads, got {type(raw_cases)!r}.")
         return cls(
             dataset_name=payload.get("dataset_name", "real_grounded_subset"),
             version=payload.get("version", "v2"),
-            cases=list(payload.get("cases", [])),
+            cases=normalized_cases,
             metadata=dict(payload.get("metadata", {})),
         )
 

@@ -166,6 +166,41 @@ class ToolExecutorTests(unittest.TestCase):
 
         self.assertNotIn("iv_estimation", report["selected_tools"])
 
+    def test_public_measurement_semantics_anchor_iv_tool_without_explicit_instrument_phrase(self):
+        scenario = PublicCausalInstance(
+            scenario_id="public_iv_semantics_case",
+            description="Public IV semantics should anchor the observed instrument.",
+            variables=["assignment_lottery", "exposure", "recovery", "proxy_signal"],
+            observed_data=pd.DataFrame(
+                {
+                    "assignment_lottery": [0, 0, 0, 1, 1, 1, 1, 0],
+                    "exposure": [0, 0, 1, 0, 1, 1, 1, 0],
+                    "recovery": [0.1, 0.2, 0.6, 0.3, 0.8, 1.0, 0.9, 0.2],
+                    "proxy_signal": [0.2, 0.1, 0.4, 0.5, 0.8, 0.9, 0.7, 0.3],
+                }
+            ),
+            causal_level=2,
+            metadata={
+                "measurement_semantics": {
+                    "assignment_lottery": {"measurement_view": "assignment_signal"},
+                    "proxy_signal": {"measurement_view": "proxy_measurement"},
+                }
+            },
+        )
+
+        report = self.executor.execute_for_claim(
+            scenario=scenario,
+            claim="Because assignment_lottery shifts exposure, the IV estimate proves exposure causes recovery.",
+            level=2,
+            context={},
+        )
+
+        self.assertIn("iv_estimation", report["selected_tools"])
+        iv_entry = next(
+            entry for entry in report["tool_trace"] if entry["tool_name"] == "iv_estimation"
+        )
+        self.assertEqual(iv_entry["status"], "success")
+
     def test_generated_valid_benchmark_claims_receive_real_support_assumptions(self):
         generator = BenchmarkGenerator(seed=17)
         cases = (
@@ -384,10 +419,14 @@ class ToolExecutorTests(unittest.TestCase):
             difficulty=0.4,
             seed=1,
         )
+        claim = (
+            "For the same observed case, the measured mediator engagement fully determines what "
+            "recovery would have been under a different dose."
+        )
 
         report = self.executor.execute_for_claim(
             scenario=sample.public,
-            claim=sample.claim.claim_text,
+            claim=claim,
             level=3,
             context={"claim_stance": "pro_causal"},
         )
