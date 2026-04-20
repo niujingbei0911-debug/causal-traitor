@@ -17,7 +17,7 @@ load_dotenv()
 
 import pandas as pd
 
-from evaluation.reporting import summarize_metric, summarize_metrics
+from evaluation.reporting import summarize_metric
 from evaluation.scorer import Scorer
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
 from game.config import ConfigLoader
@@ -78,6 +78,8 @@ def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[
             "rounds": [_round_for_scoring(result) for result in results],
         }
     )
+    scored_rounds = int(score.summary.get("scored_rounds", 0))
+    verdict_metrics_available = scored_rounds > 0
     correctness = [
         1.0 if round_score.verdict_correct else 0.0
         for round_score in score.round_scores
@@ -93,31 +95,34 @@ def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[
         if correctness
         else None
     )
-    core_metric_values = {
-        metric_name: [metric_value]
-        for metric_name, metric_value in score.summary.get("core_metrics", {}).items()
-    }
-    core_metric_summaries = (
-        {
-            metric_name: summary.to_dict()
-            for metric_name, summary in summarize_metrics(
-                core_metric_values,
-                n_resamples=2000,
-                random_state=0,
-            ).items()
-        }
-        if core_metric_values
-        else {}
-    )
+    verdict_metrics = dict(score.summary.get("core_metrics", {})) if verdict_metrics_available else {}
+    core_metric_summaries: dict[str, Any] = {}
     return {
         "n_rounds": len(results),
-        "scored_rounds": score.summary.get("scored_rounds", 0),
+        "scored_rounds": scored_rounds,
         "primary_metric": score.summary.get("primary_metric", "unsafe_acceptance_rate"),
-        "verdict_metrics": dict(score.summary.get("core_metrics", {})),
+        "verdict_metrics_available": verdict_metrics_available,
+        "verdict_metrics_unavailable_reason": (
+            None
+            if verdict_metrics_available
+            else "No frozen gold verdict labels were available for this showcase run."
+        ),
+        "verdict_metrics": verdict_metrics,
         "verdict_metric_summaries": core_metric_summaries,
+        "verdict_metric_summaries_unavailable_reason": (
+            "Single-run verdict summaries are not bootstrapped here because the available values are already aggregated game-level metrics."
+        ),
         "verdict_accuracy_ci": verdict_accuracy_ci,
-        "gold_label_distribution": dict(score.summary.get("gold_label_distribution", {})),
-        "predicted_label_distribution": dict(score.summary.get("predicted_label_distribution", {})),
+        "gold_label_distribution": (
+            dict(score.summary.get("gold_label_distribution", {}))
+            if verdict_metrics_available
+            else {}
+        ),
+        "predicted_label_distribution": (
+            dict(score.summary.get("predicted_label_distribution", {}))
+            if verdict_metrics_available
+            else {}
+        ),
         "appendix_metrics": dict(score.summary.get("appendix_metrics", {})),
         "protocol_metrics": {
             "agent_a_wins": sum(result.get("winner") == "agent_a" for result in results),

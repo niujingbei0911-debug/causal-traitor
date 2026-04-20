@@ -33,6 +33,7 @@ DEFAULT_MAIN_SYSTEMS: tuple[str, ...] = (
 )
 DEFAULT_SAMPLES_PER_FAMILY = 10
 PAIRWISE_ALPHA = 0.05
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 
 
 def _validate_main_benchmark_systems(
@@ -58,7 +59,7 @@ def _build_formal_paired_significance(
         {
             split_name: {
                 system_name: [
-                    float(per_seed_results[seed][system_name][split_name]["metrics"]["verdict_accuracy"])
+                    float(per_seed_results[seed][system_name][split_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                     for seed in sorted(per_seed_results)
                 ]
                 for system_name in systems
@@ -66,8 +67,8 @@ def _build_formal_paired_significance(
             for split_name in OOD_SPLITS
         },
         baseline=systems[0],
-        metric_name="verdict_accuracy",
-        estimand="seed_mean_verdict_accuracy",
+        metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+        estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
     )
 
 

@@ -306,7 +306,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ablation_payload["protocol"]["override_used"])
             self.assertEqual(
                 ablation_payload["significance"]["test_iid"]["estimand"],
-                "seed_mean_verdict_accuracy",
+                "seed_mean_unsafe_acceptance_rate",
             )
 
             self.assertEqual(
@@ -420,12 +420,12 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(main_payload["significance"][split_name]["comparisons"])
                 self.assertEqual(
                     main_payload["significance"][split_name]["estimand"],
-                    "seed_mean_verdict_accuracy",
+                    "seed_mean_unsafe_acceptance_rate",
                 )
                 self.assertEqual(main_payload["significance"][split_name]["method"], "paired_seed_bootstrap")
                 self.assertEqual(
                     main_payload["significance"][split_name]["metric_name"],
-                    "verdict_accuracy",
+                    "unsafe_acceptance_rate",
                 )
 
             self.assertGreaterEqual(len(leakage_payload["seeds"]), 3)
@@ -574,8 +574,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for split_name in ("test_iid", "test_ood"):
                 report = payload["significance"][split_name]
                 self.assertEqual(report["method"], "paired_seed_bootstrap")
-                self.assertEqual(report["metric_name"], "verdict_accuracy")
-                self.assertEqual(report["estimand"], "seed_mean_verdict_accuracy")
+                self.assertEqual(report["metric_name"], "unsafe_acceptance_rate")
+                self.assertEqual(report["estimand"], "seed_mean_unsafe_acceptance_rate")
 
     def test_phase4_main_and_leakage_reject_noncompliant_seed_lists_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -991,6 +991,28 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(graph["schema_view"], "public")
         self.assertFalse(any(node["id"] in set(scenario.hidden_variables) for node in graph["nodes"]))
+
+    async def test_appendix_runners_log_unique_round_ids_across_conditions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            exp2_payload = await run_exp2_jury_ablation(
+                rounds=2,
+                output_path=str(Path(tmp_dir) / "exp2_jury_ablation.json"),
+            )
+            exp3_payload = await run_exp3_difficulty(
+                rounds=2,
+                output_path=str(Path(tmp_dir) / "exp3_difficulty.json"),
+            )
+            exp4_payload = await run_exp4_evolution(
+                rounds=2,
+                output_path=str(Path(tmp_dir) / "exp4_evolution.json"),
+            )
+
+            for payload in (exp2_payload, exp3_payload, exp4_payload):
+                run_dir = Path(payload["tracking"]["run_dir"])
+                rounds_path = run_dir / "rounds.jsonl"
+                records = [json.loads(line) for line in rounds_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                round_ids = [record["round_id"] for record in records]
+                self.assertEqual(len(round_ids), len(set(round_ids)))
 
         api = VisualizationAPI()
         api.register_game(

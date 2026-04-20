@@ -176,7 +176,7 @@ class AgentB:
                     )
                     if iv_result["is_strong_instrument"]:
                         defense_score += 0.16
-                        if any(token in claim_lower for token in ["工具变量并不可信", "iv", "instrument", "排他性"]):
+                        if self._is_iv_attack_claim(claim):
                             detected_fallacies.append("过度质疑有效工具变量")
                     else:
                         challenge_validity += 0.16
@@ -427,12 +427,32 @@ class AgentB:
     def _find_instrument_variable(
         self, claim: str, variables: list[str], treatment: str, outcome: str
     ) -> Optional[str]:
+        has_iv_context = bool(
+            re.search(
+                r"\biv\b|\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|工具变量|排他性|排除限制",
+                claim,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not has_iv_context:
+            return None
         for variable in variables:
             if variable in {treatment, outcome}:
                 continue
-            if variable.lower() in claim.lower():
+            if re.search(rf"\b{re.escape(variable)}\b", claim, flags=re.IGNORECASE):
                 return variable
         return None
+
+    def _is_iv_attack_claim(self, claim: str) -> bool:
+        return bool(
+            re.search(
+                r"工具变量并不可信|weak instrument|invalid instrument|instrument is not credible|"
+                r"fails exclusion|violates exclusion|violates independence|排他性.*不成立|排除限制.*不成立|"
+                r"工具变量.*不可靠|工具变量.*无效",
+                claim,
+                flags=re.IGNORECASE,
+            )
+        )
 
     def _find_mediator_variable(
         self,

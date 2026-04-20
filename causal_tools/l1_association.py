@@ -50,6 +50,21 @@ def _safe_spearman(x: pd.Series, y: pd.Series) -> tuple[float, float]:
     return float(statistic), float(p_value)
 
 
+def _column_for_pairwise_analysis(
+    subset: pd.DataFrame,
+    numeric: pd.DataFrame,
+    column: str,
+) -> pd.Series:
+    if column in numeric.columns:
+        return pd.to_numeric(numeric[column], errors="coerce")
+    encoded_prefix = f"{column}_"
+    encoded_columns = [name for name in numeric.columns if str(name).startswith(encoded_prefix)]
+    if encoded_columns:
+        codes, _ = pd.factorize(subset[column])
+        return pd.Series(codes, index=subset.index, dtype=float)
+    return pd.to_numeric(subset[column], errors="coerce")
+
+
 def _residualize(
     data: pd.DataFrame, target: str, controls: list[str]
 ) -> tuple[pd.Series, pd.Index]:
@@ -82,8 +97,8 @@ def _effect_size_label(value: float) -> str:
 def compute_correlation(data: pd.DataFrame, x: str, y: str) -> dict:
     """计算变量间相关系数"""
     subset, numeric = _build_numeric_subset(data, [x, y])
-    x_numeric = numeric.iloc[:, 0]
-    y_numeric = numeric.iloc[:, 1] if numeric.shape[1] > 1 else numeric.iloc[:, 0]
+    x_numeric = _column_for_pairwise_analysis(subset, numeric, x)
+    y_numeric = _column_for_pairwise_analysis(subset, numeric, y)
 
     pearson_r, pearson_p = _safe_pearson(x_numeric, y_numeric)
     spearman_r, spearman_p = _safe_spearman(x_numeric, y_numeric)

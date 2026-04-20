@@ -92,7 +92,7 @@ async def run_experiment(
         update_difficulty=False,
     )
     for result in evolution_results:
-        tracker.log_round(result["round_number"], {"condition": "with_evolution", **result})
+        tracker.log_round(rounds + result["round_number"], {"condition": "with_evolution", **result})
 
     no_evolution_score = scorer.score_game(
         {

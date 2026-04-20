@@ -26,6 +26,10 @@ from experiments.benchmark_harness import (
     write_artifacts,
 )
 
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
+
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
+
 
 def _evaluate_model_family_on_samples(
     samples,
@@ -252,7 +256,7 @@ def run_experiment(
         {
             f"{attacker_family}::{split_name}": {
                 verifier_family: [
-                    float(per_seed_results[seed][attacker_family][verifier_family][split_name]["metrics"]["verdict_accuracy"])
+                    float(per_seed_results[seed][attacker_family][verifier_family][split_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                     for seed in sorted(resolved_seeds)
                 ]
                 for verifier_family in resolved_verifier_families
@@ -261,8 +265,8 @@ def run_experiment(
             for split_name in ("test_iid", "test_ood")
         },
         baseline=resolved_verifier_families[0],
-        metric_name="verdict_accuracy",
-        estimand="seed_mean_verdict_accuracy",
+        metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+        estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
     )
     significance: dict[str, dict[str, Any]] = {attacker_family: {} for attacker_family in resolved_attacker_families}
     for attacker_family in resolved_attacker_families:

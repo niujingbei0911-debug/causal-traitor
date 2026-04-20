@@ -125,6 +125,28 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.tools_used)
         self.assertTrue(result.reasoning_chain)
 
+    async def test_agent_b_does_not_treat_adjustment_variable_as_instrument_without_iv_cues(self):
+        agent = AgentB(self.config)
+        await agent.initialize()
+        result = await agent.analyze_claim(
+            claim="After controlling for Z, the causal effect of X on Y is identified.",
+            scenario=self.public_scenario,
+            level=2,
+        )
+
+        self.assertNotIn("iv_estimation", result.tools_used)
+
+    async def test_agent_b_does_not_flag_supportive_iv_claim_as_over_doubting_valid_instrument(self):
+        agent = AgentB(self.config)
+        await agent.initialize()
+        result = await agent.analyze_claim(
+            claim="Instrument Z identifies the causal effect of X on Y.",
+            scenario=self.public_scenario,
+            level=2,
+        )
+
+        self.assertNotIn("过度质疑有效工具变量", result.detected_fallacies)
+
     async def test_agent_b_propose_hypothesis_uses_public_description_focus_pair(self):
         agent = AgentB(self.config)
         self.public_scenario.description = (

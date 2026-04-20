@@ -31,6 +31,7 @@ STRENGTH_LEVELS: tuple[str, ...] = (
     "strong",
     "hidden_information_aware",
 )
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
@@ -143,7 +144,7 @@ def run_experiment(
         {
             split_name: {
                 strength_name: [
-                    float(per_strength_results[strength_name]["per_seed_results"][seed][split_name]["metrics"]["verdict_accuracy"])
+                    float(per_strength_results[strength_name]["per_seed_results"][seed][split_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                     for seed in sorted(resolved_seeds)
                 ]
                 for strength_name in STRENGTH_LEVELS
@@ -151,8 +152,8 @@ def run_experiment(
             for split_name in OOD_SPLITS
         },
         baseline="weak",
-        metric_name="verdict_accuracy",
-        estimand="seed_mean_verdict_accuracy",
+        metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+        estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
     )
 
     payload = {

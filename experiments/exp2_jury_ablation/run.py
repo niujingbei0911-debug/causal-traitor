@@ -108,11 +108,11 @@ async def run_experiment(
     payload: dict[str, Any] = {"conditions": {}}
     scorer = Scorer()
 
-    for jury_count in conditions:
+    for condition_index, jury_count in enumerate(conditions):
         label = f"jury_{jury_count}"
         results = await _run_condition(base_config, jury_count, rounds, level)
         for r in results:
-            tracker.log_round(r["round_number"], {"condition": label, **r})
+            tracker.log_round(condition_index * rounds + r["round_number"], {"condition": label, **r})
 
         score = scorer.score_game(
             {

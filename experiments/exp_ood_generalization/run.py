@@ -23,6 +23,7 @@ from experiments.benchmark_harness import (
 )
 
 SYSTEM_NAME = "countermodel_grounded"
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 PRIMARY_OOD_BUCKETS: tuple[tuple[str, str, dict[str, Any]], ...] = (
     (
         "graph_family_ood",
@@ -450,11 +451,11 @@ def run_experiment(
         }
         significance_inputs[bucket_name] = {
             "iid_reference": [
-                float(per_seed_reference_results[seed][bucket_name]["metrics"]["verdict_accuracy"])
+                float(per_seed_reference_results[seed][bucket_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                 for seed in bucket_seed_list
             ],
             bucket_name: [
-                float(per_seed_bucket_results[seed][bucket_name]["metrics"]["verdict_accuracy"])
+                float(per_seed_bucket_results[seed][bucket_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                 for seed in bucket_seed_list
             ],
         }
@@ -463,8 +464,8 @@ def run_experiment(
     significance, global_multiple_comparison_correction = build_seed_metric_significance(
         significance_inputs,
         baseline="iid_reference",
-        metric_name="verdict_accuracy",
-        estimand="seed_mean_verdict_accuracy",
+        metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+        estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
     ) if significance_inputs else ({}, {"family_size": 0, "alpha": 0.05, "correction": "holm-bonferroni", "entries": []})
     for bucket_name, _, _ in PRIMARY_OOD_BUCKETS:
         report = significance.setdefault(bucket_name, None)

@@ -103,10 +103,10 @@ async def run_experiment(
     payload: dict[str, Any] = {"conditions": {}}
     scorer = Scorer()
 
-    for condition in conditions:
+    for condition_index, condition in enumerate(conditions):
         results = await _run_condition(base_config, condition, rounds)
         for r in results:
-            tracker.log_round(r["round_number"], {"condition": condition, **r})
+            tracker.log_round(condition_index * rounds + r["round_number"], {"condition": condition, **r})
 
         score = scorer.score_game(
             {
@@ -166,7 +166,7 @@ async def run_experiment(
                     else {}
                 ),
             },
-            step=conditions.index(condition),
+            step=condition_index,
         )
 
     tracker.log_artifact("exp3_summary", payload, artifact_type="json")

@@ -30,6 +30,7 @@ SYSTEMS: tuple[str, ...] = (
     "no_abstention",
     "no_tools",
 )
+PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
@@ -130,7 +131,7 @@ def run_experiment(
         {
             split_name: {
                 system_name: [
-                    float(per_seed_results[seed][system_name][split_name]["metrics"]["verdict_accuracy"])
+                    float(per_seed_results[seed][system_name][split_name]["metrics"][PRIMARY_SIGNIFICANCE_METRIC])
                     for seed in sorted(resolved_seeds)
                 ]
                 for system_name in SYSTEMS
@@ -138,8 +139,8 @@ def run_experiment(
             for split_name in OOD_SPLITS
         },
         baseline=SYSTEMS[0],
-        metric_name="verdict_accuracy",
-        estimand="seed_mean_verdict_accuracy",
+        metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+        estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
     )
 
     payload = {

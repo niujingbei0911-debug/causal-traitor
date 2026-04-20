@@ -86,6 +86,15 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(result["significant"])
         self.assertAlmostEqual(result["pearson_r"], correlation_analysis(self.df, "X", "Y")["pearson_r"])
 
+        categorical_df = pd.DataFrame(
+            {
+                "x": ["A", "B", "C"] * 10,
+                "y": [1, 2, 3] * 10,
+            }
+        )
+        categorical_result = compute_correlation(categorical_df, "x", "y")
+        self.assertAlmostEqual(categorical_result["pearson_r"], 1.0, places=6)
+
         ci_df = pd.DataFrame(
             {
                 "U": self.df["U"],
