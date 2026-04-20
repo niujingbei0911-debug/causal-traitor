@@ -280,6 +280,37 @@ def run_experiment(
         per_seed_reference_counts[seed] = {}
         per_seed_bucket_counts[seed] = {}
         for bucket_name, expected_reason, split_kwargs in PRIMARY_OOD_BUCKETS:
+            if split_kwargs["paired_flip_holdout"] and resolved_samples_per_family < 3:
+                reference_run = build_seed_benchmark_run(
+                    seed=seed,
+                    difficulty=resolved_difficulty,
+                    samples_per_family=resolved_samples_per_family,
+                )
+                manifest_view = manifest_metadata(reference_run)
+                manifest_view["metadata"] = {
+                    **dict(manifest_view.get("metadata", {})),
+                    "unavailable_reason": "paired_flip_ood requires samples_per_family >= 3.",
+                }
+                manifests[bucket_name][seed] = manifest_view
+                reference_ood_reasons = dict(reference_run.manifest.metadata.get("ood_reasons", {}))
+                reference_evaluated = evaluate_system_on_samples(
+                    reference_run.split_samples["test_iid"],
+                    seed=seed,
+                    split_name="test_iid",
+                    system_name=SYSTEM_NAME,
+                    ood_reasons=reference_ood_reasons,
+                )
+                for record in reference_evaluated["predictions"]:
+                    record["bucket_name"] = bucket_name
+                    record["bucket_role"] = "iid_reference"
+                raw_predictions.extend(reference_evaluated["predictions"])
+                per_seed_reference_results[seed][bucket_name] = reference_evaluated
+                per_seed_reference_counts[seed][bucket_name] = len(reference_evaluated["predictions"])
+                per_seed_bucket_results[seed][bucket_name] = _empty_bucket_result(
+                    reason="paired_flip_ood requires samples_per_family >= 3."
+                )
+                per_seed_bucket_counts[seed][bucket_name] = 0
+                continue
             run = build_seed_benchmark_run(
                 seed=seed,
                 difficulty=resolved_difficulty,

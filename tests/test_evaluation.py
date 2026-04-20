@@ -14,6 +14,7 @@ from evaluation.significance import (
     mcnemar_test,
     paired_bootstrap_test,
 )
+from verifier.outputs import SelectiveVerifierOutput
 
 
 class EvaluationTests(unittest.TestCase):
@@ -277,13 +278,42 @@ class EvaluationTests(unittest.TestCase):
                     {
                         "round_id": 1,
                         "gold_label": "valid",
-                        "verifier_verdict": {"final_verdict": "valid", "confidence": 0.8},
+                        "verifier_verdict": {
+                            "final_verdict": "valid",
+                            "identification_status": "identified",
+                            "refusal_reason": None,
+                            "missing_information_spec": {},
+                            "confidence": 0.8,
+                        },
                     }
                 ],
             }
         )
 
         self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 1.0, places=4)
+
+    def test_score_game_accepts_structured_verdict_object_payload(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "structured-verdict-object",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_label": "valid",
+                        "verifier_verdict": SelectiveVerifierOutput(
+                            label="valid",
+                            identification_status="identified",
+                            refusal_reason=None,
+                            missing_information_spec={},
+                            confidence=0.8,
+                        ),
+                    }
+                ],
+            }
+        )
+
+        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 1.0, places=4)
+        self.assertAlmostEqual(score.round_scores[0].confidence, 0.8, places=4)
 
     def test_metrics_compute_all_accepts_final_verdict_nested_payload(self) -> None:
         lookup = {
@@ -293,7 +323,13 @@ class EvaluationTests(unittest.TestCase):
                     "rounds": [
                         {
                             "gold_label": "valid",
-                            "verifier_verdict": {"final_verdict": "valid", "confidence": 0.8},
+                            "verifier_verdict": {
+                                "final_verdict": "valid",
+                                "identification_status": "identified",
+                                "refusal_reason": None,
+                                "missing_information_spec": {},
+                                "confidence": 0.8,
+                            },
                         }
                     ]
                 }
@@ -301,6 +337,70 @@ class EvaluationTests(unittest.TestCase):
         }
 
         self.assertAlmostEqual(lookup["verdict_accuracy"].value, 1.0, places=4)
+
+    def test_metrics_compute_all_accepts_structured_verdict_object_payload(self) -> None:
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all(
+                {
+                    "rounds": [
+                        {
+                            "gold_label": "valid",
+                            "verifier_verdict": SelectiveVerifierOutput(
+                                label="valid",
+                                identification_status="identified",
+                                refusal_reason=None,
+                                missing_information_spec={},
+                                confidence=0.8,
+                            ),
+                        }
+                    ]
+                }
+            )
+        }
+
+        self.assertAlmostEqual(lookup["verdict_accuracy"].value, 1.0, places=4)
+
+    def test_score_game_rejects_structured_verdict_missing_phase1_fields(self) -> None:
+        with self.assertRaises(ValueError):
+            self.scorer.score_game(
+                {
+                    "game_id": "missing-phase1-fields",
+                    "rounds": [
+                        {
+                            "round_id": 1,
+                            "gold_label": "unidentifiable",
+                            "verifier_verdict": {"final_verdict": "unidentifiable"},
+                        }
+                    ],
+                }
+            )
+
+    def test_metrics_compute_all_rejects_structured_verdict_missing_phase1_fields(self) -> None:
+        with self.assertRaises(ValueError):
+            CausalMetrics.compute_all(
+                {
+                    "rounds": [
+                        {
+                            "gold_label": "unidentifiable",
+                            "verifier_verdict": {"final_verdict": "unidentifiable"},
+                        }
+                    ]
+                }
+            )
+
+    def test_score_game_rejects_round_without_any_prediction_payload(self) -> None:
+        with self.assertRaises(ValueError):
+            self.scorer.score_game(
+                {
+                    "game_id": "missing-verdict",
+                    "rounds": [{"round_id": 1, "gold_label": "valid"}],
+                }
+            )
+
+    def test_metrics_compute_all_rejects_round_without_any_prediction_payload(self) -> None:
+        with self.assertRaises(ValueError):
+            CausalMetrics.compute_all({"rounds": [{"gold_label": "valid"}]})
 
     def test_score_game_uses_explicit_verdict_probabilities_for_calibration_metrics(self) -> None:
         score = self.scorer.score_game(
@@ -419,6 +519,86 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
         self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
 
+    def test_score_game_emits_identification_stage_accuracy(self) -> None:
+        score = self.scorer.score_game(
+            {
+                "game_id": "identification-stage-accuracy",
+                "rounds": [
+                    {
+                        "round_id": 1,
+                        "gold_verdict": {
+                            "final_verdict": "valid",
+                            "identification_status": "identified",
+                        },
+                        "verifier_verdict": {
+                            "final_verdict": "valid",
+                            "identification_status": "identified",
+                            "refusal_reason": None,
+                            "missing_information_spec": {},
+                            "confidence": 0.8,
+                        },
+                    },
+                    {
+                        "round_id": 2,
+                        "gold_verdict": {
+                            "final_verdict": "invalid",
+                            "identification_status": "contradicted",
+                        },
+                        "verifier_verdict": {
+                            "final_verdict": "invalid",
+                            "identification_status": "identified",
+                            "refusal_reason": None,
+                            "missing_information_spec": {},
+                            "confidence": 0.7,
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertIn("identification_stage_accuracy", score.final_scores)
+        self.assertAlmostEqual(score.final_scores["identification_stage_accuracy"], 0.5, places=4)
+
+    def test_metrics_compute_all_emits_identification_stage_accuracy(self) -> None:
+        lookup = {
+            result.name: result
+            for result in CausalMetrics.compute_all(
+                {
+                    "rounds": [
+                        {
+                            "gold_verdict": {
+                                "final_verdict": "valid",
+                                "identification_status": "identified",
+                            },
+                            "verifier_verdict": {
+                                "final_verdict": "valid",
+                                "identification_status": "identified",
+                                "refusal_reason": None,
+                                "missing_information_spec": {},
+                                "confidence": 0.8,
+                            },
+                        },
+                        {
+                            "gold_verdict": {
+                                "final_verdict": "invalid",
+                                "identification_status": "contradicted",
+                            },
+                            "verifier_verdict": {
+                                "final_verdict": "invalid",
+                                "identification_status": "identified",
+                                "refusal_reason": None,
+                                "missing_information_spec": {},
+                                "confidence": 0.7,
+                            },
+                        },
+                    ]
+                }
+            )
+        }
+
+        self.assertIn("identification_stage_accuracy", lookup)
+        self.assertAlmostEqual(lookup["identification_stage_accuracy"].value, 0.5, places=4)
+
     def test_compute_weighted_score_does_not_double_count_over_commitment_rate(self) -> None:
         core_metrics = [
             MetricResult(
@@ -451,29 +631,27 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertAlmostEqual(self.scorer.compute_weighted_score(core_metrics), 1.0, places=4)
 
-    def test_score_game_counts_missing_predictions_as_scored_failures(self) -> None:
-        score = self.scorer.score_game(
-            {
-                "game_id": "missing-verdicts",
-                "rounds": [
-                    {
-                        "round_id": 1,
-                        "gold_label": "valid",
-                        "verdict_label": "valid",
-                        "verifier_confidence": 0.8,
-                    },
-                    {
-                        "round_id": 2,
-                        "gold_label": "invalid",
-                        "verdict_label": None,
-                        "verifier_confidence": 0.0,
-                    },
-                ],
-            }
-        )
-
-        self.assertEqual(score.summary["scored_rounds"], 2)
-        self.assertAlmostEqual(score.final_scores["verdict_accuracy"], 0.5, places=4)
+    def test_score_game_treats_missing_round_predictions_as_contract_failures(self) -> None:
+        with self.assertRaises(ValueError):
+            self.scorer.score_game(
+                {
+                    "game_id": "missing-verdicts",
+                    "rounds": [
+                        {
+                            "round_id": 1,
+                            "gold_label": "valid",
+                            "verdict_label": "valid",
+                            "verifier_confidence": 0.8,
+                        },
+                        {
+                            "round_id": 2,
+                            "gold_label": "invalid",
+                            "verdict_label": None,
+                            "verifier_confidence": 0.0,
+                        },
+                    ],
+                }
+            )
 
     def test_score_game_array_mode_counts_missing_predictions_as_failures(self) -> None:
         score = self.scorer.score_game(

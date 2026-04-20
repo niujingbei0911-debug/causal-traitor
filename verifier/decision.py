@@ -342,12 +342,14 @@ def _make_abstention_gate_witness(
     *,
     reasons: list[str],
     primary_supported_assumptions: set[str],
+    identifying_assumptions: list[str] | None = None,
 ) -> Witness:
-    identifying_assumptions = [
-        entry.name
-        for entry in ledger.entries
-        if entry.name not in _BASELINE_ASSUMPTIONS
-    ]
+    if identifying_assumptions is None:
+        identifying_assumptions = [
+            entry.name
+            for entry in ledger.entries
+            if entry.name not in _BASELINE_ASSUMPTIONS
+        ]
     evidence = list(reasons)
     if primary_supported_assumptions:
         evidence.extend(
@@ -403,7 +405,36 @@ def _query_disagreement_missing_information(
     )
 
 
+def _fallback_identifying_assumptions(parsed_claim: ParsedClaim) -> list[str]:
+    explicit_non_baseline = _normalize_assumption_names(
+        [
+            *list(parsed_claim.mentioned_assumptions),
+            *list(parsed_claim.implied_assumptions),
+        ]
+    )
+    explicit_non_baseline = [
+        assumption
+        for assumption in explicit_non_baseline
+        if assumption not in _BASELINE_ASSUMPTIONS
+    ]
+    if explicit_non_baseline:
+        return explicit_non_baseline
+
+    if parsed_claim.rhetorical_strategy == "instrumental_variable_appeal":
+        return ["instrument relevance", "exclusion restriction", "instrument independence"]
+    if parsed_claim.rhetorical_strategy == "adjustment_sufficiency_assertion":
+        return ["valid adjustment set", "no unobserved confounding"]
+    if parsed_claim.query_type.value == "counterfactual":
+        return ["cross-world consistency", "counterfactual model uniqueness"]
+    if parsed_claim.query_type.value == "intervention":
+        return ["no unobserved confounding"]
+    if parsed_claim.query_type.value == "association" and parsed_claim.claim_polarity.value == "positive":
+        return ["no unobserved confounding"]
+    return []
+
+
 def _unsupported_missing_information(
+    parsed_claim: ParsedClaim,
     *,
     unsupported: list[AssumptionLedgerEntry],
     tools_support_claim: bool,
@@ -411,19 +442,20 @@ def _unsupported_missing_information(
     supported_identifying: list[AssumptionLedgerEntry],
 ) -> MissingInformationSpec:
     missing_assumptions = [entry.name for entry in unsupported]
+    if needs_explicit_identifying_support and not supported_identifying:
+        for assumption in _fallback_identifying_assumptions(parsed_claim):
+            if assumption not in missing_assumptions:
+                missing_assumptions.append(assumption)
+
     required_evidence = [
-        f"public evidence directly supporting {entry.name}"
-        for entry in unsupported
+        f"public evidence directly supporting {assumption}"
+        for assumption in missing_assumptions
     ]
-    if not required_evidence and not tools_support_claim:
+    if not missing_assumptions and not tools_support_claim:
         required_evidence.append(
             "public evidence directly supporting the claim's identifying assumptions"
         )
-    if (
-        not required_evidence
-        and needs_explicit_identifying_support
-        and not supported_identifying
-    ):
+    if not missing_assumptions and needs_explicit_identifying_support and not supported_identifying:
         required_evidence.append(
             "public evidence directly supporting at least one non-baseline identifying assumption"
         )
@@ -435,6 +467,7 @@ def _unsupported_missing_information(
 
 def _abstention_gate_missing_information(
     *,
+    parsed_claim: ParsedClaim,
     ledger: AssumptionLedger,
     reasons: list[str],
 ) -> MissingInformationSpec:
@@ -454,6 +487,10 @@ def _abstention_gate_missing_information(
             if entry.name not in _BASELINE_ASSUMPTIONS
             and entry.status is not AssumptionStatus.SUPPORTED
         ]
+    if not any(assumption not in _BASELINE_ASSUMPTIONS for assumption in missing_assumptions):
+        for assumption in _fallback_identifying_assumptions(parsed_claim):
+            if assumption not in missing_assumptions:
+                missing_assumptions.append(assumption)
     return MissingInformationSpec(
         missing_assumptions=missing_assumptions,
         required_evidence=list(reasons),
@@ -498,7 +535,9 @@ def _make_assumption_witness(
     verdict: VerdictLabel = VerdictLabel.UNIDENTIFIABLE,
     description: str | None = None,
     stage: str = "assumption_gate",
+    highlighted_assumptions: list[str] | None = None,
 ) -> Witness:
+    highlighted_names = _normalize_assumption_names(highlighted_assumptions)
     targeted_entries = (
         _contradicted_assumptions(ledger)
         if verdict is VerdictLabel.INVALID
@@ -509,15 +548,27 @@ def _make_assumption_witness(
         if verdict is VerdictLabel.INVALID
         else "Core identification assumptions remain unsupported after countermodel-free review, so the claim stays under-identified."
     )
-    evidence = [
-        f"{entry.name}: {entry.status.value} ({entry.source})."
-        for entry in targeted_entries[:4]
-    ]
+    if highlighted_names:
+        ledger_by_name = ledger.by_name()
+        assumptions = highlighted_names
+        evidence: list[str] = []
+        for assumption in highlighted_names[:4]:
+            entry = ledger_by_name.get(assumption)
+            if entry is None:
+                evidence.append(f"{assumption}: missing direct identifying support.")
+                continue
+            evidence.append(f"{entry.name}: {entry.status.value} ({entry.source}).")
+    else:
+        assumptions = [entry.name for entry in targeted_entries]
+        evidence = [
+            f"{entry.name}: {entry.status.value} ({entry.source})."
+            for entry in targeted_entries[:4]
+        ]
     return Witness(
         witness_type=WitnessKind.ASSUMPTION,
         description=resolved_description,
         evidence=evidence,
-        assumptions=[entry.name for entry in targeted_entries],
+        assumptions=assumptions,
         payload={
             "assumption_ledger": [entry.to_dict() for entry in ledger.entries],
             "supported_count": ledger.supported_count,
@@ -784,7 +835,17 @@ def decide_verdict(
     if unsupported or not tools_support_claim or (
         needs_explicit_identifying_support and not supported_identifying
     ):
-        witness = _make_assumption_witness(adjudicated_ledger)
+        missing_information_spec = _unsupported_missing_information(
+            parsed_claim,
+            unsupported=unsupported,
+            tools_support_claim=tools_support_claim,
+            needs_explicit_identifying_support=needs_explicit_identifying_support,
+            supported_identifying=supported_identifying,
+        )
+        witness = _make_assumption_witness(
+            adjudicated_ledger,
+            highlighted_assumptions=missing_information_spec.missing_assumptions,
+        )
         confidence = 0.62 if unsupported else 0.58
         unsupported_ratio = _score_ratio(len(unsupported), len(adjudicated_ledger.entries))
         supported_ratio = _score_ratio(len(supported_identifying), len(adjudicated_ledger.entries))
@@ -794,12 +855,7 @@ def decide_verdict(
             assumption_ledger=adjudicated_ledger,
             identification_status=IdentificationStatus.UNDERDETERMINED,
             refusal_reason="missing_identifying_support",
-            missing_information_spec=_unsupported_missing_information(
-                unsupported=unsupported,
-                tools_support_claim=tools_support_claim,
-                needs_explicit_identifying_support=needs_explicit_identifying_support,
-                supported_identifying=supported_identifying,
-            ),
+            missing_information_spec=missing_information_spec,
             probabilities=_probabilities_from_scores(
                 valid_score=0.08 + (0.2 * supported_ratio),
                 invalid_score=0.08 + (0.18 * _score_ratio(len(contradicted), len(adjudicated_ledger.entries))),
@@ -830,10 +886,16 @@ def decide_verdict(
     )
     primary_supported_assumptions = _primary_supported_assumptions(normalized_tool_trace)
     if abstention_reasons:
+        missing_information_spec = _abstention_gate_missing_information(
+            parsed_claim=parsed_claim,
+            ledger=adjudicated_ledger,
+            reasons=abstention_reasons,
+        )
         witness = _make_abstention_gate_witness(
             adjudicated_ledger,
             reasons=abstention_reasons,
             primary_supported_assumptions=primary_supported_assumptions,
+            identifying_assumptions=missing_information_spec.missing_assumptions,
         )
         confidence = max(0.58, min(support_confidence - 0.08, 0.78))
         supported_ratio = _score_ratio(len(supported_identifying), len(adjudicated_ledger.entries))
@@ -843,10 +905,7 @@ def decide_verdict(
             assumption_ledger=adjudicated_ledger,
             identification_status=IdentificationStatus.UNDERDETERMINED,
             refusal_reason="missing_primary_identifying_support",
-            missing_information_spec=_abstention_gate_missing_information(
-                ledger=adjudicated_ledger,
-                reasons=abstention_reasons,
-            ),
+            missing_information_spec=missing_information_spec,
             probabilities=_probabilities_from_scores(
                 valid_score=0.08 + (0.14 * supported_ratio),
                 invalid_score=0.08 + (0.14 * _score_ratio(len(contradicted), len(adjudicated_ledger.entries))),

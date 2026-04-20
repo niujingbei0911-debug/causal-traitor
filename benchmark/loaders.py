@@ -31,7 +31,9 @@ def _normalize_instances(
     instances: list[ClaimInstance | dict[str, Any]],
 ) -> list[ClaimInstance]:
     return [
-        item if isinstance(item, ClaimInstance) else ClaimInstance.from_dict(dict(item))
+        ClaimInstance.from_dict(item.to_dict())
+        if isinstance(item, ClaimInstance)
+        else ClaimInstance.from_dict(dict(item))
         for item in instances
     ]
 
@@ -75,6 +77,8 @@ def load_split_instances(
                 raise KeyError(
                     f"Manifest references unknown instance_id {instance_id!r} in split {split_name!r}."
                 ) from exc
+            instance.meta.pop("ood_split", None)
+            instance.meta.pop("ood_reasons", None)
             instance.meta["ood_split"] = split_name
             if instance_id in ood_reasons:
                 instance.meta["ood_reasons"] = list(ood_reasons[instance_id])

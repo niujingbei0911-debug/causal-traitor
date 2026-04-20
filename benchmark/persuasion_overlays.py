@@ -191,6 +191,12 @@ def list_persuasion_overlays() -> list[str]:
     return list(PERSUASION_STYLE_SPACE)
 
 
+def normalize_persuasion_style_id(persuasion_style_id: str | None) -> str:
+    """Validate and normalize one persuasion style id, including ``"none"``."""
+
+    return _normalize_persuasion_style(persuasion_style_id)
+
+
 def get_persuasion_overlay(persuasion_style_id: str) -> PersuasionOverlay:
     """Return one persuasion overlay profile by id."""
 

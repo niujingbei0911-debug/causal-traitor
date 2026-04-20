@@ -181,6 +181,20 @@ class ClaimParserTests(unittest.TestCase):
         self.assertEqual(parsed.claim_polarity, ClaimPolarity.NEGATIVE)
         self.assertEqual(parsed.rhetorical_strategy, "instrumental_variable_appeal")
 
+    def test_parser_handles_english_negative_causal_claim_phrasing(self) -> None:
+        for claim_text in (
+            "exposure does not affect recovery.",
+            "exposure does not causally affect recovery.",
+        ):
+            with self.subTest(claim_text=claim_text):
+                parsed = self.parser.parse(claim_text)
+
+                self.assertEqual(parsed.query_type, QueryType.INTERVENTION)
+                self.assertEqual(parsed.treatment, "exposure")
+                self.assertEqual(parsed.outcome, "recovery")
+                self.assertEqual(parsed.claim_polarity, ClaimPolarity.NEGATIVE)
+                self.assertEqual(parsed.claim_strength, ClaimStrength.STRONG)
+
     def test_parser_covers_l3_counterfactual_example(self) -> None:
         parsed = self.parser.parse(
             "For an individual with the same observed history, switching therapy_flag would definitely change recovery, so the unit-level counterfactual is uniquely identified.",
@@ -208,6 +222,27 @@ class ClaimParserTests(unittest.TestCase):
 
         self.assertEqual(parsed.query_type, QueryType.COUNTERFACTUAL)
         self.assertEqual(parsed.rhetorical_strategy, "counterfactual_certainty")
+
+    def test_parser_emits_structured_abstention_risk_cues(self) -> None:
+        iv_claim = self.parser.parse(
+            "Using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+        )
+        counterfactual_claim = self.parser.parse(
+            "For an individual with the same observed history, switching therapy_flag would definitely change recovery, so the unit-level counterfactual is uniquely identified."
+        )
+
+        self.assertTrue(iv_claim.needs_abstention_check)
+        self.assertIn("instrumental_variable_appeal", iv_claim.abstention_risk_cues)
+        self.assertIn(
+            "high_risk_assumption:exclusion restriction",
+            iv_claim.abstention_risk_cues,
+        )
+
+        self.assertTrue(counterfactual_claim.needs_abstention_check)
+        self.assertIn("counterfactual_query", counterfactual_claim.abstention_risk_cues)
+        self.assertIn("absolute_claim", counterfactual_claim.abstention_risk_cues)
+        self.assertIn("false_uniqueness", counterfactual_claim.abstention_risk_cues)
+        self.assertIn("abstention_risk_cues", counterfactual_claim.to_dict())
 
     def test_parser_uses_transcript_to_add_risk_cues_without_changing_focus_pair(self) -> None:
         claim_only = parse_claim("X causes Y.")
@@ -676,6 +711,28 @@ class CountermodelSearchTests(unittest.TestCase):
         self.assertTrue(payload["candidate_pool"])
         json.dumps(payload)
 
+    def test_countermodel_search_result_to_dict_includes_triggered_assumptions(self) -> None:
+        parsed = self.parser.parse(
+            "assignment_lottery affects recovery only through exposure, so using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+        )
+        ledger = build_assumption_ledger(parsed)
+        result = search_countermodels(
+            parsed,
+            ledger,
+            context={
+                "claim_text": "assignment_lottery affects recovery only through exposure, so using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+            },
+        )
+
+        payload = result.to_dict()
+        selected_candidate = result.selected_candidate()
+
+        self.assertIn("triggered_assumptions", payload)
+        self.assertEqual(
+            payload["triggered_assumptions"],
+            list(selected_candidate.triggered_assumptions) if selected_candidate is not None else [],
+        )
+
     def test_l2_search_supports_proxy_based_alternative_explanation(self) -> None:
         parsed = ParsedClaim(
             query_type="intervention",
@@ -877,8 +934,11 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(
             decision.missing_information_spec.to_dict(),
             {
-                "missing_assumptions": ["positivity"],
-                "required_evidence": ["public evidence directly supporting positivity"],
+                "missing_assumptions": ["positivity", "no unobserved confounding"],
+                "required_evidence": [
+                    "public evidence directly supporting positivity",
+                    "public evidence directly supporting no unobserved confounding",
+                ],
                 "note": decision.reasoning_summary,
             },
         )
@@ -901,6 +961,19 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(decision.label, VerdictLabel.UNIDENTIFIABLE)
         self.assertTrue(decision.metadata["support_stage_entered"])
         self.assertEqual(decision.witness.witness_type, WitnessKind.ASSUMPTION)
+        self.assertEqual(decision.witness.assumptions, ["no unobserved confounding"])
+        self.assertEqual(
+            decision.witness.evidence,
+            ["no unobserved confounding: missing direct identifying support."],
+        )
+        self.assertEqual(
+            decision.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": ["no unobserved confounding"],
+                "required_evidence": ["public evidence directly supporting no unobserved confounding"],
+                "note": decision.reasoning_summary,
+            },
+        )
 
     def test_stage_4_supportive_tools_return_valid_for_identifiable_l2_claim(self) -> None:
         parsed = parse_claim("After controlling for pretest_score, the causal effect of exposure on recovery is identified.")
@@ -983,11 +1056,6 @@ class DecisionRuleTests(unittest.TestCase):
 
         selective_output = SelectiveVerifierOutput.from_decision_payload(decision.to_dict())
         payload = selective_output.to_dict()
-        unresolved_assumptions = sorted(
-            entry.name
-            for entry in decision.assumption_ledger.entries
-            if entry.status.value == "unresolved"
-        )
 
         self.assertEqual(payload["label"], "unidentifiable")
         self.assertEqual(payload["identification_status"], "underdetermined")
@@ -996,8 +1064,11 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(
             payload["missing_information_spec"],
             {
-                "missing_assumptions": unresolved_assumptions,
-                "required_evidence": ["public evidence directly supporting positivity"],
+                "missing_assumptions": ["positivity", "no unobserved confounding"],
+                "required_evidence": [
+                    "public evidence directly supporting positivity",
+                    "public evidence directly supporting no unobserved confounding",
+                ],
                 "note": decision.reasoning_summary,
             },
         )

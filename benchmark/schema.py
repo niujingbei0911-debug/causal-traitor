@@ -271,6 +271,20 @@ def _normalize_public_text(value: Any) -> str | None:
     return normalized or None
 
 
+_SEMANTIC_PUBLIC_LEAK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:gold|oracle|ground[-\s]?truth|true|correct)\s+(?:label|verdict|answer)\b", re.IGNORECASE),
+    re.compile(r"\b(?:should|must|ought\s+to)\s+(?:really\s+)?be\s+(?:valid|invalid|unidentifiable)\b", re.IGNORECASE),
+    re.compile(r"\b(?:hidden|latent|unobserved)\s*[-\s]?(?:confounder|common cause|variable)\b", re.IGNORECASE),
+)
+
+
+def _looks_like_public_leak(text: str) -> bool:
+    normalized = str(text).strip()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _SEMANTIC_PUBLIC_LEAK_PATTERNS)
+
+
 def _mentions_forbidden_token(text: str, *, forbidden_tokens: list[str] | tuple[str, ...]) -> bool:
     for raw_token in forbidden_tokens:
         token = str(raw_token).strip()
@@ -289,6 +303,8 @@ def _sanitize_public_text(
 ) -> str | None:
     normalized = _normalize_public_text(value)
     if normalized is None:
+        return None
+    if _looks_like_public_leak(normalized):
         return None
     if forbidden_tokens and _mentions_forbidden_token(normalized, forbidden_tokens=forbidden_tokens):
         return None
@@ -404,7 +420,12 @@ def _sanitize_public_metadata_value(
             observed_variables=observed_variables,
             forbidden_tokens=forbidden_tokens,
         )
-    return _serialize_json_safe(value)
+    return _sanitize_metadata(
+        value,
+        root=False,
+        observed_variables=observed_variables,
+        forbidden_tokens=forbidden_tokens,
+    )
 
 
 def _sanitize_metadata(
@@ -431,37 +452,47 @@ def _sanitize_metadata(
                     continue
                 sanitized[key] = cleaned
             return sanitized
-        return {
-            key: _sanitize_metadata(
+        sanitized = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key in _SANITIZED_METADATA_KEYS:
+                continue
+            cleaned = _sanitize_metadata(
                 item,
                 observed_variables=observed_variables,
                 forbidden_tokens=forbidden_tokens,
             )
-            for raw_key, item in value.items()
-            for key in (str(raw_key),)
-            if key not in _SANITIZED_METADATA_KEYS
-        }
+            if cleaned is None:
+                continue
+            sanitized[key] = cleaned
+        return sanitized
     if isinstance(value, list):
-        return [
-            _sanitize_metadata(
+        sanitized_items: list[Any] = []
+        for item in value:
+            cleaned = _sanitize_metadata(
                 item,
                 root=False,
                 observed_variables=observed_variables,
                 forbidden_tokens=forbidden_tokens,
             )
-            for item in value
-        ]
+            if cleaned is not None:
+                sanitized_items.append(cleaned)
+        return sanitized_items
     if isinstance(value, tuple):
-        return tuple(
-            _sanitize_metadata(
+        sanitized_items: list[Any] = []
+        for item in value:
+            cleaned = _sanitize_metadata(
                 item,
                 root=False,
                 observed_variables=observed_variables,
                 forbidden_tokens=forbidden_tokens,
             )
-            for item in value
-        )
-    return value
+            if cleaned is not None:
+                sanitized_items.append(cleaned)
+        return tuple(sanitized_items)
+    if isinstance(value, str):
+        return _sanitize_public_text(value, forbidden_tokens=forbidden_tokens)
+    return _serialize_json_safe(value)
 
 
 def _sanitize_difficulty_config(value: Any) -> dict[str, Any]:
@@ -908,13 +939,19 @@ class PublicCausalInstance:
         self.instrument_variables = []
         self.mediator_variables = []
         self.selection_variables = []
-        self.selection_mechanism = _coerce_optional_string(
+        self.selection_mechanism = _sanitize_public_text(
             self.selection_mechanism
             if self.selection_mechanism is not None
             else metadata.pop("selection_mechanism", None)
         )
         self.observed_data = observed
         self.data = _copy_frame(observed)
+        self.description = _sanitize_public_text(self.description) or _public_description(
+            observed_variables=list(self.variables),
+            treatment=None,
+            outcome=None,
+            causal_level=self.causal_level,
+        )
         self.difficulty = 0.5
         self.difficulty_config = {}
         self.metadata = dict(

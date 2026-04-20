@@ -299,8 +299,10 @@ class RealGroundedDataset:
 
 
 def ensure_real_grounded_dataset(
-    value: RealGroundedDataset | dict[str, Any] | list[dict[str, Any]] | list[RealGroundedCase],
+    value: RealGroundedCase | RealGroundedDataset | dict[str, Any] | list[dict[str, Any]] | list[RealGroundedCase],
 ) -> RealGroundedDataset:
+    if isinstance(value, RealGroundedCase):
+        return RealGroundedDataset(cases=[value])
     if isinstance(value, RealGroundedDataset):
         return RealGroundedDataset.from_dict(value.to_dict())
     if isinstance(value, dict):

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 VERDICT_LABEL_SPACE: tuple[str, ...] = ("valid", "invalid", "unidentifiable")
+IDENTIFICATION_STATUS_SPACE: tuple[str, ...] = ("identified", "contradicted", "underdetermined")
 
 
 def _safe_rate(numerator: float, denominator: float) -> float:
@@ -34,10 +35,58 @@ def _normalize_verdict_label(value: Any) -> str | None:
     return None
 
 
-def _nested_value(mapping: Any, key: str) -> Any:
-    if isinstance(mapping, dict):
-        return mapping.get(key)
+def _normalize_identification_status(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in IDENTIFICATION_STATUS_SPACE:
+        return normalized
     return None
+
+
+def _payload_mapping(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        serialized = value.to_dict()
+        if isinstance(serialized, dict):
+            return serialized
+    return None
+
+
+def _payload_has_key(value: Any, key: str) -> bool:
+    mapping = _payload_mapping(value)
+    if mapping is not None:
+        return key in mapping
+    return hasattr(value, key)
+
+
+def _nested_value(mapping: Any, key: str) -> Any:
+    payload = _payload_mapping(mapping)
+    if payload is not None:
+        return payload.get(key)
+    if hasattr(mapping, key):
+        return getattr(mapping, key)
+    return None
+
+
+def _prediction_payload(round_data: dict[str, Any]) -> tuple[Any, str | None]:
+    for key in ("verifier_verdict", "verdict"):
+        payload = round_data.get(key)
+        if payload is not None:
+            return payload, key
+    return None, None
+
+
+def _default_identification_status_for_label(label: str | None) -> str | None:
+    mapping = {
+        "valid": "identified",
+        "invalid": "contradicted",
+        "unidentifiable": "underdetermined",
+    }
+    return mapping.get(label)
 
 
 def _extract_round_predicted_label(round_data: dict[str, Any]) -> str | None:
@@ -97,6 +146,74 @@ def _extract_round_probabilities(round_data: dict[str, Any]) -> Any:
         if candidate is not None:
             return candidate
     return None
+
+
+def _extract_round_identification_status(round_data: dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("identification_status"),
+        _nested_value(round_data.get("verdict"), "identification_status"),
+        _nested_value(round_data.get("verifier_verdict"), "identification_status"),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_identification_status(candidate)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _extract_round_gold_identification_status(round_data: dict[str, Any]) -> str | None:
+    candidates = [
+        round_data.get("gold_identification_status"),
+        _nested_value(round_data.get("ground_truth"), "identification_status"),
+        _nested_value(round_data.get("gold_verdict"), "identification_status"),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_identification_status(candidate)
+        if normalized is not None:
+            return normalized
+    return _default_identification_status_for_label(_extract_round_gold_label(round_data))
+
+
+def _structured_verdict_contract_errors(round_data: dict[str, Any]) -> list[str]:
+    if _extract_round_gold_label(round_data) is None:
+        return []
+
+    payload, payload_key = _prediction_payload(round_data)
+    predicted_label = _extract_round_predicted_label(round_data)
+    if payload is None:
+        if predicted_label is None:
+            return ["missing prediction payload"]
+        return []
+
+    errors: list[str] = []
+    if not (_payload_has_key(payload, "label") or _payload_has_key(payload, "final_verdict")):
+        errors.append(f"{payload_key} missing label/final_verdict")
+    elif predicted_label is None:
+        errors.append(f"{payload_key} has unparseable label/final_verdict")
+
+    for key in ("identification_status", "refusal_reason", "missing_information_spec"):
+        if not _payload_has_key(payload, key):
+            errors.append(f"{payload_key} missing {key}")
+
+    if _payload_has_key(payload, "identification_status") and _extract_round_identification_status(round_data) is None:
+        errors.append(f"{payload_key} has invalid identification_status")
+
+    if _payload_has_key(payload, "missing_information_spec") and _nested_value(payload, "missing_information_spec") is None:
+        errors.append(f"{payload_key} has null missing_information_spec")
+
+    return errors
+
+
+def validate_round_contracts(rounds: Sequence[dict[str, Any]]) -> None:
+    violations: list[str] = []
+    for index, round_data in enumerate(rounds, start=1):
+        errors = _structured_verdict_contract_errors(round_data)
+        if not errors:
+            continue
+        round_id = round_data.get("round_id", index)
+        violations.append(f"round {round_id}: {', '.join(errors)}")
+    if violations:
+        raise ValueError("Phase 1 evaluation contract violation(s): " + "; ".join(violations))
 
 
 def _is_committed_label(value: str | None) -> bool:
@@ -660,6 +777,40 @@ class CausalMetrics:
         )
 
     @classmethod
+    def identification_stage_accuracy(
+        cls,
+        gold_statuses: Sequence[Any],
+        predicted_statuses: Sequence[Any],
+    ) -> MetricResult:
+        gold = list(gold_statuses)
+        predicted = list(predicted_statuses)
+        pairs: list[tuple[str, str | None]] = []
+        for index, gold_status in enumerate(gold):
+            normalized_gold = _normalize_identification_status(gold_status)
+            if normalized_gold is None:
+                continue
+            normalized_pred = _normalize_identification_status(
+                predicted[index] if index < len(predicted) else None
+            )
+            pairs.append((normalized_gold, normalized_pred))
+
+        if not pairs:
+            return cls._metric(
+                "identification_stage_accuracy",
+                0.0,
+                category="method",
+                details={"n": 0, "correct": 0},
+            )
+
+        correct = sum(1 for gold_status, pred_status in pairs if pred_status is not None and pred_status == gold_status)
+        return cls._metric(
+            "identification_stage_accuracy",
+            _safe_rate(correct, len(pairs)),
+            category="method",
+            details={"n": len(pairs), "correct": correct},
+        )
+
+    @classmethod
     def jury_accuracy_metric(cls, accuracy: float) -> MetricResult:
         return cls._metric(
             "jury_accuracy",
@@ -1044,8 +1195,11 @@ class CausalMetrics:
         countermodel_hits = list(game_data.get("countermodel_hits", []))
         countermodel_applicable = list(game_data.get("countermodel_applicable", []))
         predicted_probabilities = list(game_data.get("predicted_probabilities", []))
+        gold_identification_statuses: list[str | None] = []
+        predicted_identification_statuses: list[str | None] = []
 
         if rounds:
+            validate_round_contracts(rounds)
             gold_labels = []
             predicted_labels = []
             confidences = []
@@ -1053,8 +1207,6 @@ class CausalMetrics:
             countermodel_applicable = []
             predicted_probabilities = []
             for round_data in rounds:
-                verifier_verdict = round_data.get("verifier_verdict")
-                verifier_payload = verifier_verdict if isinstance(verifier_verdict, dict) else {}
                 gold_labels.append(_extract_round_gold_label(round_data))
                 predicted_labels.append(_extract_round_predicted_label(round_data))
                 confidences.append(_extract_round_confidence(round_data))
@@ -1062,13 +1214,18 @@ class CausalMetrics:
                 countermodel_hits.append(
                     bool(round_data.get("countermodel_found"))
                     or bool(round_data.get("countermodel_witness"))
-                    or bool(verifier_payload.get("countermodel_witness"))
+                    or bool(_nested_value(round_data.get("verifier_verdict"), "countermodel_witness"))
+                    or bool(_nested_value(round_data.get("verdict"), "countermodel_witness"))
                 )
                 countermodel_applicable.append(
                     round_data.get("countermodel_applicable")
                     if "countermodel_applicable" in round_data
                     else _extract_round_gold_label(round_data) in {"invalid", "unidentifiable"}
                 )
+                payload, _ = _prediction_payload(round_data)
+                if payload is not None:
+                    gold_identification_statuses.append(_extract_round_gold_identification_status(round_data))
+                    predicted_identification_statuses.append(_extract_round_identification_status(round_data))
 
         if gold_labels:
             results.extend(
@@ -1094,6 +1251,13 @@ class CausalMetrics:
                     ),
                     cls.countermodel_coverage(countermodel_hits, countermodel_applicable),
                 ]
+            )
+        if gold_identification_statuses:
+            results.append(
+                cls.identification_stage_accuracy(
+                    gold_identification_statuses,
+                    predicted_identification_statuses,
+                )
             )
 
         if rounds:

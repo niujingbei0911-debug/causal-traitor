@@ -613,6 +613,12 @@ class CountermodelSearchResult:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        selected_candidate = self.selected_candidate()
+        triggered_assumptions = (
+            list(selected_candidate.triggered_assumptions)
+            if selected_candidate is not None
+            else []
+        )
         return {
             "found_countermodel": self.found_countermodel,
             "countermodel_type": self.countermodel_type,
@@ -620,6 +626,7 @@ class CountermodelSearchResult:
             "query_disagreement": self.query_disagreement,
             "countermodel_explanation": self.countermodel_explanation,
             "verdict_suggestion": self.verdict_suggestion,
+            "triggered_assumptions": triggered_assumptions,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "used_observed_data": self.used_observed_data,
         }

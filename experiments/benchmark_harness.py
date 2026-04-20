@@ -426,30 +426,39 @@ def build_seed_benchmark_run(
     samples: list[BenchmarkSample] = []
     sample_index = 0
     for family_name in families:
-        for sample_slot in range(resolved_samples_per_family):
+        sample_slot = 0
+        attempts = 0
+        max_attempts = max(8, resolved_samples_per_family * 24)
+        while sample_slot < resolved_samples_per_family:
             sample_seed = _stable_sample_seed(seed, family_name, sample_index)
-            if paired_flip_holdout and sample_slot == 0:
-                anchor, flipped = generator.generate_paired_flip_samples(
-                    family_name=family_name,
-                    difficulty=resolved_difficulty,
-                    seed=sample_seed,
-                )
-                samples.extend([anchor, flipped])
-                samples.append(
-                    generator.generate_benchmark_sample(
-                        family_name=family_name,
-                        difficulty=resolved_difficulty,
-                        seed=sample_seed + 17,
-                    )
-                )
-            else:
-                samples.append(
-                    generator.generate_benchmark_sample(
+            try:
+                if paired_flip_holdout and sample_slot == 0 and resolved_samples_per_family - sample_slot >= 3:
+                    anchor, flipped = generator.generate_paired_flip_samples(
                         family_name=family_name,
                         difficulty=resolved_difficulty,
                         seed=sample_seed,
                     )
-                )
+                    samples.extend([anchor, flipped])
+                    sample_slot += 2
+                else:
+                    samples.append(
+                        generator.generate_benchmark_sample(
+                            family_name=family_name,
+                            difficulty=resolved_difficulty,
+                            seed=sample_seed,
+                        )
+                    )
+                    sample_slot += 1
+            except ValueError as exc:
+                attempts += 1
+                sample_index += 1
+                if attempts >= max_attempts:
+                    raise ValueError(
+                        "Unable to build a benchmark run with enough samples for "
+                        f"family={family_name!r}, seed={seed}, samples_per_family={resolved_samples_per_family}."
+                    ) from exc
+                continue
+            attempts = 0
             sample_index += 1
 
     manifest = build_benchmark_splits(

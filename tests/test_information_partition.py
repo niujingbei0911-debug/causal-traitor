@@ -539,6 +539,57 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertNotIn("U", public.metadata.get("measurement_semantics", {}))
         self.assertNotIn("U", json.dumps(public.to_dict(), ensure_ascii=False))
 
+    def test_gold_to_public_drops_semantic_oracle_description_hints(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="semantic_oracle_description_case",
+            description="Gold-only description should never leak.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+            ground_truth={"treatment": "X", "outcome": "Y"},
+            metadata={
+                "public_description": "The gold label should really be invalid here.",
+            },
+        )
+
+        public = gold.to_public()
+
+        self.assertNotEqual(public.description, gold.metadata["public_description"])
+        self.assertNotIn("gold label", public.description.lower())
+        self.assertIn("public evidence", public.description.lower())
+
+    def test_gold_to_public_drops_semantic_hidden_confounder_metadata_hints(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="semantic_hidden_metadata_case",
+            description="Gold-only metadata should never leak hidden confounder cues.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+            metadata={
+                "measurement_semantics": {
+                    "X": {"measurement_view": "captures hidden-confounder signal"},
+                    "Y": {"measurement_view": "observed outcome"},
+                },
+            },
+        )
+
+        public = gold.to_public()
+
+        self.assertNotIn("X", public.metadata.get("measurement_semantics", {}))
+        self.assertEqual(
+            public.metadata.get("measurement_semantics", {}).get("Y"),
+            {"measurement_view": "observed outcome"},
+        )
+        self.assertNotIn("hidden-confounder", json.dumps(public.to_dict(), ensure_ascii=False))
+
     def test_public_metadata_sanitizer_strips_nested_supervision_fields_from_allowed_roots(self) -> None:
         gold = GoldCausalInstance(
             scenario_id="nested_metadata_case",
@@ -588,6 +639,24 @@ class InformationPartitionTests(unittest.TestCase):
         )
 
         self.assertEqual(public.variables, ["X", "Y"])
+
+    def test_direct_public_instance_sanitizes_semantic_oracle_description_and_metadata(self) -> None:
+        public = PublicCausalInstance(
+            scenario_id="direct_semantic_sanitizer_case",
+            description="The gold label should really be invalid here.",
+            variables=["X", "Y"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            metadata={
+                "measurement_semantics": {
+                    "X": {"measurement_view": "captures hidden-confounder signal"},
+                },
+            },
+        )
+
+        self.assertNotIn("gold label", public.description.lower())
+        self.assertIn("public evidence", public.description.lower())
+        self.assertEqual(public.metadata.get("measurement_semantics", {}), {})
+        self.assertNotIn("hidden-confounder", json.dumps(public.to_dict(), ensure_ascii=False))
 
     def test_public_view_uses_data_copies_instead_of_gold_references(self) -> None:
         public = self.gold.to_public()

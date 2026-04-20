@@ -10,12 +10,18 @@ from verifier.outputs import ClaimPolarity, ClaimStrength, ParsedClaim, QueryTyp
 
 
 _VARIABLE_TOKEN = r"[A-Za-z][A-Za-z0-9_]*"
+_ENGLISH_CAUSAL_VERBS = r"(?:causes?|affects?|drives?|determines?|changes?|influences?|identifies?)"
+_ENGLISH_CAUSAL_INTENSIFIERS = (
+    r"(?:itself\s+|directly\s+|causally\s+|clearly\s+|really\s+|only\s+|definitely\s+|probably\s+)?"
+)
+_ENGLISH_TENTATIVE_PREFIX = r"(?:appears?\s+to\s+|seems?\s+to\s+|may\s+|might\s+|could\s+)?"
 _STOP_TOKENS = {
     "a",
     "an",
     "and",
     "answer",
     "available",
+    "causally",
     "causal",
     "claim",
     "conclusion",
@@ -27,6 +33,7 @@ _STOP_TOKENS = {
     "evidence",
     "identified",
     "individual",
+    "not",
     "observed",
     "same",
     "sample",
@@ -241,9 +248,14 @@ _PAIR_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?P<treatment>{_VARIABLE_TOKEN})\s+(?:itself\s+|directly\s+|clearly\s+|really\s+|only\s+|definitely\s+|probably\s+)?"
-        rf"(?:appears?\s+to\s+|seems?\s+to\s+|may\s+|might\s+|could\s+)?"
-        rf"(?:causes?|affects?|drives?|determines?|changes?|influences?|identifies?)\s+"
+        rf"\b(?P<treatment>{_VARIABLE_TOKEN})\s+(?:does\s+not\s+|doesn't\s+)(?:causally\s+)?"
+        rf"{_ENGLISH_CAUSAL_VERBS}\s+(?P<outcome>{_VARIABLE_TOKEN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<treatment>{_VARIABLE_TOKEN})\s+{_ENGLISH_CAUSAL_INTENSIFIERS}"
+        rf"{_ENGLISH_TENTATIVE_PREFIX}"
+        rf"{_ENGLISH_CAUSAL_VERBS}\s+"
         rf"(?P<outcome>{_VARIABLE_TOKEN})\b",
         re.IGNORECASE,
     ),
@@ -283,8 +295,7 @@ _PAIR_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _NEGATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bno causal effect\b", re.IGNORECASE),
-    re.compile(r"\bdoes not (?:cause|affect|change|determine|identify)\b", re.IGNORECASE),
-    re.compile(r"\bdoesn't (?:cause|affect|change|determine|identify)\b", re.IGNORECASE),
+    re.compile(rf"\b(?:does\s+not\s+|doesn't\s+)(?:causally\s+)?{_ENGLISH_CAUSAL_VERBS}\b", re.IGNORECASE),
     re.compile(r"\bcannot (?:identify|determine|support)\b", re.IGNORECASE),
     re.compile(r"\bcan't (?:identify|determine|support)\b", re.IGNORECASE),
     re.compile(r"\bnot identif(?:ied|iable)\b", re.IGNORECASE),
@@ -822,7 +833,7 @@ def _infer_rhetorical_strategy(
     return "plain_causal_assertion"
 
 
-def _needs_abstention_check(
+def _abstention_risk_cues(
     *,
     query_type: QueryType,
     claim_strength: ClaimStrength,
@@ -830,18 +841,22 @@ def _needs_abstention_check(
     rhetorical_strategy: str,
     mentioned_assumptions: list[str],
     implied_assumptions: list[str],
-) -> bool:
+) -> list[str]:
+    cues: list[str] = []
     assumptions = set(mentioned_assumptions) | set(implied_assumptions)
-    return (
-        query_type is QueryType.COUNTERFACTUAL
-        or claim_strength is ClaimStrength.ABSOLUTE
-        or rhetorical_strategy in _RISK_STRATEGIES
-        or (
-            claim_polarity is ClaimPolarity.POSITIVE
-            and query_type in {QueryType.ASSOCIATION, QueryType.INTERVENTION}
-        )
-        or bool(assumptions & _HIGH_RISK_ASSUMPTIONS)
-    )
+    if query_type is QueryType.COUNTERFACTUAL:
+        cues.append("counterfactual_query")
+    if claim_strength is ClaimStrength.ABSOLUTE:
+        cues.append("absolute_claim")
+    if rhetorical_strategy in _RISK_STRATEGIES:
+        cues.append(rhetorical_strategy)
+    if claim_polarity is ClaimPolarity.POSITIVE and query_type is QueryType.ASSOCIATION:
+        cues.append("positive_association_claim")
+    if claim_polarity is ClaimPolarity.POSITIVE and query_type is QueryType.INTERVENTION:
+        cues.append("positive_intervention_claim")
+    for assumption in sorted(assumptions & _HIGH_RISK_ASSUMPTIONS):
+        cues.append(f"high_risk_assumption:{assumption}")
+    return cues
 
 
 class ClaimParser:
@@ -914,7 +929,7 @@ class ClaimParser:
             )
             if transcript_strategy in _RISK_STRATEGIES:
                 rhetorical_strategy = transcript_strategy
-        needs_abstention_check = _needs_abstention_check(
+        abstention_risk_cues = _abstention_risk_cues(
             query_type=query_type,
             claim_strength=claim_strength,
             claim_polarity=claim_polarity,
@@ -922,6 +937,7 @@ class ClaimParser:
             mentioned_assumptions=mentioned_assumptions,
             implied_assumptions=implied_assumptions,
         )
+        needs_abstention_check = bool(abstention_risk_cues)
 
         return ParsedClaim(
             query_type=query_type,
@@ -932,6 +948,7 @@ class ClaimParser:
             mentioned_assumptions=mentioned_assumptions,
             implied_assumptions=implied_assumptions,
             rhetorical_strategy=rhetorical_strategy,
+            abstention_risk_cues=abstention_risk_cues,
             needs_abstention_check=needs_abstention_check,
         )
 

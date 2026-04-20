@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -385,6 +386,22 @@ class BenchmarkHarnessTests(unittest.TestCase):
             },
         )
         self.assertTrue(any(sample.claim.meta.get("paired_flip_id") for sample in run.samples))
+
+    def test_build_seed_benchmark_run_keeps_samples_per_family_budget_with_paired_flip_holdout(self) -> None:
+        run = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=3,
+            paired_flip_holdout=True,
+        )
+
+        family_counts = Counter(sample.claim.graph_family for sample in run.samples)
+        self.assertTrue(family_counts)
+        self.assertTrue(all(count == 3 for count in family_counts.values()))
+        self.assertGreaterEqual(
+            sum(1 for sample in run.samples if sample.claim.meta.get("paired_flip_id")),
+            len(family_counts) * 2,
+        )
 
     def test_baseline_predictors_emit_selective_verdict_contract(self) -> None:
         sample = build_seed_benchmark_run(

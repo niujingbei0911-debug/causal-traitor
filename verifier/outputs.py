@@ -194,6 +194,7 @@ class ParsedClaim:
     mentioned_assumptions: list[str] = field(default_factory=list)
     implied_assumptions: list[str] = field(default_factory=list)
     rhetorical_strategy: str = "plain_causal_assertion"
+    abstention_risk_cues: list[str] = field(default_factory=list)
     needs_abstention_check: bool = False
 
     def __post_init__(self) -> None:
@@ -205,7 +206,8 @@ class ParsedClaim:
         self.mentioned_assumptions = _normalize_unique_strings(self.mentioned_assumptions)
         self.implied_assumptions = _normalize_unique_strings(self.implied_assumptions)
         self.rhetorical_strategy = str(self.rhetorical_strategy).strip() or "plain_causal_assertion"
-        self.needs_abstention_check = bool(self.needs_abstention_check)
+        self.abstention_risk_cues = _normalize_unique_strings(self.abstention_risk_cues)
+        self.needs_abstention_check = bool(self.needs_abstention_check or self.abstention_risk_cues)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,6 +219,7 @@ class ParsedClaim:
             "mentioned_assumptions": list(self.mentioned_assumptions),
             "implied_assumptions": list(self.implied_assumptions),
             "rhetorical_strategy": self.rhetorical_strategy,
+            "abstention_risk_cues": list(self.abstention_risk_cues),
             "needs_abstention_check": self.needs_abstention_check,
         }
 

@@ -878,6 +878,71 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(claim.meta["persuasion_style_id"], "none")
         self.assertEqual(claim.meta["pressure_type"], "none")
 
+    def test_benchmark_generator_distinguishes_same_seed_persuasion_variants_by_instance_id(self) -> None:
+        generator = BenchmarkGenerator(seed=23)
+        authority = generator.generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.35,
+            seed=23,
+            gold_label_override=VerdictLabel.INVALID,
+            persuasion_style_id="authority_pressure",
+        )
+        confidence = generator.generate_benchmark_sample(
+            family_name="l2_valid_backdoor_family",
+            difficulty=0.35,
+            seed=23,
+            gold_label_override=VerdictLabel.INVALID,
+            persuasion_style_id="confidence_pressure",
+        )
+
+        self.assertNotEqual(authority.claim.instance_id, confidence.claim.instance_id)
+        self.assertEqual(authority.public.scenario_id, confidence.public.scenario_id)
+        manifest = build_split_manifest(
+            [
+                authority.claim,
+                confidence.claim,
+                _build_claim_instance_for_split(
+                    "train_alpha",
+                    graph_family="l2_valid_backdoor_family",
+                    language_template_id="tmpl_train_alpha",
+                    observed_variables=["T", "M", "Y"],
+                ),
+                _build_claim_instance_for_split(
+                    "train_beta",
+                    graph_family="l2_valid_backdoor_family",
+                    language_template_id="tmpl_train_beta",
+                    observed_variables=["A", "B", "C"],
+                ),
+                _build_claim_instance_for_split(
+                    "ood_family",
+                    graph_family="l3_counterfactual_ambiguity_family",
+                    language_template_id="tmpl_ood",
+                    observed_variables=["Q", "R", "S"],
+                ),
+            ],
+            family_holdout=["l3_counterfactual_ambiguity_family"],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            mechanism_holdout=[],
+            attack_family_holdout=[],
+            context_shift_holdout=[],
+            paired_flip_holdout=False,
+            seed=11,
+        )
+        all_ids = manifest.train + manifest.dev + manifest.test_iid + manifest.test_ood
+        self.assertIn(authority.claim.instance_id, all_ids)
+        self.assertIn(confidence.claim.instance_id, all_ids)
+
+    def test_valid_samples_reject_explicit_non_none_persuasion_pressure(self) -> None:
+        with self.assertRaises(ValueError):
+            BenchmarkGenerator(seed=17).generate_claim_instance(
+                family_name="l2_valid_backdoor_family",
+                difficulty=0.35,
+                seed=29,
+                gold_label_override=VerdictLabel.VALID,
+                persuasion_style_id="authority_pressure",
+            )
+
     def test_batch_generation_can_emit_persuasion_variants_by_default(self) -> None:
         samples = BenchmarkGenerator(seed=17).generate_benchmark_samples(
             num_samples=8,
@@ -1003,6 +1068,57 @@ class ShowcaseMigrationTests(unittest.TestCase):
         )
         self.assertFalse(policy.gold.observed_data.equals(clinical.gold.observed_data))
         self.assertNotEqual(policy.claim.claim_text, clinical.claim.claim_text)
+        self.assertTrue(policy.claim.claim_text.startswith("In the public policy rollout record, "))
+        self.assertNotEqual(policy.gold.scenario_id, clinical.gold.scenario_id)
+        self.assertNotEqual(policy.claim.instance_id, clinical.claim.instance_id)
+        self.assertNotEqual(policy.public.scenario_id, clinical.public.scenario_id)
+        manifest = build_split_manifest(
+            [
+                policy.claim,
+                clinical.claim,
+                _build_claim_instance_for_split(
+                    "in_domain_1",
+                    graph_family="l2_valid_backdoor_family",
+                    language_template_id="tmpl_in_domain_1",
+                    observed_variables=["L", "M", "N"],
+                    meta={
+                        "context_shift_group": "clinical",
+                        "context_shift_id": "clinical::extra_1",
+                    },
+                ),
+                _build_claim_instance_for_split(
+                    "in_domain_2",
+                    graph_family="l2_valid_backdoor_family",
+                    language_template_id="tmpl_in_domain_2",
+                    observed_variables=["P", "Q", "R"],
+                    meta={
+                        "context_shift_group": "clinical",
+                        "context_shift_id": "clinical::extra_2",
+                    },
+                ),
+                _build_claim_instance_for_split(
+                    "in_domain_3",
+                    graph_family="l2_valid_backdoor_family",
+                    language_template_id="tmpl_in_domain_3",
+                    observed_variables=["S", "T", "U"],
+                    meta={
+                        "context_shift_group": "clinical",
+                        "context_shift_id": "clinical::extra_3",
+                    },
+                ),
+            ],
+            family_holdout=[],
+            lexical_holdout=[],
+            variable_renaming_holdout=False,
+            mechanism_holdout=[],
+            attack_family_holdout=[],
+            context_shift_holdout=["policy"],
+            paired_flip_holdout=False,
+            seed=23,
+        )
+        all_ids = manifest.train + manifest.dev + manifest.test_iid + manifest.test_ood
+        self.assertIn(policy.claim.instance_id, all_ids)
+        self.assertIn(clinical.claim.instance_id, all_ids)
 
     def test_benchmark_generator_can_generate_paired_flip_samples(self) -> None:
         anchor, flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
@@ -1029,6 +1145,42 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(flipped.claim.meta["paired_flip_role"], "flip")
         self.assertEqual(anchor.claim.meta["paired_flip_partner_id"], flipped.claim.instance_id)
         self.assertEqual(flipped.claim.meta["paired_flip_partner_id"], anchor.claim.instance_id)
+
+    def test_paired_flip_generation_applies_persuasion_overlay_to_surface_text(self) -> None:
+        authority_anchor, authority_flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="authority_pressure",
+        )
+        none_anchor, none_flipped = BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="none",
+        )
+
+        self.assertNotEqual(authority_anchor.claim.claim_text, none_anchor.claim.claim_text)
+        self.assertNotEqual(
+            authority_anchor.claim.attacker_rationale,
+            none_anchor.claim.attacker_rationale,
+        )
+        self.assertIn("authority_pressure", authority_anchor.claim.language_template_id)
+        self.assertIn("none", none_anchor.claim.language_template_id)
+        self.assertNotEqual(authority_flipped.claim.claim_text, none_flipped.claim.claim_text)
+        self.assertNotEqual(
+            authority_flipped.claim.attacker_rationale,
+            none_flipped.claim.attacker_rationale,
+        )
+
+    def test_paired_flip_generation_rejects_unknown_persuasion_styles(self) -> None:
+        with self.assertRaises(ValueError):
+            BenchmarkGenerator(seed=29).generate_paired_flip_samples(
+                family_name="l2_invalid_iv_family",
+                difficulty=0.35,
+                seed=29,
+                persuasion_style_id="not_a_style",
+            )
 
     def test_selection_bias_invalid_samples_keep_visible_nonconstant_selection_signal(self) -> None:
         generator = BenchmarkGenerator(seed=17)
@@ -1330,6 +1482,45 @@ class SplitBuilderTests(unittest.TestCase):
         self.assertEqual(
             manifest.metadata["ood_reasons"]["inst_ood_family"],
             ["family_holdout"],
+        )
+
+    def test_load_split_instances_returns_fresh_objects_and_clears_stale_ood_metadata(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "inst_a",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["X", "Z", "Y"],
+                meta={"ood_split": "stale", "ood_reasons": ["stale_reason"]},
+            ),
+            _build_claim_instance_for_split(
+                "inst_b",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["A", "Z", "Y"],
+                meta={"ood_split": "stale", "ood_reasons": ["stale_reason"]},
+            ),
+        ]
+        original_meta = [dict(instance.meta) for instance in instances]
+        manifest = BenchmarkSplitManifest(
+            dataset_name="loader_alias_check",
+            version="2026-04-20",
+            train=[],
+            dev=["inst_a"],
+            test_iid=[],
+            test_ood=["inst_b"],
+            metadata={"ood_reasons": {"inst_b": ["context_shift_holdout"]}},
+        )
+
+        split_instances = load_split_instances(instances, manifest)
+
+        self.assertEqual([instance.meta for instance in instances], original_meta)
+        self.assertEqual(split_instances["dev"][0].meta.get("ood_split"), "dev")
+        self.assertNotIn("ood_reasons", split_instances["dev"][0].meta)
+        self.assertEqual(split_instances["test_ood"][0].meta.get("ood_split"), "test_ood")
+        self.assertEqual(
+            split_instances["test_ood"][0].meta.get("ood_reasons"),
+            ["context_shift_holdout"],
         )
 
     def test_split_builder_supports_harder_ood_reasons_and_manifest_metadata(self) -> None:

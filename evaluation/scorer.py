@@ -14,7 +14,19 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .metrics import CausalMetrics, MetricResult
+from .metrics import (
+    CausalMetrics,
+    MetricResult,
+    _extract_round_confidence as _metrics_extract_round_confidence,
+    _extract_round_gold_identification_status as _metrics_extract_round_gold_identification_status,
+    _extract_round_gold_label as _metrics_extract_round_gold_label,
+    _extract_round_identification_status as _metrics_extract_round_identification_status,
+    _extract_round_predicted_label as _metrics_extract_round_predicted_label,
+    _extract_round_probabilities as _metrics_extract_round_probabilities,
+    _nested_value as _metrics_nested_value,
+    _prediction_payload as _metrics_prediction_payload,
+    validate_round_contracts,
+)
 
 
 def _normalize_verdict_label(value: Any) -> str | None:
@@ -35,69 +47,23 @@ def _clamp_confidence(value: Any) -> float:
 
 
 def _nested_value(mapping: Any, key: str) -> Any:
-    if isinstance(mapping, dict):
-        return mapping.get(key)
-    return None
+    return _metrics_nested_value(mapping, key)
 
 
 def _extract_predicted_label(round_data: Dict[str, Any]) -> str | None:
-    candidates = [
-        round_data.get("verdict_label"),
-        round_data.get("predicted_label"),
-        round_data.get("final_verdict"),
-        _nested_value(round_data.get("verdict"), "final_verdict"),
-        _nested_value(round_data.get("verdict"), "label"),
-        _nested_value(round_data.get("verifier_verdict"), "final_verdict"),
-        _nested_value(round_data.get("verifier_verdict"), "label"),
-    ]
-    for candidate in candidates:
-        label = _normalize_verdict_label(candidate)
-        if label is not None:
-            return label
-    return None
+    return _metrics_extract_round_predicted_label(round_data)
 
 
 def _extract_gold_label(round_data: Dict[str, Any]) -> str | None:
-    candidates = [
-        round_data.get("gold_label"),
-        round_data.get("expected_label"),
-        _nested_value(round_data.get("ground_truth"), "final_verdict"),
-        _nested_value(round_data.get("ground_truth"), "label"),
-        _nested_value(round_data.get("gold_verdict"), "final_verdict"),
-        _nested_value(round_data.get("gold_verdict"), "label"),
-    ]
-    for candidate in candidates:
-        label = _normalize_verdict_label(candidate)
-        if label is not None:
-            return label
-    return None
+    return _metrics_extract_round_gold_label(round_data)
 
 
 def _extract_confidence(round_data: Dict[str, Any]) -> float:
-    candidates = [
-        round_data.get("verifier_confidence"),
-        round_data.get("confidence"),
-        _nested_value(round_data.get("verdict"), "confidence"),
-        _nested_value(round_data.get("verifier_verdict"), "confidence"),
-    ]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        return _clamp_confidence(candidate)
-    return 0.0
+    return _metrics_extract_round_confidence(round_data)
 
 
 def _extract_probability_distribution(round_data: Dict[str, Any]) -> Any:
-    candidates = [
-        round_data.get("predicted_probabilities"),
-        round_data.get("verdict_probabilities"),
-        _nested_value(round_data.get("verdict"), "probabilities"),
-        _nested_value(round_data.get("verifier_verdict"), "probabilities"),
-    ]
-    for candidate in candidates:
-        if candidate is not None:
-            return candidate
-    return None
+    return _metrics_extract_round_probabilities(round_data)
 
 
 def _extract_countermodel_hit(round_data: Dict[str, Any]) -> bool:
@@ -106,7 +72,10 @@ def _extract_countermodel_hit(round_data: Dict[str, Any]) -> bool:
     if round_data.get("countermodel_witness"):
         return True
     verifier_verdict = round_data.get("verifier_verdict")
-    if isinstance(verifier_verdict, dict) and verifier_verdict.get("countermodel_witness"):
+    if _nested_value(verifier_verdict, "countermodel_witness"):
+        return True
+    verdict = round_data.get("verdict")
+    if _nested_value(verdict, "countermodel_witness"):
         return True
     return False
 
@@ -279,6 +248,8 @@ class Scorer:
 
         game_id = str(game_data.get("game_id", uuid.uuid4().hex[:12]))
         rounds_raw = self._rounds_from_game_data(game_data)
+        if list(game_data.get("rounds", [])):
+            validate_round_contracts(rounds_raw)
         round_scores = [self.score_round(round_data) for round_data in rounds_raw]
 
         gold_labels = [score.gold_label for score in round_scores if score.gold_label is not None]
@@ -289,6 +260,8 @@ class Scorer:
         predicted_probabilities: list[dict[str, float] | None] = []
         countermodel_hits: list[bool] = []
         countermodel_applicable: list[bool] = []
+        gold_identification_statuses: list[str | None] = []
+        predicted_identification_statuses: list[str | None] = []
 
         for round_data, round_score in zip(rounds_raw, round_scores):
             if round_score.gold_label is None:
@@ -299,6 +272,14 @@ class Scorer:
             predicted_probabilities.append(round_score.probabilities)
             countermodel_hits.append(_extract_countermodel_hit(round_data))
             countermodel_applicable.append(_extract_countermodel_applicable(round_data))
+            payload, _ = _metrics_prediction_payload(round_data)
+            if payload is not None:
+                gold_identification_statuses.append(
+                    _metrics_extract_round_gold_identification_status(round_data)
+                )
+                predicted_identification_statuses.append(
+                    _metrics_extract_round_identification_status(round_data)
+                )
 
         core_metrics = [
             CausalMetrics.verdict_accuracy(paired_gold_labels, paired_predicted_labels),
@@ -322,6 +303,14 @@ class Scorer:
             ),
             CausalMetrics.countermodel_coverage(countermodel_hits, countermodel_applicable),
         ]
+        method_metrics: list[MetricResult] = []
+        if gold_identification_statuses:
+            method_metrics.append(
+                CausalMetrics.identification_stage_accuracy(
+                    gold_identification_statuses,
+                    predicted_identification_statuses,
+                )
+            )
 
         appendix_metrics: list[MetricResult] = []
         if rounds_raw and any("deception_succeeded" in round_data for round_data in rounds_raw):
@@ -344,10 +333,10 @@ class Scorer:
         if evolution_history:
             appendix_metrics.append(CausalMetrics.evolution_complexity_index(evolution_history))
 
-        all_metrics = core_metrics + appendix_metrics
+        all_metrics = core_metrics + method_metrics + appendix_metrics
         overall = self.compute_weighted_score(all_metrics)
 
-        final_scores = {metric.name: round(metric.value, 4) for metric in core_metrics}
+        final_scores = {metric.name: round(metric.value, 4) for metric in core_metrics + method_metrics}
         final_scores["overall"] = overall
 
         gold_distribution = _label_distribution(paired_gold_labels)
@@ -358,6 +347,9 @@ class Scorer:
             "total_rounds": len(round_scores),
             "scored_rounds": len(paired_gold_labels),
             "core_metrics": {metric.name: round(metric.value, 4) for metric in core_metrics},
+            "method_specific_metrics": {
+                metric.name: round(metric.value, 4) for metric in method_metrics
+            },
             "appendix_metrics": {metric.name: round(metric.value, 4) for metric in appendix_metrics},
             "overall_breakdown": {
                 metric.name: round(self._core_score_value(metric), 4)

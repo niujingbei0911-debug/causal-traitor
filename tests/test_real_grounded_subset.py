@@ -115,6 +115,35 @@ class RealGroundedSubsetTests(unittest.TestCase):
         self.assertEqual(loaded_claims[0].instance_id, "real_grounded_claim_002")
         self.assertEqual(loaded_cases[0].source_citation.citation_text, "Garcia (2023), Observational Medicine Review.")
 
+    def test_real_grounded_serializer_accepts_single_case_inputs(self) -> None:
+        case = RealGroundedCase(
+            case_id="rg_policy_single_case",
+            grounding_type="literature_grounded",
+            claim=_build_claim("real_grounded_claim_single"),
+            source_citation=SourceCitation(
+                citation_text="Lee (2024), Policy Causality Review.",
+                title="Grounded policy case",
+                year=2024,
+            ),
+            public_evidence_summary="Single-case grounded export path.",
+            information_contract={
+                "visible_information": ["Public policy table"],
+                "hidden_information": ["Reviewer memo"],
+            },
+            identifying_assumptions=["No hidden policy targeting"],
+            witness_note="Single-case serialization should follow the dataset contract.",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "real_grounded_single_case.json"
+            saved_path = save_real_grounded_dataset(case, path)
+            loaded_dataset = load_real_grounded_dataset(path)
+
+        self.assertEqual(saved_path, path)
+        self.assertEqual(loaded_dataset.dataset_name, "real_grounded_subset")
+        self.assertEqual(len(loaded_dataset.cases), 1)
+        self.assertEqual(loaded_dataset.cases[0].case_id, "rg_policy_single_case")
+
     def test_real_grounded_case_requires_source_citation(self) -> None:
         with self.assertRaises(ValueError):
             RealGroundedCase.from_dict(

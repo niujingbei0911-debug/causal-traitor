@@ -16,9 +16,12 @@ from benchmark.graph_families import (
     generate_graph_family,
     list_graph_families,
 )
+from benchmark.persuasion_overlays import apply_persuasion_overlay, normalize_persuasion_style_id
 from benchmark.schema import ClaimInstance, GoldCausalInstance, PublicCausalInstance, VerdictLabel
 from benchmark.witnesses import WitnessBundle, generate_witness_bundle
 from game.data_generator import DataGenerator, SHOWCASE_FAMILY_REGISTRY, SHOWCASE_ID_ALIASES
+
+_UNSET = object()
 
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
@@ -227,6 +230,19 @@ def _public_scenario_id(raw_scenario_id: str) -> str:
     return f"public_case_{digest}"
 
 
+def _programmatic_scenario_id(
+    *,
+    family_name: str,
+    seed: int,
+    context_shift_group: str,
+    sample_variant_tag: str | None,
+) -> str:
+    scenario_id = f"{family_name}_seed_{seed}::context::{context_shift_group}"
+    if sample_variant_tag:
+        scenario_id = f"{scenario_id}::{sample_variant_tag}"
+    return scenario_id
+
+
 def _public_description(
     *,
     observed_variables: list[str],
@@ -307,6 +323,16 @@ def _attack_family_for_name(attack_name: str | None) -> str | None:
     if attack_name is None:
         return None
     return _ATTACK_FAMILY_BY_ATTACK_NAME.get(str(attack_name).strip())
+
+
+def _join_text_fragments(left: str, right: str) -> str:
+    left_text = str(left).strip()
+    right_text = str(right).strip()
+    if not left_text:
+        return right_text
+    if not right_text:
+        return left_text
+    return f"{left_text} {right_text}".strip()
 
 
 def _rename_json_tokens(value: Any, rename_map: dict[str, str]) -> Any:
@@ -493,10 +519,17 @@ class BenchmarkGenerator:
         """Generate the benchmark v2 sample bundle used by downstream builders."""
 
         claim_kwargs = dict(kwargs)
-        persuasion_style_id = self._resolve_benchmark_persuasion_style_id(
-            claim_kwargs.pop("persuasion_style_id", None)
+        raw_persuasion_style_id = claim_kwargs.pop("persuasion_style_id", _UNSET)
+        explicit_persuasion_style_requested = bool(
+            claim_kwargs.pop(
+                "_explicit_persuasion_style_requested",
+                raw_persuasion_style_id is not _UNSET,
+            )
         )
         gold = self.generate_gold_instance(**claim_kwargs)
+        persuasion_style_id = self._resolve_benchmark_persuasion_style_id(
+            None if raw_persuasion_style_id is _UNSET else raw_persuasion_style_id
+        )
         seed = int(kwargs.get("seed", self.seed))
         blueprint = self._build_blueprint_for_gold_instance(gold, seed=seed)
         claim = self._build_claim_instance(
@@ -504,6 +537,7 @@ class BenchmarkGenerator:
             blueprint=blueprint,
             seed=seed,
             persuasion_style_id=persuasion_style_id,
+            explicit_persuasion_style_requested=explicit_persuasion_style_requested,
         )
         public = gold.to_public()
         return BenchmarkSample(
@@ -559,6 +593,7 @@ class BenchmarkGenerator:
                     if persuasion_style_id is not None
                     else self._batch_default_persuasion_style_id(index)
                 ),
+                _explicit_persuasion_style_requested=False,
             )
             samples.append(sample)
         return samples
@@ -824,9 +859,9 @@ class BenchmarkGenerator:
         persuasion_style_id: str | None,
     ) -> str | None:
         if persuasion_style_id is not None:
-            return str(persuasion_style_id)
+            return normalize_persuasion_style_id(persuasion_style_id)
         default_style = self.config.get("default_persuasion_style_id")
-        return None if default_style is None else str(default_style)
+        return None if default_style is None else normalize_persuasion_style_id(default_style)
 
     def _batch_default_persuasion_style_id(self, index: int) -> str | None:
         configured = self.config.get("batch_default_persuasion_style_id")
@@ -849,11 +884,12 @@ class BenchmarkGenerator:
         claim_prefix = str(profile.get("claim_prefix", "")).strip()
         rationale_suffix = str(profile.get("rationale_suffix", "")).strip()
         if claim_prefix:
-            payload["claim_text"] = f"{claim_prefix}{str(payload['claim_text']).strip()}".strip()
+            payload["claim_text"] = _join_text_fragments(claim_prefix, payload["claim_text"])
         if rationale_suffix:
-            payload["attacker_rationale"] = (
-                f"{str(payload['attacker_rationale']).strip()} {rationale_suffix}"
-            ).strip()
+            payload["attacker_rationale"] = _join_text_fragments(
+                payload["attacker_rationale"],
+                rationale_suffix,
+            )
         return payload
 
     def _paired_flip_surface_spec(
@@ -899,7 +935,11 @@ class BenchmarkGenerator:
         treatment = blueprint.target_variables["treatment"]
         outcome = blueprint.target_variables["outcome"]
         lexical_template_id = str(surface_spec["lexical_template_id"])
-        persuasion_style_id = surface_spec.get("persuasion_style_id")
+        persuasion_style_id = (
+            None
+            if surface_spec.get("persuasion_style_id") is None
+            else str(surface_spec.get("persuasion_style_id"))
+        )
 
         if gold_label is VerdictLabel.VALID:
             payload = self._generate_truthful_claim(
@@ -907,15 +947,17 @@ class BenchmarkGenerator:
                 query_type=query_type,
                 seed=seed,
             )
-            payload["language_template_id"] = lexical_template_id
-            payload["lexical_template_id"] = lexical_template_id
-            payload["claim_mode"] = "paired_flip"
-            payload["style_id"] = style_id
-            payload["persuasion_style_id"] = persuasion_style_id
-            payload["pressure_type"] = persuasion_style_id
-            return self._contextualize_claim_bundle(payload, context_profile=context_profile)
-
-        if query_type in {"average_treatment_effect", "interventional_effect", "instrumental_variable_claim", "frontdoor_effect"}:
+            payload.update(
+                {
+                    "language_template_id": lexical_template_id,
+                    "lexical_template_id": lexical_template_id,
+                    "claim_mode": "paired_flip",
+                    "style_id": style_id,
+                    "attack_name": None,
+                    "attack_family": None,
+                }
+            )
+        elif query_type in {"average_treatment_effect", "interventional_effect", "instrumental_variable_claim", "frontdoor_effect"}:
             if gold_label is VerdictLabel.INVALID:
                 if bridge is None:
                     claim_text = (
@@ -936,10 +978,20 @@ class BenchmarkGenerator:
                 else:
                     claim_text = (
                         f"With {bridge} available, the public evidence still does not uniquely identify the causal effect of {treatment} on {outcome}."
-                    )
+                )
                 attacker_rationale = (
                     "Preserve the same surface structure while switching from commitment to abstention."
                 )
+            payload = {
+                "claim_text": claim_text,
+                "attacker_rationale": attacker_rationale,
+                "language_template_id": lexical_template_id,
+                "lexical_template_id": lexical_template_id,
+                "claim_mode": "paired_flip",
+                "attack_name": None,
+                "attack_family": None,
+                "style_id": style_id,
+            }
         elif query_type in {"unit_level_counterfactual", "effect_of_treatment_on_treated", "abduction_action_prediction"}:
             if gold_label is VerdictLabel.INVALID:
                 claim_text = (
@@ -955,6 +1007,16 @@ class BenchmarkGenerator:
                 attacker_rationale = (
                     "Flip the same counterfactual surface from commitment to under-identification."
                 )
+            payload = {
+                "claim_text": claim_text,
+                "attacker_rationale": attacker_rationale,
+                "language_template_id": lexical_template_id,
+                "lexical_template_id": lexical_template_id,
+                "claim_mode": "paired_flip",
+                "attack_name": None,
+                "attack_family": None,
+                "style_id": style_id,
+            }
         else:
             if gold_label is VerdictLabel.INVALID:
                 claim_text = f"The public evidence does not support the causal claim from {treatment} to {outcome}."
@@ -962,21 +1024,36 @@ class BenchmarkGenerator:
             else:
                 claim_text = f"The public evidence does not uniquely settle the causal claim from {treatment} to {outcome}."
                 attacker_rationale = "Flip the same surface template to abstention."
-
-        payload = {
-            "claim_text": claim_text,
-            "attacker_rationale": attacker_rationale,
-            "language_template_id": lexical_template_id,
-            "lexical_template_id": lexical_template_id,
-            "claim_mode": "paired_flip",
-            "attack_name": None,
-            "attack_family": None,
-            "style_id": style_id,
-            "persuasion_style_id": persuasion_style_id,
-            "pressure_type": persuasion_style_id,
-            "pressure_markers": [],
-            "conceals_missing_information": False,
-        }
+            payload = {
+                "claim_text": claim_text,
+                "attacker_rationale": attacker_rationale,
+                "language_template_id": lexical_template_id,
+                "lexical_template_id": lexical_template_id,
+                "claim_mode": "paired_flip",
+                "attack_name": None,
+                "attack_family": None,
+                "style_id": style_id,
+            }
+        overlay = apply_persuasion_overlay(
+            claim_text=payload["claim_text"],
+            attacker_rationale=payload["attacker_rationale"],
+            persuasion_style_id=persuasion_style_id,
+            attack_name="paired_flip",
+            query_type=query_type,
+            family_name=blueprint.family_name,
+            seed=seed,
+        )
+        payload["claim_text"] = overlay.claim_text
+        payload["attacker_rationale"] = overlay.attacker_rationale
+        payload["language_template_id"] = (
+            f"{lexical_template_id}::persuasion::{overlay.persuasion_style_id}"
+        )
+        payload["persuasion_style_id"] = overlay.persuasion_style_id
+        payload["pressure_type"] = overlay.metadata.get("pressure_type")
+        payload["pressure_markers"] = list(overlay.metadata.get("pressure_markers", []))
+        payload["conceals_missing_information"] = bool(
+            overlay.metadata.get("conceals_missing_information", False)
+        )
         return self._contextualize_claim_bundle(payload, context_profile=context_profile)
 
     def _clone_gold_instance_for_label(
@@ -1663,6 +1740,7 @@ class BenchmarkGenerator:
         blueprint: GraphFamilyBlueprint,
         seed: int,
         persuasion_style_id: str | None = None,
+        explicit_persuasion_style_requested: bool = False,
         gold_label_override: VerdictLabel | str | None = None,
         query_type_override: str | None = None,
         claim_payload_override: dict[str, Any] | None = None,
@@ -1671,6 +1749,15 @@ class BenchmarkGenerator:
             raise ValueError("Gold instance must define gold_label before building ClaimInstance.")
 
         gold_label = _coerce_label_override(gold_label_override) or gold.gold_label
+        if (
+            gold_label is VerdictLabel.VALID
+            and explicit_persuasion_style_requested
+            and persuasion_style_id not in {None, "none"}
+        ):
+            raise ValueError(
+                "persuasion_style_id applies only to attack-style benchmark claims; "
+                "valid truthful samples must use 'none' or omit the field."
+            )
         query_type = query_type_override or self._select_query_type(blueprint, seed)
         context_profile = dict(gold.metadata.get("context_shift_profile", {}))
         attack_sample = (
@@ -1693,6 +1780,19 @@ class BenchmarkGenerator:
         )
         benchmark_family = str(gold.metadata.get("benchmark_family", blueprint.family_name))
         benchmark_subfamily = gold.metadata.get("benchmark_subfamily")
+        identity_material = "::".join(
+            [
+                str(gold.scenario_id),
+                f"seed={seed}",
+                f"query={query_type}",
+                f"label={gold_label.value}",
+                f"mode={attack_sample['claim_mode']}",
+                f"attack={attack_sample.get('attack_name') or 'none'}",
+                f"style={attack_sample.get('style_id') or 'none'}",
+                f"persuasion={attack_sample.get('persuasion_style_id') or 'none'}",
+            ]
+        )
+        identity_digest = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()[:12]
         ood_axes = [
             "mechanism_ood_tag",
             "context_shift_group",
@@ -1709,7 +1809,7 @@ class BenchmarkGenerator:
         ]
 
         return ClaimInstance(
-            instance_id=f"{gold.scenario_id}_benchmark_seed_{seed}",
+            instance_id=f"{gold.scenario_id}_benchmark_seed_{seed}__{identity_digest}",
             causal_level=gold.causal_level,
             graph_family=benchmark_family,
             language_template_id=attack_sample["language_template_id"],
@@ -2050,10 +2150,15 @@ class BenchmarkGenerator:
             blueprint,
             context_profile=context_profile,
         )
-        scenario_suffix = f"::{sample_variant_tag}" if sample_variant_tag else ""
+        scenario_id = _programmatic_scenario_id(
+            family_name=blueprint.family_name,
+            seed=seed,
+            context_shift_group=context_payload["context_shift_group"],
+            sample_variant_tag=sample_variant_tag,
+        )
 
         return GoldCausalInstance(
-            scenario_id=f"{blueprint.family_name}_seed_{seed}{scenario_suffix}",
+            scenario_id=scenario_id,
             description=(
                 f"{blueprint.description} Programmatic sample generated from "
                 f"{blueprint.family_name} with seed {seed}."
@@ -2109,7 +2214,7 @@ class BenchmarkGenerator:
                 "family_tags": list(blueprint.family_tags),
                 "generator_hints": dict(blueprint.generator_hints),
                 "public_scenario_id": _public_scenario_id(
-                    f"{blueprint.family_name}:{seed}:{sample_variant_tag or 'default'}"
+                    f"{scenario_id}::public"
                 ),
                 "public_description": _public_description(
                     observed_variables=list(blueprint.observed_variables),
