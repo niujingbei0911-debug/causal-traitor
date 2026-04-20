@@ -275,7 +275,7 @@ class AgentB:
         elif level == 2:
             instrument = (
                 list(getattr(scenario, "instrument_variables", []) or [None])[0]
-                or self._find_instrument_variable(scenario_text, variables, treatment, outcome)
+                or self._find_candidate_instrument_variable(variables, treatment, outcome)
             )
             instrument_text = f"，并可进一步借助工具变量 {instrument} 识别" if instrument else ""
             content = (
@@ -427,6 +427,7 @@ class AgentB:
     def _find_instrument_variable(
         self, claim: str, variables: list[str], treatment: str, outcome: str
     ) -> Optional[str]:
+        """Find an instrument in a claim text.  Requires explicit IV semantic cues."""
         has_iv_context = bool(
             re.search(
                 r"\biv\b|\binstrument(?:al(?:-?variable)?)?\b|\binstrumental-variable\b|工具变量|排他性|排除限制",
@@ -440,6 +441,20 @@ class AgentB:
             if variable in {treatment, outcome}:
                 continue
             if re.search(rf"\b{re.escape(variable)}\b", claim, flags=re.IGNORECASE):
+                return variable
+        return None
+
+    def _find_candidate_instrument_variable(
+        self, variables: list[str], treatment: str, outcome: str
+    ) -> Optional[str]:
+        """Return the first variable that is neither treatment nor outcome.
+
+        Used by propose_hypothesis() when actively searching for an IV candidate
+        without a claim text to match against.  No semantic-cue guard is needed
+        here because we are not parsing an adversarial claim.
+        """
+        for variable in variables:
+            if variable not in {treatment, outcome}:
                 return variable
         return None
 

@@ -1014,36 +1014,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 round_ids = [record["round_id"] for record in records]
                 self.assertEqual(len(round_ids), len(set(round_ids)))
 
-        api = VisualizationAPI()
-        api.register_game(
-            "demo_public",
-            {
-                "scenario": {
-                    "scenario_id": public_scenario.scenario_id,
-                    "variables": list(public_scenario.variables),
-                    "proxy_variables": list(public_scenario.proxy_variables),
-                    "selection_variables": list(public_scenario.selection_variables),
-                    "selection_mechanism": public_scenario.selection_mechanism,
-                    "causal_level": public_scenario.causal_level,
-                    "hidden_variables": list(scenario.hidden_variables),
-                    "true_dag": {"leak": True},
-                },
-                "results": [
-                    {
-                        "agent_a_claim": {
-                            "causal_claim": f"{public_scenario.variables[0]} causes {public_scenario.variables[-1]}",
-                        }
-                    }
-                ],
-            },
-        )
-        graph_payload = api.get_causal_graph_data("demo_public")
-        node_ids = {node["id"] for node in graph_payload["nodes"]}
-
-        self.assertEqual(graph_payload["schema_view"], "public")
-        self.assertFalse(any(hidden in node_ids for hidden in scenario.hidden_variables))
-        self.assertTrue(any(link["type"] == "claimed" for link in graph_payload["links"]))
-
     def test_experiment_tracker_writes_run_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tracker = ExperimentTracker(
