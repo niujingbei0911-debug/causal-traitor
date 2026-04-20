@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evaluation.significance import holm_bonferroni
 from experiments.benchmark_harness import (
     BLUEPRINT_PERSUASION_PRESSURE_TYPES,
     BLUEPRINT_PERSUASION_SYSTEMS,
@@ -32,6 +33,7 @@ PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
+    budget_override = payload["config"].get("sample_budget_override")
     lines = [
         "# Persuasion Robustness",
         "",
@@ -42,10 +44,20 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
         f"- Seeds: {payload['seeds']}",
         f"- Samples per family: {payload['config']['samples_per_family']}",
         f"- Difficulty: {payload['config']['difficulty']:.2f}",
-        "",
-        "| System | Pressure Type | Split | Verdict Acc. | Unsafe Accept | Wise Refusal Recall | Wise Refusal Precision | Over-Refusal | ECE | Brier |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
+    if budget_override is not None:
+        lines.append(
+            "- Sample budget override: "
+            f"requested={budget_override['requested']}, effective={budget_override['effective']}, "
+            f"reason={budget_override['reason']}"
+        )
+    lines.extend(
+        [
+            "",
+            "| System | Pressure Type | Split | Verdict Acc. | Unsafe Accept | Wise Refusal Recall | Wise Refusal Precision | Over-Refusal | ECE | Brier |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
     for system_name, pressure_payload in payload["aggregated_metrics"].items():
         for pressure_type, split_payload in pressure_payload.items():
             for split_name in OOD_SPLITS:
@@ -169,45 +181,80 @@ def run_experiment(
 
     baseline_pressure_type = "none" if "none" in resolved_pressure_types else resolved_pressure_types[0]
     significance: dict[str, Any] = {}
-    correction_entries: list[dict[str, Any]] = []
-    for system_name, system_payload in per_system_results.items():
-        if len(resolved_pressure_types) < 2:
-            significance[system_name] = {split_name: None for split_name in OOD_SPLITS}
-            continue
-        system_significance, system_correction = build_seed_metric_significance(
-            {
-                split_name: {
-                    pressure_type: [
-                        float(
-                            system_payload["per_pressure_results"][pressure_type][seed][split_name]["metrics"][
-                                PRIMARY_SIGNIFICANCE_METRIC
-                            ]
-                        )
-                        for seed in sorted(resolved_seeds)
-                    ]
-                    for pressure_type in resolved_pressure_types
-                }
-                for split_name in OOD_SPLITS
-            },
-            baseline=baseline_pressure_type,
-            metric_name=PRIMARY_SIGNIFICANCE_METRIC,
-            estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
-        )
-        significance[system_name] = system_significance
-        for entry in system_correction["entries"]:
-            correction_entries.append(
+    if len(resolved_pressure_types) < 2 or not protocol["compliant"]:
+        significance = {
+            system_name: {split_name: None for split_name in OOD_SPLITS}
+            for system_name in resolved_systems
+        }
+        global_multiple_comparison_correction = {
+            "family_size": 0,
+            "alpha": 0.05,
+            "correction": "holm-bonferroni",
+            "entries": [],
+        }
+    else:
+        raw_p_values: dict[str, float] = {}
+        for system_name, system_payload in per_system_results.items():
+            system_significance, _ = build_seed_metric_significance(
                 {
-                    **entry,
-                    "system_name": system_name,
-                }
+                    split_name: {
+                        pressure_type: [
+                            float(
+                                system_payload["per_pressure_results"][pressure_type][seed][split_name]["metrics"][
+                                    PRIMARY_SIGNIFICANCE_METRIC
+                                ]
+                            )
+                            for seed in sorted(resolved_seeds)
+                        ]
+                        for pressure_type in resolved_pressure_types
+                    }
+                    for split_name in OOD_SPLITS
+                },
+                baseline=baseline_pressure_type,
+                metric_name=PRIMARY_SIGNIFICANCE_METRIC,
+                estimand=f"seed_mean_{PRIMARY_SIGNIFICANCE_METRIC}",
             )
+            significance[system_name] = system_significance
+            for split_name, report in system_significance.items():
+                if report is None:
+                    continue
+                for row in report["comparisons"]:
+                    hypothesis = f"{system_name}::{split_name}: {row['comparison']}"
+                    raw_p_values[hypothesis] = float(row["p_value"])
 
-    global_multiple_comparison_correction = {
-        "family_size": len(correction_entries),
-        "alpha": 0.05,
-        "correction": "holm-bonferroni",
-        "entries": correction_entries,
-    }
+        correction_table = holm_bonferroni(raw_p_values, alpha=0.05) if raw_p_values else []
+        correction_lookup = {entry.hypothesis: entry for entry in correction_table}
+        family_hypotheses = list(raw_p_values)
+        for system_name, system_reports in significance.items():
+            for split_name, report in system_reports.items():
+                if report is None:
+                    continue
+                for row in report["comparisons"]:
+                    hypothesis = f"{system_name}::{split_name}: {row['comparison']}"
+                    correction = correction_lookup[hypothesis]
+                    row["family_hypothesis"] = hypothesis
+                    row["adjusted_p_value"] = float(correction.adjusted_p_value)
+                    row["reject_after_correction"] = bool(correction.reject)
+                report["correction_scope"] = {
+                    "family_size": len(raw_p_values),
+                    "hypotheses": family_hypotheses,
+                }
+
+        global_multiple_comparison_correction = {
+            "family_size": len(raw_p_values),
+            "alpha": 0.05,
+            "correction": "holm-bonferroni",
+            "entries": [
+                {
+                    "hypothesis": entry.hypothesis,
+                    "p_value": float(entry.raw_p_value),
+                    "adjusted_p_value": float(entry.adjusted_p_value),
+                    "threshold": float(entry.threshold),
+                    "reject": bool(entry.reject),
+                }
+                for entry in correction_table
+            ],
+        }
 
     payload = {
         "experiment_id": "exp_persuasion_robustness",
@@ -219,6 +266,15 @@ def run_experiment(
             "attack_split_protocol": "dedicated_attack_only_benchmark",
             "comparison_axis": "system_pressure_matrix",
             "baseline_pressure_type": baseline_pressure_type,
+            "sample_budget_override": (
+                {
+                    "requested": int(resolved_samples_per_family),
+                    "effective": int(effective_samples_per_family),
+                    "reason": "minimum_split_feasibility_for_attack_only_benchmark",
+                }
+                if effective_samples_per_family != resolved_samples_per_family
+                else None
+            ),
         },
         "requested_config": {
             "systems": list(systems) if systems is not None else list(BLUEPRINT_PERSUASION_SYSTEMS),

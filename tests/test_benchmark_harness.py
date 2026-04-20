@@ -16,6 +16,7 @@ from experiments.benchmark_harness import (
     _run_main_verifier,
     _run_claim_only_family,
     aggregate_seed_metrics,
+    build_seed_metric_significance,
     build_seed_benchmark_run,
     build_seed_attack_benchmark_run,
     compare_system_predictions,
@@ -117,6 +118,12 @@ class BenchmarkHarnessTests(unittest.TestCase):
                     }
                 }
             },
+            "significance": {
+                "test_iid": {
+                    "method": "paired_seed_bootstrap",
+                    "comparisons": [],
+                }
+            },
             "raw_predictions": [{"instance_id": "inst_1", "predicted_label": "valid"}],
         }
 
@@ -135,6 +142,7 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 "seed_list",
                 "aggregated_metrics",
                 "ci",
+                "significance",
             ):
                 self.assertIn(key, artifacts)
                 self.assertTrue(Path(artifacts[key]).exists())
@@ -160,6 +168,9 @@ class BenchmarkHarnessTests(unittest.TestCase):
                     "formatted": "0.8000 ± 0.0200 (95% CI: 0.7600, 0.8400)",
                 },
             )
+
+            significance_payload = json.loads(Path(artifacts["significance"]).read_text(encoding="utf-8"))
+            self.assertEqual(significance_payload, payload["significance"])
 
     def test_evaluate_system_on_samples_uses_current_public_schema_contract(self) -> None:
         run = build_seed_benchmark_run(
@@ -229,6 +240,9 @@ class BenchmarkHarnessTests(unittest.TestCase):
             )
 
         record = evaluated["predictions"][0]
+        self.assertEqual(record["scenario_id"], sample.public.scenario_id)
+        self.assertNotEqual(record["scenario_id"], sample.gold.scenario_id)
+        self.assertNotIn("selection_variables", record)
         self.assertNotIn("selection_variables", record["public_evidence_summary"])
         self.assertEqual(
             record["public_evidence_summary"]["selection_mechanism"],
@@ -561,6 +575,26 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertTrue(protocol["override_used"])
         self.assertIn("samples_per_family", protocol["violations"])
         self.assertIn("audit_subset_size", protocol["violations"])
+
+    def test_build_seed_metric_significance_skips_scopes_without_formal_pair_count(self) -> None:
+        significance, correction = build_seed_metric_significance(
+            {
+                "test_iid": {
+                    "baseline": [0.2],
+                    "candidate": [0.7],
+                },
+                "test_ood": {
+                    "baseline": [0.2, 0.3, 0.4],
+                    "candidate": [0.5, 0.6, 0.7],
+                },
+            },
+            baseline="baseline",
+        )
+
+        self.assertIsNone(significance["test_iid"])
+        self.assertIsNotNone(significance["test_ood"])
+        self.assertEqual(significance["test_ood"]["correction_scope"]["family_size"], 1)
+        self.assertEqual(correction["family_size"], 1)
 
     def test_family_variants_keep_verdict_semantics_consistent(self) -> None:
         skeptical = _apply_family_postprocessing(

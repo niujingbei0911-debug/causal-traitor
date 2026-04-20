@@ -110,7 +110,13 @@ def _normalize_real_grounded_source(
 
     path = Path(source)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return ensure_real_grounded_dataset(payload)
+    dataset = ensure_real_grounded_dataset(payload)
+    dataset.metadata = {
+        **dict(dataset.metadata),
+        "_source_path": str(path.resolve()),
+        "_source_root": str(path.resolve().parent),
+    }
+    return dataset
 
 
 def load_real_grounded_dataset(
@@ -137,27 +143,100 @@ def load_real_grounded_claims(
     return _normalize_real_grounded_source(source).claim_instances()
 
 
-def _real_grounded_observed_data(claim: ClaimInstance) -> pd.DataFrame:
-    observed_variables = list(claim.observed_variables)
-    if not observed_variables:
-        observed_variables = list(claim.target_variables.values())
-    rows: list[dict[str, float]] = []
-    for index in range(8):
-        rows.append(
-            {
-                variable_name: float(index + column_index)
-                for column_index, variable_name in enumerate(observed_variables)
-            }
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _coerce_frame_from_payload(value: Any, *, field_name: str) -> pd.DataFrame:
+    if value is None:
+        return pd.DataFrame()
+    if isinstance(value, pd.DataFrame):
+        frame = value.copy(deep=True)
+    elif isinstance(value, list):
+        frame = pd.DataFrame(list(value))
+    elif isinstance(value, dict):
+        frame = pd.DataFrame(value)
+    else:
+        raise ValueError(f"{field_name} must be a DataFrame-compatible payload, got {type(value)!r}.")
+    if frame.empty:
+        raise ValueError(f"{field_name} must contain at least one row.")
+    return frame.copy(deep=True)
+
+
+def _read_real_grounded_data_file(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    if suffix in {".json", ".js"}:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and "records" in payload:
+            payload = payload["records"]
+        return _coerce_frame_from_payload(payload, field_name=f"observed_data_path={path}")
+    if suffix in {".jsonl", ".ndjson"}:
+        return pd.read_json(path, lines=True)
+    if suffix in {".parquet", ".pq"}:
+        return pd.read_parquet(path)
+    raise ValueError(
+        f"Unsupported observed_data_path suffix {suffix!r} for real-grounded case file {str(path)!r}."
+    )
+
+
+def _resolve_real_grounded_data_path(dataset: RealGroundedDataset, observed_data_path: str) -> Path:
+    path = Path(observed_data_path)
+    if path.is_absolute():
+        return path
+    source_root = dataset.metadata.get("_source_root")
+    if source_root:
+        return Path(str(source_root)) / path
+    return path
+
+
+def _real_grounded_observed_data(
+    case: RealGroundedCase,
+    *,
+    dataset: RealGroundedDataset,
+) -> pd.DataFrame:
+    claim = case.claim
+    metadata = dict(case.metadata)
+    payload = metadata.get("observed_data_records", metadata.get("observed_data"))
+    if payload is not None:
+        frame = _coerce_frame_from_payload(
+            payload,
+            field_name=f"RealGroundedCase[{case.case_id!r}].metadata['observed_data_records']",
         )
-    return pd.DataFrame(rows, columns=observed_variables)
+    elif claim.observed_data_path:
+        data_path = _resolve_real_grounded_data_path(dataset, claim.observed_data_path)
+        if not data_path.exists():
+            raise ValueError(
+                f"Real-grounded observed_data_path does not exist for case {case.case_id!r}: {str(data_path)!r}."
+            )
+        frame = _read_real_grounded_data_file(data_path)
+    else:
+        raise ValueError(
+            "Real-grounded samples require an explicit observed-data source via "
+            "case.metadata['observed_data_records'] / case.metadata['observed_data'] "
+            f"or ClaimInstance.observed_data_path. Missing for case {case.case_id!r}."
+        )
+
+    expected_columns = list(claim.observed_variables)
+    for role in ("treatment", "outcome"):
+        variable_name = str(claim.target_variables[role])
+        if variable_name not in expected_columns:
+            expected_columns.append(variable_name)
+    missing_columns = [column for column in expected_columns if column not in frame.columns]
+    if missing_columns:
+        raise ValueError(
+            f"Real-grounded observed data for case {case.case_id!r} is missing required columns: {missing_columns!r}."
+        )
+    return frame.loc[:, expected_columns].copy(deep=True)
 
 
 def _real_grounded_hidden_variables(case: RealGroundedCase) -> list[str]:
-    hidden_items = list(case.information_contract.hidden_information)
-    return [
-        f"hidden_context_{index}"
-        for index, _ in enumerate(hidden_items or ["hidden reviewer-only context"], start=1)
-    ]
+    return _normalize_string_list(case.metadata.get("hidden_variables", []))
 
 
 def _real_grounded_blueprint(case: RealGroundedCase) -> GraphFamilyBlueprint:
@@ -169,30 +248,42 @@ def _real_grounded_blueprint(case: RealGroundedCase) -> GraphFamilyBlueprint:
         observed_variables.append(treatment)
     if outcome not in observed_variables:
         observed_variables.append(outcome)
-    true_dag = {variable_name: [] for variable_name in observed_variables}
-    true_dag.setdefault(treatment, [])
-    true_dag.setdefault(outcome, [])
-    if outcome not in true_dag[treatment]:
-        true_dag[treatment].append(outcome)
+    hidden_variables = _real_grounded_hidden_variables(case)
+    all_variables = [*observed_variables, *[variable for variable in hidden_variables if variable not in observed_variables]]
+    raw_true_dag = case.metadata.get("true_dag")
+    if isinstance(raw_true_dag, dict):
+        true_dag = {
+            str(parent): _normalize_string_list(children)
+            for parent, children in raw_true_dag.items()
+        }
+    else:
+        true_dag = {variable_name: [] for variable_name in all_variables}
+    for variable_name in all_variables:
+        true_dag.setdefault(variable_name, [])
+    role_bindings = {
+        **{
+            str(key): str(value)
+            for key, value in dict(case.metadata.get("role_bindings", {})).items()
+        },
+        "treatment": treatment,
+        "outcome": outcome,
+    }
     return GraphFamilyBlueprint(
         family_name=claim.graph_family,
         causal_level=claim.causal_level,
         identifiability=IdentifiabilityStatus.POTENTIALLY_UNIDENTIFIABLE,
         description=case.public_evidence_summary,
-        role_bindings={
-            "treatment": treatment,
-            "outcome": outcome,
-        },
+        role_bindings=role_bindings,
         target_variables={
             "treatment": treatment,
             "outcome": outcome,
         },
         true_dag=true_dag,
-        hidden_variables=_real_grounded_hidden_variables(case),
+        hidden_variables=hidden_variables,
         observed_variables=observed_variables,
         seed=0,
-        proxy_variables=list(claim.meta.get("proxy_variables", [])),
-        selection_variables=[],
+        proxy_variables=list(claim.proxy_variables),
+        selection_variables=_normalize_string_list(case.metadata.get("selection_variables", [])),
         query_types=[claim.query_type],
         supported_gold_labels=[claim.gold_label.value],
         generator_hints={
@@ -224,9 +315,9 @@ def _real_grounded_gold_instance(
             "outcome": outcome,
             "answer": claim.gold_answer,
         },
-        observed_data=observed_data,
-        full_data=observed_data,
-        data=observed_data,
+        observed_data=observed_data.copy(deep=True),
+        full_data=observed_data.copy(deep=True),
+        data=observed_data.copy(deep=True),
         causal_level=int(str(claim.causal_level).lstrip("L")),
         difficulty=0.5,
         true_scm={"source": "real_grounded_subset_loader"},
@@ -252,10 +343,10 @@ def _real_grounded_public_instance(
         scenario_id=f"public_real_grounded::{case.case_id}",
         description=case.public_evidence_summary,
         variables=list(observed_data.columns),
-        proxy_variables=list(claim.meta.get("proxy_variables", [])),
+        proxy_variables=list(claim.proxy_variables),
         selection_mechanism=claim.meta.get("selection_mechanism"),
-        observed_data=observed_data,
-        data=observed_data,
+        observed_data=observed_data.copy(deep=True),
+        data=observed_data.copy(deep=True),
         causal_level=int(str(claim.causal_level).lstrip("L")),
         metadata={
             "context_shift_group": case.grounding_type.value,
@@ -268,8 +359,9 @@ def load_real_grounded_samples(
 ) -> list[BenchmarkSample]:
     """Resolve real-grounded cases into benchmark-style samples for experiment runners."""
 
+    dataset = _normalize_real_grounded_source(source)
     samples: list[BenchmarkSample] = []
-    for case in load_real_grounded_cases(source):
+    for case in dataset.cases:
         claim = ClaimInstance.from_dict(case.claim.to_dict())
         claim.meta = {
             **dict(claim.meta),
@@ -278,7 +370,7 @@ def load_real_grounded_samples(
             "grounding_type": case.grounding_type.value,
             "real_grounded_case_id": case.case_id,
         }
-        observed_data = _real_grounded_observed_data(claim)
+        observed_data = _real_grounded_observed_data(case, dataset=dataset)
         case_for_sample = RealGroundedCase.from_dict(
             {
                 **case.to_dict(),
@@ -311,8 +403,14 @@ def save_real_grounded_dataset(
 
     normalized = ensure_real_grounded_dataset(dataset)
     path = Path(destination)
+    payload = normalized.to_dict()
+    payload["metadata"] = {
+        key: value
+        for key, value in dict(payload.get("metadata", {})).items()
+        if not str(key).startswith("_")
+    }
     path.write_text(
-        json.dumps(normalized.to_dict(), ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return path

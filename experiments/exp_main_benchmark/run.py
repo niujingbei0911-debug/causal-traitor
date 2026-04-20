@@ -248,7 +248,7 @@ def run_experiment(
 
     significance: dict[str, Any]
     global_multiple_comparison_correction: dict[str, Any]
-    if len(resolved_systems) < 2:
+    if len(resolved_systems) < 2 or not protocol["compliant"]:
         significance = {split_name: None for split_name in OOD_SPLITS}
         global_multiple_comparison_correction = {
             "family_size": 0,

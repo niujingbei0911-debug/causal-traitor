@@ -123,6 +123,7 @@ SUPPORTED_SYSTEM_NAMES: tuple[str, ...] = _unique_names_in_order(
 OOD_SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
 MIN_FORMAL_SEED_COUNT = 3
 MIN_FORMAL_SAMPLES_PER_FAMILY = 10
+MIN_FORMAL_PAIRED_SIGNIFICANCE_COUNT = 3
 MIN_HUMAN_AUDIT_SUBSET_SIZE = 150
 PAIRWISE_ALPHA = 0.05
 PAIRWISE_RESAMPLES = 2000
@@ -435,13 +436,19 @@ def build_seed_metric_significance(
             continue
 
         baseline_values = [float(value) for value in group_metrics[baseline]]
+        if len(baseline_values) < MIN_FORMAL_PAIRED_SIGNIFICANCE_COUNT:
+            significance[scope_name] = None
+            continue
         rows: list[dict[str, Any]] = []
         for group_index, group_name in enumerate(ordered_groups):
             if group_name == baseline:
                 continue
+            group_values = [float(value) for value in group_metrics[group_name]]
+            if len(group_values) < MIN_FORMAL_PAIRED_SIGNIFICANCE_COUNT:
+                continue
             row = _paired_seed_bootstrap_row(
                 baseline_values,
-                [float(value) for value in group_metrics[group_name]],
+                group_values,
                 comparison_name=f"{baseline} vs {group_name}",
                 model_a=baseline,
                 model_b=group_name,
@@ -453,6 +460,9 @@ def build_seed_metric_significance(
             raw_p_values[hypothesis] = float(row["p_value"])
             rows.append(row)
 
+        if not rows:
+            significance[scope_name] = None
+            continue
         significance[scope_name] = {
             "method": "paired_seed_bootstrap",
             "metric_name": metric_name,
@@ -1965,7 +1975,7 @@ def evaluate_system_on_samples(
             "split": split_name,
             "system_name": system_name,
             "instance_id": sample.claim.instance_id,
-            "scenario_id": sample.gold.scenario_id,
+            "scenario_id": public_payload["scenario_id"],
             "causal_level": public_payload["causal_level"],
             "graph_family": sample.claim.graph_family,
             "language_template_id": sample.claim.language_template_id,
@@ -1990,7 +2000,6 @@ def evaluate_system_on_samples(
             "claim_text": sample.claim.claim_text,
             "target_variables": dict(sample.claim.target_variables),
             "proxy_variables": list(sample.public.proxy_variables),
-            "selection_variables": list(sample.public.selection_variables),
             "selection_mechanism": sample.public.selection_mechanism,
             "tool_report": dict(payload["tool_report"]),
             "tool_trace": list(payload["tool_report"].get("tool_trace", [])),
@@ -2193,6 +2202,12 @@ def write_artifacts(
         encoding="utf-8",
     )
 
+    significance_path = json_path.with_name(f"{json_path.stem}_significance.json")
+    significance_path.write_text(
+        json.dumps(payload.get("significance", {}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     ci_path = json_path.with_name(f"{json_path.stem}_ci.json")
     ci_payload = _extract_confidence_interval_view(payload.get("aggregated_metrics", {})) or {}
     ci_path.write_text(
@@ -2207,6 +2222,7 @@ def write_artifacts(
         "config": str(config_path),
         "seed_list": str(seed_list_path),
         "aggregated_metrics": str(aggregated_metrics_path),
+        "significance": str(significance_path),
         "ci": str(ci_path),
     }
 

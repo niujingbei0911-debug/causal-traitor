@@ -34,6 +34,15 @@ def _build_claim(instance_id: str = "real_grounded_claim_001") -> ClaimInstance:
     )
 
 
+def _policy_observed_data_records() -> list[dict[str, float]]:
+    return [
+        {"program_uptake": 0.0, "baseline_need": 0.90, "employment_gain": 0.10},
+        {"program_uptake": 0.0, "baseline_need": 0.75, "employment_gain": 0.15},
+        {"program_uptake": 1.0, "baseline_need": 0.80, "employment_gain": 0.55},
+        {"program_uptake": 1.0, "baseline_need": 0.65, "employment_gain": 0.60},
+    ]
+
+
 class RealGroundedSubsetTests(unittest.TestCase):
     def test_real_grounded_case_round_trip_uses_core_claim_schema_and_keeps_source_citation(self) -> None:
         claim = _build_claim()
@@ -139,6 +148,9 @@ class RealGroundedSubsetTests(unittest.TestCase):
                     },
                     identifying_assumptions=["Ignorability"],
                     witness_note="Evaluation-ready witness note.",
+                    metadata={
+                        "observed_data_records": _policy_observed_data_records(),
+                    },
                 )
             ]
         )
@@ -152,6 +164,38 @@ class RealGroundedSubsetTests(unittest.TestCase):
         self.assertEqual(sample.public.description, "Evaluation-ready grounded case with public summary and hidden reviewer note.")
         self.assertEqual(sample.gold.gold_label.value, sample.claim.gold_label.value)
         self.assertFalse(sample.public.observed_data.empty)
+        self.assertEqual(
+            sample.public.observed_data.to_dict(orient="records"),
+            _policy_observed_data_records(),
+        )
+        self.assertEqual(sample.blueprint.true_dag["program_uptake"], [])
+        self.assertEqual(sample.blueprint.true_dag["employment_gain"], [])
+
+    def test_real_grounded_loader_rejects_cases_without_explicit_observed_data_source(self) -> None:
+        dataset = RealGroundedDataset(
+            cases=[
+                RealGroundedCase(
+                    case_id="rg_missing_data_001",
+                    grounding_type="literature_grounded",
+                    claim=_build_claim("real_grounded_claim_missing_data"),
+                    source_citation=SourceCitation(
+                        citation_text="Rivera (2025), Policy Evaluation Letters.",
+                        title="Missing data source case",
+                        year=2025,
+                    ),
+                    public_evidence_summary="Grounded case without an explicit observed-data source.",
+                    information_contract={
+                        "visible_information": ["Observed estimate"],
+                        "hidden_information": ["Private reviewer memo"],
+                    },
+                    identifying_assumptions=["Ignorability"],
+                    witness_note="This case should fail until explicit observed data is supplied.",
+                )
+            ]
+        )
+
+        with self.assertRaises(ValueError):
+            load_real_grounded_samples(dataset)
 
     def test_real_grounded_serializer_accepts_single_case_inputs(self) -> None:
         case = RealGroundedCase(

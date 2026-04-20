@@ -9,6 +9,7 @@ from benchmark.attacks import ATTACK_TEMPLATE_REGISTRY, generate_attack_sample
 from benchmark.generator import BenchmarkGenerator
 from benchmark.schema import IdentificationStatus, PublicCausalInstance, VerdictLabel, WitnessKind
 from benchmark.graph_families import generate_graph_family, list_graph_families
+from experiments.benchmark_harness import build_seed_benchmark_run
 from verifier.assumption_ledger import AssumptionLedger, build_assumption_ledger
 from verifier.claim_parser import ClaimParser, parse_claim
 from verifier.countermodel_search import CountermodelCandidate, CountermodelSearchResult, search_countermodels
@@ -21,6 +22,12 @@ from verifier.outputs import (
     SelectiveVerifierOutput,
 )
 from verifier.pipeline import VerifierPipeline, run_verifier_pipeline
+
+
+def _witness_faithfulness_helpers():
+    from experiments.exp_witness_faithfulness.run import build_witness_condition_records
+
+    return build_witness_condition_records
 
 
 class FakeToolRunner:
@@ -2156,6 +2163,41 @@ class SelectiveOutputValidationTests(unittest.TestCase):
                 "invalid": 0.25,
                 "unidentifiable": 0.25,
             },
+        )
+
+
+class WitnessFaithfulnessExperimentTests(unittest.TestCase):
+    def test_witness_condition_records_replay_conditioned_decisions(self) -> None:
+        build_witness_condition_records = _witness_faithfulness_helpers()
+        run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=1)
+        sample = next(
+            candidate
+            for candidate in run.samples
+            if candidate.claim.graph_family == "l1_reverse_causality_family"
+        )
+
+        conditions = build_witness_condition_records(
+            sample=sample,
+            seed=0,
+            split_name="test_iid",
+            donor_samples=run.samples,
+        )
+        by_condition = {condition["witness_condition"]: condition for condition in conditions}
+
+        self.assertEqual(set(by_condition), {"original", "drop_witness", "corrupt_witness", "shuffle_witness"})
+        self.assertEqual(
+            by_condition["original"]["predicted_label"],
+            by_condition["original"]["base_predicted_label"],
+        )
+        self.assertTrue(all(isinstance(row["verdict_changed"], bool) for row in conditions))
+        self.assertTrue(
+            any(
+                by_condition[condition_name]["verdict_changed"]
+                for condition_name in ("drop_witness", "corrupt_witness", "shuffle_witness")
+            )
+        )
+        self.assertTrue(
+            all("conditioned_verdict" in row for row in conditions)
         )
 
 

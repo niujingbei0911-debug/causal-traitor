@@ -35,6 +35,7 @@ from experiments.exp_main_benchmark.run import run_experiment as run_main_benchm
 from experiments.exp_ood_generalization.run import run_experiment as run_ood_generalization
 from experiments.exp_persuasion_robustness.run import run_experiment as run_persuasion_robustness
 from experiments.exp_real_grounded_subset.run import run_experiment as run_real_grounded_subset
+from experiments.exp_witness_faithfulness.run import run_experiment as run_witness_faithfulness
 from game.config import ConfigLoader
 from game.data_generator import DataGenerator
 from game.debate_engine import DebateEngine
@@ -44,6 +45,8 @@ from main import run_game
 from run_live_game import _public_graph
 from verifier.pipeline import VerifierPipeline
 from visualization.api import VisualizationAPI
+
+REAL_GROUNDED_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_grounded_subset.json"
 
 
 class IntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -241,6 +244,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_persuasion_robustness.json"),
             )
             real_grounded_payload = run_real_grounded_subset(
+                dataset=str(REAL_GROUNDED_FIXTURE),
                 seeds=[0],
                 samples_per_family=1,
                 allow_protocol_violations=True,
@@ -478,14 +482,29 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for dataset_partition in ("synthetic", "real_grounded"):
                 self.assertIn(dataset_partition, real_grounded_payload["aggregated_metrics"])
                 self.assertIn("countermodel_grounded", real_grounded_payload["aggregated_metrics"][dataset_partition])
-                self.assertIn(
-                    "test_iid",
-                    real_grounded_payload["aggregated_metrics"][dataset_partition]["countermodel_grounded"],
+            self.assertIn(
+                "test_iid",
+                real_grounded_payload["aggregated_metrics"]["synthetic"]["countermodel_grounded"],
+            )
+            self.assertIn(
+                "test_ood",
+                real_grounded_payload["aggregated_metrics"]["synthetic"]["countermodel_grounded"],
+            )
+            self.assertIn(
+                "real_grounded",
+                real_grounded_payload["aggregated_metrics"]["real_grounded"]["countermodel_grounded"],
+            )
+            self.assertNotIn(
+                "test_iid",
+                real_grounded_payload["aggregated_metrics"]["real_grounded"]["countermodel_grounded"],
+            )
+            self.assertTrue(
+                any(
+                    record["dataset_partition"] == "real_grounded"
+                    and record["split"] == "real_grounded"
+                    for record in real_grounded_payload["raw_predictions"]
                 )
-                self.assertIn(
-                    "test_ood",
-                    real_grounded_payload["aggregated_metrics"][dataset_partition]["countermodel_grounded"],
-                )
+            )
             self.assertIn("## synthetic", real_grounded_payload["markdown_summary"])
             self.assertIn("## real_grounded", real_grounded_payload["markdown_summary"])
             for artifact_key in (
@@ -494,6 +513,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "seed_list",
                 "aggregated_metrics",
                 "ci",
+                "significance",
             ):
                 self.assertIn(artifact_key, real_grounded_payload["artifacts"])
                 self.assertTrue(Path(real_grounded_payload["artifacts"][artifact_key]).exists())
@@ -507,6 +527,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_persuasion_robustness.json"),
             )
             real_grounded_payload = run_real_grounded_subset(
+                dataset=str(REAL_GROUNDED_FIXTURE),
                 seeds=[0],
                 samples_per_family=1,
                 allow_protocol_violations=True,
@@ -573,8 +594,44 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("synthetic", real_grounded_payload["aggregated_metrics"])
             self.assertIn("real_grounded", real_grounded_payload["aggregated_metrics"])
+            self.assertIn(
+                "real_grounded",
+                real_grounded_payload["aggregated_metrics"]["real_grounded"]["countermodel_grounded"],
+            )
             self.assertIn("## synthetic", real_grounded_payload["markdown_summary"])
             self.assertIn("## real_grounded", real_grounded_payload["markdown_summary"])
+
+    def test_phase4_witness_faithfulness_emits_replayed_condition_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_witness_faithfulness(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_witness_faithfulness.json"),
+            )
+
+            self.assertEqual(payload["system"], "countermodel_grounded")
+            self.assertEqual(
+                payload["config"]["witness_conditions"],
+                ["original", "drop_witness", "corrupt_witness", "shuffle_witness"],
+            )
+            self.assertIn("original", payload["aggregated_metrics"])
+            self.assertIn("drop_witness", payload["aggregated_metrics"])
+            for field_name in ("mean", "std", "ci_lower", "ci_upper", "formatted"):
+                self.assertIn(
+                    field_name,
+                    payload["aggregated_metrics"]["original"]["verdict_accuracy"],
+                )
+            self.assertIn("significance", payload)
+            self.assertIn("verdict_accuracy", payload["significance"])
+            self.assertTrue(
+                any(
+                    record["witness_condition"] != "original" and record["verdict_changed"]
+                    for record in payload["condition_rows"]
+                )
+            )
+            ci_payload = json.loads(Path(payload["artifacts"]["ci"]).read_text(encoding="utf-8"))
+            self.assertTrue(ci_payload)
 
     def test_phase4_default_main_and_leakage_paths_match_paper_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -665,6 +722,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_persuasion_robustness_defaultish.json"),
             )
             real_grounded_payload = run_real_grounded_subset(
+                dataset=str(REAL_GROUNDED_FIXTURE),
                 seeds=[0],
                 samples_per_family=1,
                 allow_protocol_violations=True,
@@ -728,6 +786,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(
                 "countermodel_grounded",
                 real_grounded_payload["aggregated_metrics"]["real_grounded"],
+            )
+            self.assertIn(
+                "real_grounded",
+                real_grounded_payload["aggregated_metrics"]["real_grounded"]["countermodel_grounded"],
             )
 
     def test_phase4_leakage_control_reads_oracle_public_measurement_semantics(self) -> None:
@@ -971,6 +1033,18 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_phase4_protocol_marks_toy_scale_runs_exploratory_even_with_three_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
+            main_payload = run_main_benchmark(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_main_benchmark_toy.json"),
+            )
+            persuasion_payload = run_persuasion_robustness(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_persuasion_robustness_toy.json"),
+            )
             robustness_payload = run_adversarial_robustness(
                 samples_per_family=1,
                 allow_protocol_violations=True,
@@ -988,6 +1062,34 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 output_path=str(Path(tmp_dir) / "exp_human_audit_toy.json"),
             )
 
+            self.assertFalse(main_payload["protocol"]["compliant"])
+            self.assertTrue(main_payload["protocol"]["override_used"])
+            self.assertIn("samples_per_family", main_payload["protocol"]["violations"])
+            self.assertTrue(all(main_payload["significance"][split_name] is None for split_name in ("test_iid", "test_ood")))
+            self.assertEqual(main_payload["global_multiple_comparison_correction"]["family_size"], 0)
+
+            self.assertFalse(persuasion_payload["protocol"]["compliant"])
+            self.assertTrue(persuasion_payload["protocol"]["override_used"])
+            self.assertIn("samples_per_family", persuasion_payload["protocol"]["violations"])
+            self.assertEqual(persuasion_payload["config"]["samples_per_family"], 2)
+            self.assertEqual(persuasion_payload["requested_config"]["samples_per_family"], 1)
+            self.assertEqual(
+                persuasion_payload["config"]["sample_budget_override"],
+                {
+                    "requested": 1,
+                    "effective": 2,
+                    "reason": "minimum_split_feasibility_for_attack_only_benchmark",
+                },
+            )
+            self.assertTrue(
+                all(
+                    persuasion_payload["significance"][system_name][split_name] is None
+                    for system_name in persuasion_payload["systems"]
+                    for split_name in ("test_iid", "test_ood")
+                )
+            )
+            self.assertEqual(persuasion_payload["global_multiple_comparison_correction"]["family_size"], 0)
+
             self.assertFalse(robustness_payload["protocol"]["compliant"])
             self.assertTrue(robustness_payload["protocol"]["override_used"])
             self.assertIn("samples_per_family", robustness_payload["protocol"]["violations"])
@@ -1000,6 +1102,32 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(human_payload["protocol"]["override_used"])
             self.assertIn("samples_per_family", human_payload["protocol"]["violations"])
             self.assertIn("audit_subset_size", human_payload["protocol"]["violations"])
+
+    def test_phase4_persuasion_runner_applies_true_global_multiple_comparison_correction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = run_persuasion_robustness(
+                output_path=str(Path(tmp_dir) / "exp_persuasion_robustness_global_correction.json"),
+            )
+
+            total_rows = 0
+            for system_name in payload["systems"]:
+                for split_name in ("test_iid", "test_ood"):
+                    report = payload["significance"][system_name][split_name]
+                    self.assertIsNotNone(report)
+                    total_rows += len(report["comparisons"])
+
+            self.assertEqual(
+                payload["global_multiple_comparison_correction"]["family_size"],
+                total_rows,
+            )
+            self.assertEqual(
+                len(payload["global_multiple_comparison_correction"]["entries"]),
+                total_rows,
+            )
+            for system_name in payload["systems"]:
+                for split_name in ("test_iid", "test_ood"):
+                    report = payload["significance"][system_name][split_name]
+                    self.assertEqual(report["correction_scope"]["family_size"], total_rows)
 
     def test_phase4_main_runner_rejects_duplicate_systems_early(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -1,0 +1,168 @@
+{
+  "dataset_name": "real_grounded_subset_fixture",
+  "version": "2026-04-21",
+  "metadata": {
+    "domains": [
+      "policy",
+      "observational_medicine"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "rg_policy_training_001",
+      "grounding_type": "literature_grounded",
+      "claim": {
+        "instance_id": "rg_claim_policy_001",
+        "causal_level": "L2",
+        "graph_family": "real_grounded_policy_case",
+        "language_template_id": "real_grounded::policy::001",
+        "observed_variables": [
+          "program_uptake",
+          "baseline_need",
+          "employment_gain"
+        ],
+        "proxy_variables": [],
+        "selection_mechanism": null,
+        "observed_data_path": null,
+        "claim_text": "Increasing program_uptake improves employment_gain.",
+        "attacker_rationale": "",
+        "query_type": "average_treatment_effect",
+        "target_variables": {
+          "treatment": "program_uptake",
+          "outcome": "employment_gain"
+        },
+        "gold_label": "valid",
+        "gold_answer": "The grounded policy case treats the effect as identified under the public assumptions.",
+        "gold_assumptions": [
+          "Conditional ignorability",
+          "Positivity"
+        ],
+        "support_witness": null,
+        "countermodel_witness": null,
+        "assumption_witness": null,
+        "meta": {}
+      },
+      "source_citation": {
+        "citation_text": "Smith and Lee (2024), Journal of Policy Evaluation.",
+        "title": "Employment effects of targeted training programs",
+        "year": 2024
+      },
+      "public_evidence_summary": "Public summary of an observational policy evaluation with measured covariates.",
+      "information_contract": {
+        "visible_information": [
+          "Observed covariate-adjusted estimates",
+          "Public treatment and outcome definitions"
+        ],
+        "hidden_information": [
+          "Reviewer-only sensitivity analysis details"
+        ]
+      },
+      "identifying_assumptions": [
+        "Conditional ignorability",
+        "Stable outcome definition"
+      ],
+      "witness_note": "The study reports robustness checks but still relies on observational assumptions.",
+      "metadata": {
+        "observed_data_records": [
+          {
+            "program_uptake": 0.0,
+            "baseline_need": 0.92,
+            "employment_gain": 0.12
+          },
+          {
+            "program_uptake": 0.0,
+            "baseline_need": 0.74,
+            "employment_gain": 0.18
+          },
+          {
+            "program_uptake": 1.0,
+            "baseline_need": 0.81,
+            "employment_gain": 0.57
+          },
+          {
+            "program_uptake": 1.0,
+            "baseline_need": 0.63,
+            "employment_gain": 0.61
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "rg_medicine_case_002",
+      "grounding_type": "semi_real",
+      "claim": {
+        "instance_id": "rg_claim_medicine_002",
+        "causal_level": "L2",
+        "graph_family": "real_grounded_medicine_case",
+        "language_template_id": "real_grounded::medicine::002",
+        "observed_variables": [
+          "therapy_flag",
+          "baseline_risk",
+          "recovery_score"
+        ],
+        "proxy_variables": [],
+        "selection_mechanism": null,
+        "observed_data_path": null,
+        "claim_text": "Therapy_flag improves recovery_score in the observed cohort.",
+        "attacker_rationale": "",
+        "query_type": "average_treatment_effect",
+        "target_variables": {
+          "treatment": "therapy_flag",
+          "outcome": "recovery_score"
+        },
+        "gold_label": "unidentifiable",
+        "gold_answer": "The semi-real clinical case remains underdetermined under public evidence.",
+        "gold_assumptions": [
+          "No hidden selection effects"
+        ],
+        "support_witness": null,
+        "countermodel_witness": null,
+        "assumption_witness": null,
+        "meta": {}
+      },
+      "source_citation": {
+        "citation_text": "Garcia (2023), Observational Medicine Review.",
+        "title": "Semi-real treatment effect casebook",
+        "year": 2023
+      },
+      "public_evidence_summary": "Semi-real observational case with documented public evidence and restricted annotations.",
+      "information_contract": {
+        "visible_information": [
+          "Public cohort table",
+          "Outcome definition"
+        ],
+        "hidden_information": [
+          "Private adjudication memo"
+        ]
+      },
+      "identifying_assumptions": [
+        "No hidden outcome misclassification"
+      ],
+      "witness_note": "The semi-real record includes an auditor note about residual uncertainty.",
+      "metadata": {
+        "observed_data_records": [
+          {
+            "therapy_flag": 0.0,
+            "baseline_risk": 0.86,
+            "recovery_score": 0.36
+          },
+          {
+            "therapy_flag": 1.0,
+            "baseline_risk": 0.81,
+            "recovery_score": 0.39
+          },
+          {
+            "therapy_flag": 0.0,
+            "baseline_risk": 0.48,
+            "recovery_score": 0.71
+          },
+          {
+            "therapy_flag": 1.0,
+            "baseline_risk": 0.44,
+            "recovery_score": 0.69
+          }
+        ]
+      }
+    }
+  ]
+}
