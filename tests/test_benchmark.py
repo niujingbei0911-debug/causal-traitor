@@ -955,6 +955,44 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertTrue(any(style in PERSUASION_STYLE_SPACE for style in styles))
         self.assertGreaterEqual(len(set(styles)), 2)
 
+    def test_frontdoor_truthful_samples_anchor_valid_claims_on_the_mediator(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+
+        for seed in (0, 2, 28):
+            with self.subTest(seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name="l2_frontdoor_partial_measurement_family",
+                    difficulty=0.35,
+                    seed=seed,
+                    persuasion_style_id="none",
+                )
+                mediator = sample.blueprint.role_bindings["mediator"]
+                observed_context = sample.blueprint.role_bindings["observed_context"]
+
+                self.assertIs(sample.claim.gold_label, VerdictLabel.VALID)
+                self.assertIn(mediator, sample.claim.claim_text)
+                self.assertNotIn(f"adjusting for {observed_context}", sample.claim.claim_text)
+                self.assertNotIn(f"controlling for {observed_context}", sample.claim.claim_text)
+                self.assertNotIn(f"through {observed_context}", sample.claim.claim_text)
+
+    def test_counterfactual_ambiguity_problem_seeds_generate_without_contract_failure(self) -> None:
+        generator = BenchmarkGenerator(seed=0)
+
+        for seed in (66, 74):
+            with self.subTest(seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name="l3_counterfactual_ambiguity_family",
+                    difficulty=0.5,
+                    seed=seed,
+                    persuasion_style_id="none",
+                )
+
+                self.assertEqual(sample.claim.graph_family, "l3_counterfactual_ambiguity_family")
+                self.assertEqual(
+                    sample.claim.meta["context_shift_group"],
+                    sample.gold.metadata["context_shift_group"],
+                )
+
     def test_invalid_and_unidentifiable_samples_do_not_share_the_same_public_contract(self) -> None:
         generator = BenchmarkGenerator(seed=29)
         families = (
@@ -1322,6 +1360,37 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertTrue(all(isinstance(sample.claim, ClaimInstance) for sample in samples))
         self.assertTrue(any(sample.claim.meta["is_showcase"] for sample in samples))
         self.assertTrue(any(not sample.claim.meta["is_showcase"] for sample in samples))
+
+    def test_countermodel_witness_payload_matches_verifier_ready_schema(self) -> None:
+        witness = generate_countermodel_witness(
+            "l2_invalid_iv_family",
+            gold_label="invalid",
+            seed=16,
+        )
+
+        payload = witness.payload
+        for key in (
+            "countermodel_type",
+            "observational_match_score",
+            "query_disagreement",
+            "triggered_assumptions",
+            "countermodel_explanation",
+            "verdict_suggestion",
+            "selected_countermodel",
+            "candidate_pool",
+            "candidate_count",
+        ):
+            self.assertIn(key, payload)
+
+        self.assertEqual(payload["candidate_count"], len(payload["candidate_pool"]))
+        self.assertEqual(
+            payload["selected_countermodel"]["countermodel_type"],
+            payload["countermodel_type"],
+        )
+        self.assertEqual(
+            payload["selected_countermodel"]["triggered_assumptions"],
+            payload["triggered_assumptions"],
+        )
 
     def test_benchmark_generator_claim_instances_can_flow_into_split_builder_and_loader(self) -> None:
         generator = BenchmarkGenerator(seed=31)

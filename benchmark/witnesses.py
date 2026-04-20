@@ -420,6 +420,31 @@ def generate_countermodel_witness(
         for entry in _build_assumption_ledger(blueprint, gold_label=label)
         if entry["status"] != "supported"
     ]
+    triggered_assumptions = assumptions if found_countermodel else []
+    candidate_payload = {
+        "countermodel_type": ctype,
+        "causal_level": blueprint.causal_level,
+        "observational_match_score": match_score,
+        "query_disagreement": query_disagreement,
+        "countermodel_explanation": explanation,
+        "verdict_suggestion": verdict_suggestion.value if verdict_suggestion is not None else None,
+        "triggered_assumptions": list(triggered_assumptions),
+        "observational_evidence": {
+            "used_observed_data": False,
+            "reference_source": "benchmark_countermodel_witness",
+        },
+    }
+    selected_countermodel = (
+        {
+            **candidate_payload,
+            "type": ctype,
+            "match_score": match_score,
+            "explanation": explanation,
+        }
+        if found_countermodel
+        else None
+    )
+    candidate_pool = [selected_countermodel] if selected_countermodel is not None else []
 
     return Witness(
         witness_type=WitnessKind.COUNTERMODEL,
@@ -432,6 +457,15 @@ def generate_countermodel_witness(
             "observational_match_score": match_score,
             "query_disagreement": query_disagreement,
             "countermodel_explanation": explanation,
+            "triggered_assumptions": list(triggered_assumptions),
+            "candidates": [candidate_payload] if found_countermodel else [],
+            "used_observed_data": False,
+            "type": ctype,
+            "match_score": match_score,
+            "explanation": explanation,
+            "candidate_count": len(candidate_pool),
+            "selected_countermodel": selected_countermodel,
+            "candidate_pool": candidate_pool,
             "query_type": query_hint,
             "verdict_suggestion": verdict_suggestion.value if verdict_suggestion is not None else None,
         },

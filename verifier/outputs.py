@@ -216,6 +216,7 @@ class ParsedClaim:
             "outcome": self.outcome,
             "claim_polarity": self.claim_polarity.value,
             "claim_strength": self.claim_strength.value,
+            "explicit_assumptions": list(self.mentioned_assumptions),
             "mentioned_assumptions": list(self.mentioned_assumptions),
             "implied_assumptions": list(self.implied_assumptions),
             "rhetorical_strategy": self.rhetorical_strategy,

@@ -2100,42 +2100,59 @@ class BenchmarkGenerator:
             seed=seed,
             context_shift_group=context_shift_group,
         )
-        context_profile = dict(context_payload.get("context_shift_profile", {}))
         gold_label = resolved_label_override or VerdictLabel(
             str(self._select_gold_label(blueprint, seed)).strip().lower()
         )
         query_type = self._select_query_type(blueprint, seed)
-        sample_seed = self._contract_sample_seed(
-            blueprint=blueprint,
-            seed=seed,
-            gold_label=gold_label,
-            context_shift_group=context_payload["context_shift_group"],
-        )
         public_contract: dict[str, Any] | None = None
-        for attempt in range(96):
-            full_data, true_scm = self._sample_programmatic_data(
+        context_group_candidates = [str(context_payload["context_shift_group"])]
+        if context_shift_group is None:
+            for candidate_group in context_payload.get("context_shift_domains", []):
+                normalized_group = str(candidate_group)
+                if normalized_group not in context_group_candidates:
+                    context_group_candidates.append(normalized_group)
+
+        for candidate_group in context_group_candidates:
+            candidate_context_payload = _context_shift_payload(
                 blueprint=blueprint,
-                difficulty=difficulty,
-                n_samples=n_samples,
-                seed=sample_seed,
-                context_profile=context_profile,
+                seed=seed,
+                context_shift_group=candidate_group,
             )
-            observed_data = full_data.loc[:, blueprint.observed_variables].copy()
-            if self._supports_public_label_contract(
+            context_profile = dict(candidate_context_payload.get("context_shift_profile", {}))
+            sample_seed = self._contract_sample_seed(
                 blueprint=blueprint,
-                observed_data=observed_data,
-                query_type=query_type,
+                seed=seed,
                 gold_label=gold_label,
-            ):
-                public_contract = self._build_public_evidence_contract(
+                context_shift_group=candidate_context_payload["context_shift_group"],
+            )
+            for attempt in range(96):
+                full_data, true_scm = self._sample_programmatic_data(
+                    blueprint=blueprint,
+                    difficulty=difficulty,
+                    n_samples=n_samples,
+                    seed=sample_seed,
+                    context_profile=context_profile,
+                )
+                observed_data = full_data.loc[:, blueprint.observed_variables].copy()
+                if self._supports_public_label_contract(
                     blueprint=blueprint,
                     observed_data=observed_data,
                     query_type=query_type,
                     gold_label=gold_label,
-                )
+                ):
+                    public_contract = self._build_public_evidence_contract(
+                        blueprint=blueprint,
+                        observed_data=observed_data,
+                        query_type=query_type,
+                        gold_label=gold_label,
+                    )
+                    context_payload = candidate_context_payload
+                    break
+                sample_seed += 7919
+            if public_contract is not None:
                 break
-            sample_seed += 7919
-        else:
+
+        if public_contract is None:
             raise ValueError(
                 "Unable to generate a public-self-consistent sample for "
                 f"{blueprint.family_name} with seed {seed} and label {gold_label.value!r}."
@@ -2146,6 +2163,7 @@ class BenchmarkGenerator:
         effect_summary = self._estimate_effect_summary(observed_data, treatment, outcome)
         difficulty_profile = self._difficulty_profile(difficulty)
         renaming_meta = dict(renaming_meta or {})
+        context_profile = dict(context_payload.get("context_shift_profile", {}))
         public_metadata = self._public_metadata_payload(
             blueprint,
             context_profile=context_profile,
@@ -2478,6 +2496,17 @@ class BenchmarkGenerator:
             and blueprint.role_bindings.get("instrument")
         ):
             return "instrument", str(blueprint.role_bindings["instrument"])
+        if (
+            blueprint.role_bindings.get("mediator")
+            and (
+                query_type == "frontdoor_effect"
+                or (
+                    query_type in {"average_treatment_effect", "interventional_effect"}
+                    and "frontdoor" in blueprint.family_tags
+                )
+            )
+        ):
+            return "mediator", str(blueprint.role_bindings["mediator"])
         role_preferences = {
             "association_strength": ("proxy", "observed_adjuster", "observed_context"),
             "causal_direction": ("proxy", "observed_context", "observed_adjuster"),
@@ -2571,6 +2600,12 @@ class BenchmarkGenerator:
                     f"The benchmark supports an instrumental-variable estimate of the causal effect of {treatment} on {outcome} using {bridge}.",
                     f"With {bridge} as an instrument, the causal effect of {treatment} on {outcome} is identified.",
                 )
+            if bridge_role == "mediator":
+                return (
+                    f"With mediator {bridge} measured, the causal effect of {treatment} on {outcome} is identified through the observed frontdoor path.",
+                    f"The measured mediator {bridge} provides the visible frontdoor bridge needed to identify the causal effect of {treatment} on {outcome}.",
+                    f"Using mediator {bridge} as the observed frontdoor bridge identifies the causal effect of {treatment} on {outcome}.",
+                )
             return (
                 f"After controlling for {bridge}, the average treatment effect of {treatment} on {outcome} is identified.",
                 f"After adjusting for {bridge}, the causal effect of {treatment} on {outcome} is identified.",
@@ -2583,6 +2618,12 @@ class BenchmarkGenerator:
                     f"The effect of intervening on {treatment} on {outcome} is identified by the benchmark evidence.",
                     f"The interventional effect of {treatment} on {outcome} is identified in this benchmark sample.",
                     f"The causal effect of intervening on {treatment} on {outcome} is identified in this benchmark construction.",
+                )
+            if bridge_role == "mediator":
+                return (
+                    f"With mediator {bridge} measured, the effect of intervening on {treatment} on {outcome} is identified through the observed frontdoor path.",
+                    f"The measured mediator {bridge} supplies the frontdoor bridge needed to identify the intervention effect from {treatment} to {outcome}.",
+                    f"Using mediator {bridge} as the observed frontdoor bridge identifies the effect of intervening on {treatment} on {outcome}.",
                 )
             return (
                 f"After controlling for {bridge}, the effect of intervening on {treatment} on {outcome} is identified.",
@@ -2622,6 +2663,25 @@ class BenchmarkGenerator:
                 f"With {bridge} available, the effect of treatment on the treated for {treatment} and {outcome} is identified.",
                 f"Using {bridge}, the benchmark supports the effect of treatment on the treated for {treatment} on {outcome}.",
                 f"The measured evidence through {bridge} identifies the effect of treatment on the treated linking {treatment} and {outcome}.",
+            )
+
+        if query_type == "frontdoor_effect":
+            if bridge is None:
+                return (
+                    f"The benchmark identifies the causal effect of {treatment} on {outcome} through the observed frontdoor path.",
+                    f"The available evidence supports identifying the causal effect of {treatment} on {outcome} from the visible frontdoor path.",
+                    f"The benchmark construction identifies the causal effect of {treatment} on {outcome} using the observed frontdoor bridge.",
+                )
+            if bridge_role == "mediator":
+                return (
+                    f"With mediator {bridge} measured, the causal effect of {treatment} on {outcome} is identified through the observed frontdoor path.",
+                    f"The measured mediator {bridge} is enough to identify the causal effect of {treatment} on {outcome} via the frontdoor path.",
+                    f"Using mediator {bridge} as the observed frontdoor bridge identifies the causal effect of {treatment} on {outcome}.",
+                )
+            return (
+                f"Using {bridge}, the benchmark supports identifying the causal effect of {treatment} on {outcome} through the frontdoor path.",
+                f"With {bridge} available, the visible frontdoor path supports the effect of {treatment} on {outcome}.",
+                f"The measured evidence through {bridge} supports the frontdoor-style claim linking {treatment} and {outcome}.",
             )
 
         if query_type == "abduction_action_prediction":

@@ -1,6 +1,6 @@
 import unittest
 
-from evaluation.metrics import CausalMetrics, MetricResult
+from evaluation.metrics import CausalMetrics, MetricResult, validate_round_contracts
 from evaluation.reporting import (
     compare_predictions,
     compare_prediction_groups,
@@ -17,9 +17,90 @@ from evaluation.significance import (
 from verifier.outputs import SelectiveVerifierOutput
 
 
+def _structured_round(
+    *,
+    round_id: int | None = None,
+    gold_label: str,
+    predicted_label: str,
+    confidence: float,
+    top_level_confidence: float | None = None,
+    countermodel_witness: dict[str, object] | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    identification_status = {
+        "valid": "identified",
+        "invalid": "contradicted",
+        "unidentifiable": "underdetermined",
+    }[predicted_label]
+    refusal_reason = None if predicted_label != "unidentifiable" else "insufficient_public_information"
+    missing_information_spec = (
+        {}
+        if predicted_label != "unidentifiable"
+        else {
+            "missing_assumptions": [],
+            "required_evidence": [],
+            "note": "Need more public evidence.",
+        }
+    )
+    verdict = {
+        "label": predicted_label,
+        "final_verdict": predicted_label,
+        "confidence": confidence,
+        "identification_status": identification_status,
+        "refusal_reason": refusal_reason,
+        "missing_information_spec": missing_information_spec,
+    }
+    if countermodel_witness is not None:
+        verdict["countermodel_witness"] = countermodel_witness
+    payload = {
+        **extra,
+        "round_id": round_id,
+        "gold_label": gold_label,
+        "verdict_label": predicted_label,
+        "verifier_confidence": confidence,
+        "verifier_verdict": verdict,
+    }
+    if top_level_confidence is not None:
+        payload["confidence"] = top_level_confidence
+    return payload
+
+
 class EvaluationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.scorer = Scorer()
+
+    def test_validate_round_contracts_requires_structured_prediction_payload(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            validate_round_contracts(
+                [
+                    {
+                        "gold_label": "valid",
+                        "verdict_label": "valid",
+                    }
+                ]
+            )
+
+        self.assertIn("missing prediction payload", str(context.exception))
+
+    def test_validate_round_contracts_rejects_empty_unidentifiable_metadata(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            validate_round_contracts(
+                [
+                    {
+                        "gold_label": "unidentifiable",
+                        "verdict": {
+                            "label": "unidentifiable",
+                            "identification_status": "underdetermined",
+                            "refusal_reason": None,
+                            "missing_information_spec": {},
+                        },
+                    }
+                ]
+            )
+
+        message = str(context.exception)
+        self.assertIn("refusal_reason", message)
+        self.assertIn("missing_information_spec", message)
 
     def test_metric_result_supports_partial_construction(self) -> None:
         metric = MetricResult(name="DAcc", value=0.0)
@@ -53,34 +134,34 @@ class EvaluationTests(unittest.TestCase):
 
     def test_score_game_ignores_winner_and_appendix_metrics_for_overall_score(self) -> None:
         base_rounds = [
-            {
-                "round_id": 1,
-                "winner": "agent_b",
-                "gold_label": "valid",
-                "verdict_label": "valid",
-                "verifier_confidence": 0.9,
-                "deception_succeeded": True,
-                "jury_consensus": 0.1,
-            },
-            {
-                "round_id": 2,
-                "winner": "agent_a",
-                "gold_label": "invalid",
-                "verdict_label": "valid",
-                "verifier_confidence": 0.8,
-                "deception_succeeded": False,
-                "jury_consensus": 0.9,
-            },
-            {
-                "round_id": 3,
-                "winner": "draw",
-                "gold_label": "unidentifiable",
-                "verdict_label": "unidentifiable",
-                "verifier_confidence": 0.7,
-                "countermodel_witness": {"countermodel_type": "observationally_equivalent_countermodel"},
-                "deception_succeeded": True,
-                "jury_consensus": 0.5,
-            },
+            _structured_round(
+                round_id=1,
+                winner="agent_b",
+                gold_label="valid",
+                predicted_label="valid",
+                confidence=0.9,
+                deception_succeeded=True,
+                jury_consensus=0.1,
+            ),
+            _structured_round(
+                round_id=2,
+                winner="agent_a",
+                gold_label="invalid",
+                predicted_label="valid",
+                confidence=0.8,
+                deception_succeeded=False,
+                jury_consensus=0.9,
+            ),
+            _structured_round(
+                round_id=3,
+                winner="draw",
+                gold_label="unidentifiable",
+                predicted_label="unidentifiable",
+                confidence=0.7,
+                countermodel_witness={"countermodel_type": "observationally_equivalent_countermodel"},
+                deception_succeeded=True,
+                jury_consensus=0.5,
+            ),
         ]
         appendix_heavy_rounds = [
             {
@@ -144,12 +225,12 @@ class EvaluationTests(unittest.TestCase):
             {
                 "game_id": "primary-metric",
                 "rounds": [
-                    {
-                        "round_id": 1,
-                        "gold_label": "invalid",
-                        "verdict_label": "invalid",
-                        "verifier_confidence": 0.9,
-                    }
+                    _structured_round(
+                        round_id=1,
+                        gold_label="invalid",
+                        predicted_label="invalid",
+                        confidence=0.9,
+                    )
                 ],
             }
         )
@@ -407,17 +488,17 @@ class EvaluationTests(unittest.TestCase):
             {
                 "game_id": "calibration-probabilities",
                 "rounds": [
-                    {
-                        "round_id": 1,
-                        "gold_label": "valid",
-                        "verdict_label": "valid",
-                        "verifier_confidence": 0.99,
-                        "verdict_probabilities": {
+                    _structured_round(
+                        round_id=1,
+                        gold_label="valid",
+                        predicted_label="valid",
+                        confidence=0.99,
+                        verdict_probabilities={
                             "valid": 0.55,
                             "invalid": 0.30,
                             "unidentifiable": 0.15,
                         },
-                    }
+                    )
                 ],
             }
         )
@@ -430,13 +511,13 @@ class EvaluationTests(unittest.TestCase):
             {
                 "game_id": "calibration-sequence-probabilities",
                 "rounds": [
-                    {
-                        "round_id": 1,
-                        "gold_label": "valid",
-                        "verdict_label": "valid",
-                        "verifier_confidence": 0.99,
-                        "predicted_probabilities": [0.55, 0.30, 0.15],
-                    }
+                    _structured_round(
+                        round_id=1,
+                        gold_label="valid",
+                        predicted_label="valid",
+                        confidence=0.99,
+                        predicted_probabilities=[0.55, 0.30, 0.15],
+                    )
                 ],
             }
         )
@@ -458,11 +539,12 @@ class EvaluationTests(unittest.TestCase):
         results = CausalMetrics.compute_all(
             {
                 "rounds": [
-                    {
-                        "gold_label": "valid",
-                        "verdict_label": "invalid",
-                        "countermodel_found": True,
-                    }
+                    _structured_round(
+                        gold_label="valid",
+                        predicted_label="invalid",
+                        confidence=0.8,
+                        countermodel_found=True,
+                    )
                 ]
             }
         )
@@ -474,13 +556,13 @@ class EvaluationTests(unittest.TestCase):
     def test_compute_all_preserves_explicit_zero_confidence_from_round_payload(self) -> None:
         game_data = {
             "rounds": [
-                {
-                    "round_id": 1,
-                    "gold_label": "valid",
-                    "verdict_label": "valid",
-                    "verifier_confidence": 0.0,
-                    "confidence": 0.9,
-                }
+                _structured_round(
+                    round_id=1,
+                    gold_label="valid",
+                    predicted_label="valid",
+                    confidence=0.0,
+                    top_level_confidence=0.9,
+                )
             ]
         }
 
@@ -493,17 +575,17 @@ class EvaluationTests(unittest.TestCase):
     def test_compute_all_prefers_round_level_payload_over_top_level_arrays(self) -> None:
         game_data = {
             "rounds": [
-                {
-                    "round_id": 1,
-                    "gold_label": "valid",
-                    "verdict_label": "valid",
-                    "verifier_confidence": 0.99,
-                    "predicted_probabilities": {
+                _structured_round(
+                    round_id=1,
+                    gold_label="valid",
+                    predicted_label="valid",
+                    confidence=0.99,
+                    predicted_probabilities={
                         "valid": 0.55,
                         "invalid": 0.30,
                         "unidentifiable": 0.15,
                     },
-                }
+                )
             ],
             "gold_labels": ["valid"],
             "predicted_labels": ["valid"],

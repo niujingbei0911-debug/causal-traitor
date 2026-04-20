@@ -793,16 +793,28 @@ def apply_attacker_model_family_profile(
     return rewritten
 
 
+def _sample_transcript(sample: BenchmarkSample) -> str | None:
+    transcript = sample.claim.attacker_rationale.strip()
+    return transcript or None
+
+
 def _verifier_tool_context(sample: BenchmarkSample) -> dict[str, Any]:
     public = sample.public
-    return {
+    transcript = _sample_transcript(sample)
+    parsed_claim = parse_claim(sample.claim.claim_text, transcript=transcript)
+    payload = {
         "treatment": sample.claim.target_variables["treatment"],
         "outcome": sample.claim.target_variables["outcome"],
         "proxy_variables": list(getattr(public, "proxy_variables", [])),
         "selection_variables": list(getattr(public, "selection_variables", [])),
         "selection_mechanism": getattr(public, "selection_mechanism", None),
         "claim_stance": "pro_causal",
+        "_parsed_claim": parsed_claim,
     }
+    if transcript is not None:
+        payload["transcript"] = transcript
+        payload["attacker_rationale"] = transcript
+    return payload
 
 
 def _serialize_verifier_decision(decision: VerifierDecision) -> dict[str, Any]:
@@ -818,6 +830,7 @@ def _coerce_public_instance(sample: BenchmarkSample) -> PublicCausalInstance:
 
 def _run_main_verifier(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
+    transcript = _sample_transcript(sample)
     tool_context = _verifier_tool_context(sample)
     tool_executor = ToolExecutor({})
     tool_report = tool_executor.execute_for_claim(
@@ -829,6 +842,7 @@ def _run_main_verifier(sample: BenchmarkSample) -> dict[str, Any]:
     decision = VerifierPipeline(tool_runner=tool_executor).run(
         sample.claim.claim_text,
         scenario=scenario,
+        transcript=transcript,
         tool_context=tool_context,
     )
     return {
@@ -895,10 +909,12 @@ def _override_probabilities(
 
 def _run_no_tools_verifier(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
+    transcript = _sample_transcript(sample)
     tool_context = _verifier_tool_context(sample)
     decision = VerifierPipeline(tool_runner=lambda **_: []).run(
         sample.claim.claim_text,
         scenario=scenario,
+        transcript=transcript,
         tool_context=tool_context,
     )
     return {
@@ -1027,9 +1043,9 @@ def _run_judge_direct_baseline(sample: BenchmarkSample) -> dict[str, Any]:
 def _run_debate_reduced_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
     proposer = _run_judge_direct_baseline(sample)
-    parsed_claim = parse_claim(sample.claim.claim_text)
-    ledger = build_assumption_ledger(parsed_claim)
     tool_context = _verifier_tool_context(sample)
+    parsed_claim = tool_context["_parsed_claim"]
+    ledger = build_assumption_ledger(parsed_claim)
     tool_executor = ToolExecutor({})
     tool_report = tool_executor.execute_for_claim(
         scenario=scenario,
@@ -1119,7 +1135,7 @@ def _run_manual_variant(
 ) -> dict[str, Any]:
     scenario = _coerce_public_instance(sample)
     tool_context = _verifier_tool_context(sample)
-    parsed_claim = parse_claim(sample.claim.claim_text)
+    parsed_claim = tool_context["_parsed_claim"]
     ledger = build_assumption_ledger(parsed_claim) if use_ledger else AssumptionLedger([])
     countermodel = (
         search_countermodels(
@@ -1492,6 +1508,7 @@ def score_prediction_records(
                 "predicted_label": record["predicted_label"],
                 "verdict_label": record["predicted_label"],
                 "verifier_confidence": record["confidence"],
+                "verifier_verdict": verdict,
                 "predicted_probabilities": verdict.get("probabilities"),
                 "countermodel_found": bool(record.get("countermodel_found")),
                 "countermodel_witness": verdict.get("countermodel_witness"),

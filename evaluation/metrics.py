@@ -72,6 +72,24 @@ def _nested_value(mapping: Any, key: str) -> Any:
     return None
 
 
+def _has_substantive_missing_information(value: Any) -> bool:
+    payload = _payload_mapping(value)
+    if payload is None:
+        return False
+    missing_assumptions = payload.get("missing_assumptions", [])
+    required_evidence = payload.get("required_evidence", [])
+    note = payload.get("note")
+    return bool(
+        any(str(item).strip() for item in list(missing_assumptions or []))
+        or any(str(item).strip() for item in list(required_evidence or []))
+        or str(note or "").strip()
+    )
+
+
+def _has_non_empty_refusal_reason(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
 def _prediction_payload(round_data: dict[str, Any]) -> tuple[Any, str | None]:
     for key in ("verifier_verdict", "verdict"):
         payload = round_data.get(key)
@@ -179,12 +197,10 @@ def _structured_verdict_contract_errors(round_data: dict[str, Any]) -> list[str]
         return []
 
     payload, payload_key = _prediction_payload(round_data)
-    predicted_label = _extract_round_predicted_label(round_data)
     if payload is None:
-        if predicted_label is None:
-            return ["missing prediction payload"]
-        return []
+        return ["missing prediction payload"]
 
+    predicted_label = _extract_round_predicted_label(round_data)
     errors: list[str] = []
     if not (_payload_has_key(payload, "label") or _payload_has_key(payload, "final_verdict")):
         errors.append(f"{payload_key} missing label/final_verdict")
@@ -200,6 +216,15 @@ def _structured_verdict_contract_errors(round_data: dict[str, Any]) -> list[str]
 
     if _payload_has_key(payload, "missing_information_spec") and _nested_value(payload, "missing_information_spec") is None:
         errors.append(f"{payload_key} has null missing_information_spec")
+    elif predicted_label == "unidentifiable" and not _has_substantive_missing_information(
+        _nested_value(payload, "missing_information_spec")
+    ):
+        errors.append(f"{payload_key} missing substantive missing_information_spec for unidentifiable label")
+
+    if predicted_label == "unidentifiable" and not _has_non_empty_refusal_reason(
+        _nested_value(payload, "refusal_reason")
+    ):
+        errors.append(f"{payload_key} missing non-empty refusal_reason for unidentifiable label")
 
     return errors
 

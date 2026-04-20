@@ -98,6 +98,21 @@ class ClaimParserTests(unittest.TestCase):
         self.assertEqual(payload["claim_strength"], "strong")
         json.dumps(payload)
 
+    def test_parser_to_dict_includes_documented_explicit_assumptions_alias(self) -> None:
+        parsed = ParsedClaim(
+            query_type="intervention",
+            treatment="exposure",
+            outcome="recovery",
+            mentioned_assumptions=["valid adjustment set"],
+            implied_assumptions=["positivity"],
+        )
+
+        payload = parsed.to_dict()
+
+        self.assertEqual(payload["explicit_assumptions"], ["valid adjustment set"])
+        self.assertEqual(payload["mentioned_assumptions"], ["valid adjustment set"])
+        self.assertEqual(payload["implied_assumptions"], ["positivity"])
+
     def test_parser_covers_l1_association_example(self) -> None:
         parsed = parse_claim(
             "There is no serious hidden-variable explanation here, so training_intensity itself drives income_score."

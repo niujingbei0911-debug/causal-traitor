@@ -10,6 +10,7 @@ from experiments.benchmark_harness import (
     PRIMARY_METRICS,
     _apply_no_abstention,
     _apply_family_postprocessing,
+    _run_main_verifier,
     _run_claim_only_family,
     aggregate_seed_metrics,
     build_seed_benchmark_run,
@@ -22,6 +23,8 @@ from experiments.benchmark_harness import (
     write_artifacts,
 )
 from experiments.exp_leakage_study.run import _mcnemar_significance
+from verifier.assumption_ledger import AssumptionLedger
+from verifier.decision import VerifierDecision
 
 
 def _prediction_record(
@@ -140,7 +143,29 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 "system_notes": [],
                 "verdict": {
                     "label": predicted_label,
+                    "final_verdict": predicted_label,
                     "confidence": 0.8,
+                    "identification_status": (
+                        "identified"
+                        if predicted_label == "valid"
+                        else "contradicted"
+                        if predicted_label == "invalid"
+                        else "underdetermined"
+                    ),
+                    "refusal_reason": (
+                        "insufficient_public_information"
+                        if predicted_label == "unidentifiable"
+                        else None
+                    ),
+                    "missing_information_spec": (
+                        {
+                            "missing_assumptions": [],
+                            "required_evidence": [],
+                            "note": "Need more public evidence.",
+                        }
+                        if predicted_label == "unidentifiable"
+                        else {}
+                    ),
                     "probabilities": {
                         "valid": 0.8 if predicted_label == "valid" else 0.1,
                         "invalid": 0.8 if predicted_label == "invalid" else 0.1,
@@ -164,6 +189,46 @@ class BenchmarkHarnessTests(unittest.TestCase):
         )
         self.assertIn("persuasion_style_id", record)
         self.assertIn("pressure_type", record)
+
+    def test_run_main_verifier_passes_attacker_rationale_to_tools_and_pipeline(self) -> None:
+        sample = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=1,
+        ).samples[0]
+        transcript = sample.claim.attacker_rationale.strip()
+        captured: dict[str, object] = {}
+
+        def fake_execute_for_claim(self, scenario, claim, level, context=None):
+            captured["tool_context"] = dict(context or {})
+            return {
+                "selected_tools": [],
+                "claim_stance": "pro_causal",
+                "identified_issues": [],
+                "supporting_evidence": [],
+                "counter_evidence": [],
+                "tool_trace": [],
+            }
+
+        def fake_pipeline_run(self, claim_text, *, scenario=None, transcript=None, tool_context=None, **kwargs):
+            captured["pipeline_transcript"] = transcript
+            captured["pipeline_tool_context"] = dict(tool_context or {})
+            return VerifierDecision(
+                label="valid",
+                confidence=0.73,
+                assumption_ledger=AssumptionLedger([]),
+            )
+
+        with patch("experiments.benchmark_harness.ToolExecutor.execute_for_claim", new=fake_execute_for_claim):
+            with patch("experiments.benchmark_harness.VerifierPipeline.run", new=fake_pipeline_run):
+                payload = _run_main_verifier(sample)
+
+        self.assertEqual(payload["predicted_label"], "valid")
+        self.assertEqual(captured["pipeline_transcript"], transcript)
+        self.assertEqual(captured["tool_context"]["transcript"], transcript)
+        self.assertEqual(captured["tool_context"]["attacker_rationale"], transcript)
+        self.assertEqual(captured["pipeline_tool_context"]["transcript"], transcript)
+        self.assertEqual(captured["pipeline_tool_context"]["attacker_rationale"], transcript)
 
     def test_shared_harness_rejects_leakage_study_system_name_alias(self) -> None:
         with self.assertRaises(ValueError):
