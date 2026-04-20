@@ -16,6 +16,18 @@ from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
 
+def _format_metric(value: object, *, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"{float(value):.4f}"
+
+
+def _format_metric_short(value: object, *, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"{float(value):.3f}"
+
+
 async def _run_condition(
     base_config: dict[str, Any],
     condition: str,
@@ -102,6 +114,8 @@ async def run_experiment(
                 "rounds": [_round_for_scoring(result) for result in results],
             }
         )
+        scored_rounds = int(score.summary.get("scored_rounds", 0))
+        verdict_metrics_available = scored_rounds > 0
         wins_a = sum(r["winner"] == "agent_a" for r in results)
         causal_scores = [r["audit_verdict"]["causal_validity_score"] for r in results]
         difficulties = [r["difficulty"] for r in results]
@@ -109,7 +123,14 @@ async def run_experiment(
             "rounds": rounds,
             "appendix_only": True,
             "public_schema_only": True,
-            "verdict_metrics": dict(score.summary.get("core_metrics", {})),
+            "scored_rounds": scored_rounds,
+            "verdict_metrics_available": verdict_metrics_available,
+            "verdict_metrics_unavailable_reason": (
+                None
+                if verdict_metrics_available
+                else "Showcase appendix rounds do not provide frozen gold verdict labels for verdict-centric scoring."
+            ),
+            "verdict_metrics": dict(score.summary.get("core_metrics", {})) if verdict_metrics_available else {},
             "appendix_metrics": {
                 "agent_a_win_rate": wins_a / rounds,
                 "causal_validity_mean": sum(causal_scores) / len(causal_scores),
@@ -134,10 +155,16 @@ async def run_experiment(
         }
         tracker.log_metrics(
             {
-                f"{condition}_verdict_accuracy": payload["conditions"][condition]["verdict_metrics"].get("verdict_accuracy", 0.0),
                 f"{condition}_agent_a_win_rate": payload["conditions"][condition]["appendix_metrics"]["agent_a_win_rate"],
                 f"{condition}_causal_validity_mean": payload["conditions"][condition]["appendix_metrics"]["causal_validity_mean"],
                 f"{condition}_difficulty_mean": payload["conditions"][condition]["appendix_metrics"]["difficulty_mean"],
+                **(
+                    {
+                        f"{condition}_verdict_accuracy": payload["conditions"][condition]["verdict_metrics"].get("verdict_accuracy", 0.0),
+                    }
+                    if payload["conditions"][condition]["verdict_metrics_available"]
+                    else {}
+                ),
             },
             step=conditions.index(condition),
         )
@@ -157,14 +184,19 @@ def _write_exp3_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow([
-            "condition", "rounds", "verdict_accuracy", "agent_a_win_rate",
+            "condition", "rounds", "scored_rounds", "verdict_metrics_available", "verdict_accuracy", "agent_a_win_rate",
             "causal_validity_mean", "difficulty_mean", "difficulty_std",
         ])
         for label, cond in payload.get("conditions", {}).items():
             writer.writerow([
                 label,
                 cond["rounds"],
-                f"{cond['verdict_metrics'].get('verdict_accuracy', 0.0):.4f}",
+                cond.get("scored_rounds", 0),
+                cond.get("verdict_metrics_available", False),
+                _format_metric(
+                    cond["verdict_metrics"].get("verdict_accuracy"),
+                    available=bool(cond.get("verdict_metrics_available", False)),
+                ),
                 f"{cond['appendix_metrics']['agent_a_win_rate']:.4f}",
                 f"{cond['appendix_metrics']['causal_validity_mean']:.4f}",
                 f"{cond['appendix_metrics']['difficulty_mean']:.4f}",
@@ -180,7 +212,7 @@ def _write_exp3_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
     for label, cond in payload.get("conditions", {}).items():
         lines.append(
             f"| {label} | {cond['rounds']} | "
-            f"{cond['verdict_metrics'].get('verdict_accuracy', 0.0):.3f} | "
+            f"{_format_metric_short(cond['verdict_metrics'].get('verdict_accuracy'), available=bool(cond.get('verdict_metrics_available', False)))} | "
             f"{cond['appendix_metrics']['agent_a_win_rate']:.3f} | "
             f"{cond['appendix_metrics']['causal_validity_mean']:.3f} | "
             f"{cond['appendix_metrics']['difficulty_mean']:.3f} | "

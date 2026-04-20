@@ -16,6 +16,18 @@ from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
 
+def _format_metric(value: object, *, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"{float(value):.4f}"
+
+
+def _format_metric_short(value: object, *, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"{float(value):.3f}"
+
+
 def _result_gold_label(result: dict[str, Any]) -> str | None:
     scenario = result.get("scenario")
     if scenario is None:
@@ -90,6 +102,8 @@ async def run_experiment(
                 "rounds": scored_rounds,
             }
         )
+        scored_round_count = int(game_score.summary.get("scored_rounds", 0))
+        verdict_metrics_available = scored_round_count > 0
         verdict_correctness = [
             1.0 if round_score.verdict_correct else 0.0
             for round_score in game_score.round_scores
@@ -116,10 +130,25 @@ async def run_experiment(
         summary["levels"][f"L{level}"] = {
             "rounds": rounds_per_level,
             "primary_metric": game_score.summary.get("primary_metric", "unsafe_acceptance_rate"),
-            "verdict_metrics": dict(game_score.summary.get("core_metrics", {})),
+            "scored_rounds": scored_round_count,
+            "verdict_metrics_available": verdict_metrics_available,
+            "verdict_metrics_unavailable_reason": (
+                None
+                if verdict_metrics_available
+                else "Showcase debate rounds do not provide frozen gold verdict labels for verdict-centric scoring."
+            ),
+            "verdict_metrics": dict(game_score.summary.get("core_metrics", {})) if verdict_metrics_available else {},
             "verdict_accuracy_ci": verdict_accuracy_ci,
-            "gold_label_distribution": dict(game_score.summary.get("gold_label_distribution", {})),
-            "predicted_label_distribution": dict(game_score.summary.get("predicted_label_distribution", {})),
+            "gold_label_distribution": (
+                dict(game_score.summary.get("gold_label_distribution", {}))
+                if verdict_metrics_available
+                else {}
+            ),
+            "predicted_label_distribution": (
+                dict(game_score.summary.get("predicted_label_distribution", {}))
+                if verdict_metrics_available
+                else {}
+            ),
             "appendix_metrics": appendix_metrics,
             "results": [
                 {
@@ -162,6 +191,8 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
             [
                 "level",
                 "rounds",
+                "scored_rounds",
+                "verdict_metrics_available",
                 "verdict_accuracy",
                 "macro_f1",
                 "unsafe_acceptance_rate",
@@ -176,10 +207,24 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
                 [
                     level_key,
                     level_summary.get("rounds", 0),
-                    f"{verdict_metrics.get('verdict_accuracy', 0.0):.4f}",
-                    f"{verdict_metrics.get('macro_f1', 0.0):.4f}",
-                    f"{verdict_metrics.get('unsafe_acceptance_rate', 0.0):.4f}",
-                    f"{verdict_metrics.get('wise_refusal_recall', 0.0):.4f}",
+                    level_summary.get("scored_rounds", 0),
+                    level_summary.get("verdict_metrics_available", False),
+                    _format_metric(
+                        verdict_metrics.get("verdict_accuracy"),
+                        available=bool(level_summary.get("verdict_metrics_available", False)),
+                    ),
+                    _format_metric(
+                        verdict_metrics.get("macro_f1"),
+                        available=bool(level_summary.get("verdict_metrics_available", False)),
+                    ),
+                    _format_metric(
+                        verdict_metrics.get("unsafe_acceptance_rate"),
+                        available=bool(level_summary.get("verdict_metrics_available", False)),
+                    ),
+                    _format_metric(
+                        verdict_metrics.get("wise_refusal_recall"),
+                        available=bool(level_summary.get("verdict_metrics_available", False)),
+                    ),
                     accuracy_ci.get("formatted", ""),
                 ]
             )
@@ -191,10 +236,10 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
         accuracy_ci = level_summary.get("verdict_accuracy_ci") or {}
         lines.append(
             f"| {level_key} | {level_summary.get('rounds', 0)} | "
-            f"{verdict_metrics.get('verdict_accuracy', 0.0):.3f} | "
-            f"{verdict_metrics.get('macro_f1', 0.0):.3f} | "
-            f"{verdict_metrics.get('unsafe_acceptance_rate', 0.0):.3f} | "
-            f"{verdict_metrics.get('wise_refusal_recall', 0.0):.3f} | "
+            f"{_format_metric_short(verdict_metrics.get('verdict_accuracy'), available=bool(level_summary.get('verdict_metrics_available', False)))} | "
+            f"{_format_metric_short(verdict_metrics.get('macro_f1'), available=bool(level_summary.get('verdict_metrics_available', False)))} | "
+            f"{_format_metric_short(verdict_metrics.get('unsafe_acceptance_rate'), available=bool(level_summary.get('verdict_metrics_available', False)))} | "
+            f"{_format_metric_short(verdict_metrics.get('wise_refusal_recall'), available=bool(level_summary.get('verdict_metrics_available', False)))} | "
             f"{accuracy_ci.get('formatted', '')} |"
         )
     tracking = summary.get("tracking", {})

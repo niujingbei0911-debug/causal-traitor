@@ -15,6 +15,12 @@ from game.config import ConfigLoader
 from game.debate_engine import DebateEngine
 
 
+def _format_metric_short(value: object, *, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"{float(value):.3f}"
+
+
 async def _run_without_evolution(engine: DebateEngine, rounds: int, level: int) -> list[dict[str, Any]]:
     return await engine.run_game(
         num_rounds=rounds,
@@ -94,18 +100,33 @@ async def run_experiment(
             "rounds": [_round_for_scoring(result) for result in independent_results],
         }
     )
+    without_scored_rounds = int(no_evolution_score.summary.get("scored_rounds", 0))
+    without_verdict_metrics_available = without_scored_rounds > 0
     evolution_score = scorer.score_game(
         {
             "game_id": "appendix_exp4_with_evolution",
             "rounds": [_round_for_scoring(result) for result in evolution_results],
         }
     )
+    with_scored_rounds = int(evolution_score.summary.get("scored_rounds", 0))
+    with_verdict_metrics_available = with_scored_rounds > 0
     payload = {
         "without_evolution": {
             "rounds": rounds,
             "appendix_only": True,
             "public_schema_only": True,
-            "verdict_metrics": dict(no_evolution_score.summary.get("core_metrics", {})),
+            "scored_rounds": without_scored_rounds,
+            "verdict_metrics_available": without_verdict_metrics_available,
+            "verdict_metrics_unavailable_reason": (
+                None
+                if without_verdict_metrics_available
+                else "Showcase appendix rounds do not provide frozen gold verdict labels for verdict-centric scoring."
+            ),
+            "verdict_metrics": (
+                dict(no_evolution_score.summary.get("core_metrics", {}))
+                if without_verdict_metrics_available
+                else {}
+            ),
             "appendix_metrics": {
                 "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in independent_results) / rounds,
             },
@@ -124,7 +145,18 @@ async def run_experiment(
             "rounds": rounds,
             "appendix_only": True,
             "public_schema_only": True,
-            "verdict_metrics": dict(evolution_score.summary.get("core_metrics", {})),
+            "scored_rounds": with_scored_rounds,
+            "verdict_metrics_available": with_verdict_metrics_available,
+            "verdict_metrics_unavailable_reason": (
+                None
+                if with_verdict_metrics_available
+                else "Showcase appendix rounds do not provide frozen gold verdict labels for verdict-centric scoring."
+            ),
+            "verdict_metrics": (
+                dict(evolution_score.summary.get("core_metrics", {}))
+                if with_verdict_metrics_available
+                else {}
+            ),
             "appendix_metrics": {
                 "agent_a_win_rate": sum(r["winner"] == "agent_a" for r in evolution_results) / rounds,
                 "arms_race_index": evolution_engine.evolution_tracker.get_arms_race_index(),
@@ -144,11 +176,23 @@ async def run_experiment(
     }
     tracker.log_metrics(
         {
-            "without_evolution_verdict_accuracy": payload["without_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
-            "with_evolution_verdict_accuracy": payload["with_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
             "without_evolution_agent_a_win_rate": payload["without_evolution"]["appendix_metrics"]["agent_a_win_rate"],
             "with_evolution_agent_a_win_rate": payload["with_evolution"]["appendix_metrics"]["agent_a_win_rate"],
             "with_evolution_arms_race_index": payload["with_evolution"]["appendix_metrics"]["arms_race_index"],
+            **(
+                {
+                    "without_evolution_verdict_accuracy": payload["without_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
+                }
+                if payload["without_evolution"]["verdict_metrics_available"]
+                else {}
+            ),
+            **(
+                {
+                    "with_evolution_verdict_accuracy": payload["with_evolution"]["verdict_metrics"].get("verdict_accuracy", 0.0),
+                }
+                if payload["with_evolution"]["verdict_metrics_available"]
+                else {}
+            ),
         },
         step=rounds,
     )
@@ -196,8 +240,8 @@ def _write_exp4_sidecars(json_path: Path, payload: dict[str, Any]) -> None:
         "# Experiment 4 — Evolution vs No Evolution (Appendix)",
         "",
         f"- Rounds per condition: {without.get('rounds', 0)}",
-        f"- Without evolution — Verdict accuracy: {without.get('verdict_metrics', {}).get('verdict_accuracy', 0.0):.3f}",
-        f"- With evolution — Verdict accuracy: {with_evo.get('verdict_metrics', {}).get('verdict_accuracy', 0.0):.3f}",
+        f"- Without evolution — Verdict accuracy: {_format_metric_short(without.get('verdict_metrics', {}).get('verdict_accuracy'), available=bool(without.get('verdict_metrics_available', False)))}",
+        f"- With evolution — Verdict accuracy: {_format_metric_short(with_evo.get('verdict_metrics', {}).get('verdict_accuracy'), available=bool(with_evo.get('verdict_metrics_available', False)))}",
         f"- Without evolution — Agent A win rate: {without.get('appendix_metrics', {}).get('agent_a_win_rate', 0.0):.3f}",
         f"- With evolution — Agent A win rate: {with_evo.get('appendix_metrics', {}).get('agent_a_win_rate', 0.0):.3f}",
         f"- Arms race index (with evolution): {with_evo.get('appendix_metrics', {}).get('arms_race_index', 0.0):.3f}",

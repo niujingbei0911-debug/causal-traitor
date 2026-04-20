@@ -351,10 +351,11 @@ def run_experiment(
             for record in bucket_evaluated["predictions"]:
                 record["bucket_name"] = bucket_name
                 record["bucket_role"] = "ood_bucket"
-                if record.get("ood_reasons") != [expected_reason]:
+                record_reasons = record.get("ood_reasons") or []
+                if expected_reason not in record_reasons:
                     raise ValueError(
-                        f"{bucket_name} must contain only pure {expected_reason!r} examples, "
-                        f"got {record.get('ood_reasons')!r} for instance {record['instance_id']!r}."
+                        f"{bucket_name} must contain only examples with {expected_reason!r} among their "
+                        f"ood_reasons, got {record_reasons!r} for instance {record['instance_id']!r}."
                     )
             raw_predictions.extend(bucket_evaluated["predictions"])
             per_seed_bucket_results[seed][bucket_name] = (

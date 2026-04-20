@@ -183,6 +183,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("verdict_metrics", level_summary)
                 self.assertIn("appendix_metrics", level_summary)
                 self.assertIn("verdict_accuracy_ci", level_summary)
+                self.assertFalse(level_summary["verdict_metrics_available"])
+                self.assertEqual(level_summary["verdict_metrics"], {})
+                self.assertEqual(level_summary["scored_rounds"], 0)
 
     def test_phase4_experiments_emit_required_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -962,15 +965,21 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for condition in exp2_payload["conditions"].values():
                 self.assertTrue(condition["appendix_only"])
                 self.assertTrue(condition["public_schema_only"])
-                self.assertIn("verdict_accuracy", condition["verdict_metrics"])
+                self.assertFalse(condition["verdict_metrics_available"])
+                self.assertEqual(condition["verdict_metrics"], {})
             for condition in exp3_payload["conditions"].values():
                 self.assertTrue(condition["appendix_only"])
                 self.assertTrue(condition["public_schema_only"])
-                self.assertIn("verdict_accuracy", condition["verdict_metrics"])
+                self.assertFalse(condition["verdict_metrics_available"])
+                self.assertEqual(condition["verdict_metrics"], {})
             self.assertTrue(exp4_payload["without_evolution"]["appendix_only"])
             self.assertTrue(exp4_payload["without_evolution"]["public_schema_only"])
+            self.assertFalse(exp4_payload["without_evolution"]["verdict_metrics_available"])
+            self.assertEqual(exp4_payload["without_evolution"]["verdict_metrics"], {})
             self.assertTrue(exp4_payload["with_evolution"]["appendix_only"])
             self.assertTrue(exp4_payload["with_evolution"]["public_schema_only"])
+            self.assertFalse(exp4_payload["with_evolution"]["verdict_metrics_available"])
+            self.assertEqual(exp4_payload["with_evolution"]["verdict_metrics"], {})
 
         scenario = DataGenerator(seed=11).generate_scenario(difficulty=0.55, causal_level=2)
         public_scenario = ensure_public_instance(scenario)
