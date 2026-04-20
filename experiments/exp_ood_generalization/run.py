@@ -207,11 +207,12 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
         gap = payload["ood_gap"][bucket_name]
         reference_metrics = payload["reference_metrics"][bucket_name]
         bucket_metrics = payload["aggregated_metrics"][bucket_name]
+        gap_str = "N/A" if not gap["available"] else f"{gap['macro_f1_gap']:.4f}"
         lines.append(
             f"| {bucket_name} | {list(reference_counts['per_seed'].values())} | {list(bucket_counts['per_seed'].values())} | "
             f"{_format_metric_cell(reference_metrics, 'verdict_accuracy')} | "
             f"{_format_metric_cell(bucket_metrics, 'verdict_accuracy')} | "
-            f"{'N/A' if not gap['available'] else f'{gap['macro_f1_gap']:.4f}'} |"
+            f"{gap_str} |"
         )
     lines.extend(["", "## OOD Gap", ""])
     for bucket_name, gap in payload["ood_gap"].items():
