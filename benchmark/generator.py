@@ -1657,7 +1657,7 @@ class BenchmarkGenerator:
 
         remaining_observed = [variable for variable in observed_variables if variable not in used]
         if "backdoor_adjuster" in base_blueprint.role_bindings and remaining_observed:
-            role_bindings["backdoor_adjuster"] = remaining_observed[0]
+            role_bindings.setdefault("backdoor_adjuster", remaining_observed[0])
         if "observed_adjuster" in base_blueprint.role_bindings and remaining_observed:
             role_bindings.setdefault("observed_adjuster", remaining_observed[0])
         if "observed_context" in base_blueprint.role_bindings and remaining_observed:
@@ -1665,13 +1665,13 @@ class BenchmarkGenerator:
                 (variable for variable in remaining_observed if variable not in role_bindings.values()),
                 remaining_observed[0],
             )
-            role_bindings["observed_context"] = context
+            role_bindings.setdefault("observed_context", context)
         if "selection" in base_blueprint.role_bindings and remaining_observed:
             selection = next(
                 (variable for variable in remaining_observed if variable not in role_bindings.values()),
                 remaining_observed[-1],
             )
-            role_bindings["selection"] = selection
+            role_bindings.setdefault("selection", selection)
 
         proxy_variables = list(gold.metadata.get("proxy_variables", base_blueprint.proxy_variables))
         if not proxy_variables and base_blueprint.proxy_variables:
