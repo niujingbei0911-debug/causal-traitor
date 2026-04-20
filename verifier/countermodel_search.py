@@ -569,6 +569,17 @@ class CountermodelCandidate:
             "observational_evidence": dict(self.observational_evidence),
         }
 
+    def to_evidence_dict(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        payload.update(
+            {
+                "type": self.countermodel_type,
+                "match_score": self.observational_match_score,
+                "explanation": self.countermodel_explanation,
+            }
+        )
+        return payload
+
 
 @dataclass(slots=True)
 class CountermodelSearchResult:
@@ -612,6 +623,55 @@ class CountermodelSearchResult:
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "used_observed_data": self.used_observed_data,
         }
+
+    def selected_candidate(self) -> CountermodelCandidate | None:
+        if not self.candidates:
+            return None
+        if self.countermodel_type is not None:
+            matching_candidates = [
+                candidate
+                for candidate in self.candidates
+                if candidate.countermodel_type == self.countermodel_type
+            ]
+            if matching_candidates:
+                return max(
+                    matching_candidates,
+                    key=lambda candidate: (
+                        _severity(candidate.verdict_suggestion),
+                        candidate.observational_match_score,
+                        int(candidate.query_disagreement),
+                    ),
+                )
+        return _choose_best_candidate(self.candidates)
+
+    def to_witness_payload(self) -> dict[str, Any]:
+        selected_candidate = self.selected_candidate()
+        triggered_assumptions = (
+            list(selected_candidate.triggered_assumptions)
+            if selected_candidate is not None
+            else []
+        )
+        payload = self.to_dict()
+        payload.update(
+            {
+                "type": self.countermodel_type,
+                "match_score": self.observational_match_score,
+                "query_disagreement": self.query_disagreement,
+                "triggered_assumptions": triggered_assumptions,
+                "explanation": self.countermodel_explanation,
+                "candidate_count": len(self.candidates),
+                "selected_countermodel": (
+                    selected_candidate.to_evidence_dict()
+                    if selected_candidate is not None
+                    else None
+                ),
+                "candidate_pool": [
+                    candidate.to_evidence_dict()
+                    for candidate in self.candidates
+                ],
+            }
+        )
+        return payload
 
 
 def _status_lookup(ledger: AssumptionLedger) -> dict[str, AssumptionLedgerEntry]:

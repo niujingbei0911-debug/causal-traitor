@@ -652,6 +652,30 @@ class CountermodelSearchTests(unittest.TestCase):
         self.assertEqual(payload["verdict_suggestion"], "invalid")
         json.dumps(payload)
 
+    def test_countermodel_search_result_exports_formal_witness_payload(self) -> None:
+        parsed = self.parser.parse(
+            "assignment_lottery affects recovery only through exposure, so using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+        )
+        ledger = build_assumption_ledger(parsed)
+        result = search_countermodels(
+            parsed,
+            ledger,
+            context={
+                "claim_text": "assignment_lottery affects recovery only through exposure, so using assignment_lottery as an instrument is enough to recover the causal effect of exposure on recovery."
+            },
+        )
+
+        payload = result.to_witness_payload()
+
+        self.assertEqual(payload["type"], result.countermodel_type)
+        self.assertEqual(payload["match_score"], result.observational_match_score)
+        self.assertEqual(payload["query_disagreement"], result.query_disagreement)
+        self.assertEqual(payload["explanation"], result.countermodel_explanation)
+        self.assertEqual(payload["triggered_assumptions"], payload["selected_countermodel"]["triggered_assumptions"])
+        self.assertEqual(payload["selected_countermodel"]["type"], payload["type"])
+        self.assertTrue(payload["candidate_pool"])
+        json.dumps(payload)
+
     def test_l2_search_supports_proxy_based_alternative_explanation(self) -> None:
         parsed = ParsedClaim(
             query_type="intervention",
@@ -768,6 +792,30 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(decision.countermodel_witness.witness_type, WitnessKind.COUNTERMODEL)
         self.assertIs(decision.witness, decision.countermodel_witness)
 
+    def test_stage_1_countermodel_witness_payload_is_formal_evidence_object(self) -> None:
+        parsed = self.parser.parse(
+            "For an individual with the same observed history, switching therapy_flag would definitely change recovery, so the unit-level counterfactual is uniquely identified.",
+            transcript=[
+                {"speaker": "agent_a", "content": "No extra assumptions are needed."},
+                {"speaker": "agent_b", "content": "The answer is uniquely pinned down."},
+            ],
+        )
+        ledger = build_assumption_ledger(parsed)
+        countermodel = search_countermodels(parsed, ledger)
+
+        decision = decide_verdict(parsed, ledger, countermodel)
+        witness_payload = decision.countermodel_witness.payload
+
+        self.assertEqual(witness_payload["type"], witness_payload["countermodel_type"])
+        self.assertEqual(witness_payload["match_score"], witness_payload["observational_match_score"])
+        self.assertEqual(witness_payload["explanation"], witness_payload["countermodel_explanation"])
+        self.assertEqual(witness_payload["selected_countermodel"]["type"], witness_payload["type"])
+        self.assertEqual(
+            witness_payload["selected_countermodel"]["triggered_assumptions"],
+            witness_payload["triggered_assumptions"],
+        )
+        self.assertTrue(witness_payload["candidate_pool"])
+
     def test_stage_2_query_disagreement_returns_unidentifiable_without_support_stage(self) -> None:
         parsed = parse_claim(
             "There is no serious hidden-variable explanation here, so training_intensity itself drives income_score."
@@ -781,6 +829,28 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertIsNotNone(decision.countermodel_witness)
         self.assertEqual(decision.countermodel_witness.verdict_suggestion, VerdictLabel.UNIDENTIFIABLE)
 
+    def test_stage_2_query_disagreement_exposes_countermodel_specific_missing_information(self) -> None:
+        parsed = parse_claim(
+            "There is no serious hidden-variable explanation here, so training_intensity itself drives income_score."
+        )
+        ledger = build_assumption_ledger(parsed)
+        countermodel = search_countermodels(parsed, ledger)
+
+        decision = decide_verdict(parsed, ledger, countermodel)
+
+        self.assertIs(decision.identification_status, IdentificationStatus.UNDERDETERMINED)
+        self.assertEqual(decision.refusal_reason, "observational_equivalence")
+        self.assertEqual(
+            decision.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": ["no unobserved confounding"],
+                "required_evidence": [
+                    "additional public evidence that distinguishes the observationally compatible models on the target query"
+                ],
+                "note": decision.reasoning_summary,
+            },
+        )
+
     def test_stage_3_unresolved_assumptions_return_unidentifiable(self) -> None:
         parsed = parse_claim("Estimate the causal effect of exposure on recovery.")
         ledger = build_assumption_ledger(parsed)
@@ -793,6 +863,25 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertIsNotNone(decision.witness)
         self.assertEqual(decision.witness.witness_type, WitnessKind.ASSUMPTION)
         self.assertTrue(decision.tool_trace == [])
+
+    def test_stage_3_unresolved_assumptions_expose_required_evidence_in_missing_information_spec(self) -> None:
+        claim_text = "Estimate the causal effect of exposure on recovery."
+        parsed = parse_claim(claim_text)
+        ledger = build_assumption_ledger(parsed)
+        countermodel = search_countermodels(parsed, ledger, context={"claim_text": claim_text})
+
+        decision = decide_verdict(parsed, ledger, countermodel)
+
+        self.assertIs(decision.identification_status, IdentificationStatus.UNDERDETERMINED)
+        self.assertEqual(decision.refusal_reason, "missing_identifying_support")
+        self.assertEqual(
+            decision.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": ["positivity"],
+                "required_evidence": ["public evidence directly supporting positivity"],
+                "note": decision.reasoning_summary,
+            },
+        )
 
     def test_stage_4_rejects_bare_l2_claim_with_only_overlap_support(self) -> None:
         parsed = parse_claim("Estimate the causal effect of exposure on recovery.")
@@ -908,7 +997,7 @@ class DecisionRuleTests(unittest.TestCase):
             payload["missing_information_spec"],
             {
                 "missing_assumptions": unresolved_assumptions,
-                "required_evidence": [],
+                "required_evidence": ["public evidence directly supporting positivity"],
                 "note": decision.reasoning_summary,
             },
         )
@@ -958,6 +1047,60 @@ class DecisionRuleTests(unittest.TestCase):
         self.assertEqual(decision.metadata["stage_variant"], "abstention_gate")
         self.assertTrue(decision.metadata["abstention_gate_triggered"])
         self.assertIn("missing primary-trace support for valid adjustment set", decision.metadata["abstention_reasons"])
+
+    def test_stage_4_abstention_gate_exposes_primary_trace_missing_information(self) -> None:
+        parsed = ParsedClaim(
+            query_type="intervention",
+            treatment="exposure",
+            outcome="recovery",
+            claim_polarity="positive",
+            claim_strength="strong",
+            mentioned_assumptions=["valid adjustment set"],
+            implied_assumptions=["positivity"],
+            rhetorical_strategy="adjustment_sufficiency_assertion",
+            needs_abstention_check=True,
+        )
+        ledger = build_assumption_ledger(parsed)
+        countermodel = CountermodelSearchResult(found_countermodel=False, candidates=[])
+        tool_trace = [
+            {
+                "tool_name": "correlation_analysis",
+                "summary": "The association points in the claimed direction.",
+                "supports_claim": True,
+                "supports_primary_claim": True,
+                "claim_stance": "pro_causal",
+                "confidence": 0.9,
+                "supports_assumptions": [],
+                "contradicts_assumptions": [],
+            },
+            {
+                "tool_name": "rebuttal_adjustment_check",
+                "summary": "A secondary trace names the adjustment assumptions.",
+                "supports_claim": True,
+                "supports_primary_claim": False,
+                "claim_stance": "anti_causal",
+                "confidence": 0.82,
+                "supports_assumptions": ["valid adjustment set", "positivity"],
+                "contradicts_assumptions": [],
+            },
+        ]
+
+        decision = decide_verdict(parsed, ledger, countermodel, tool_trace=tool_trace)
+
+        self.assertIs(decision.identification_status, IdentificationStatus.UNDERDETERMINED)
+        self.assertEqual(decision.refusal_reason, "missing_primary_identifying_support")
+        self.assertEqual(
+            decision.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": ["valid adjustment set", "positivity"],
+                "required_evidence": [
+                    "missing primary-trace support for valid adjustment set",
+                    "missing primary-trace support for positivity",
+                    "missing primary-trace support for non-baseline identifying assumptions",
+                ],
+                "note": decision.reasoning_summary,
+            },
+        )
 
     def test_stage_4_ignores_stance_relative_rebuttal_trace_when_assessing_primary_claim(self) -> None:
         parsed = ParsedClaim(
