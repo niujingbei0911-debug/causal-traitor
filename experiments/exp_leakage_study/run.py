@@ -42,8 +42,8 @@ LEAKAGE_ATTACK_PROFILE = "hidden_information_aware"
 LEAKAGE_METRICS: tuple[tuple[str, str, bool], ...] = (
     ("accuracy", "verdict_accuracy", True),
     ("macro_f1", "macro_f1", True),
-    ("invalid_claim_acceptance_rate", "invalid_claim_acceptance_rate", False),
-    ("unidentifiable_awareness", "unidentifiable_awareness", True),
+    ("unsafe_acceptance_rate", "unsafe_acceptance_rate", False),
+    ("wise_refusal_recall", "wise_refusal_recall", True),
     ("ece", "ece", False),
     ("brier", "brier", False),
 )
@@ -723,8 +723,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             label = {
                 "accuracy": "Accuracy",
                 "macro_f1": "Macro-F1",
-                "invalid_claim_acceptance_rate": "Invalid Acceptance",
-                "unidentifiable_awareness": "Unidentifiable Awareness",
+                "unsafe_acceptance_rate": "Unsafe Acceptance",
+                "wise_refusal_recall": "Wise Refusal Recall",
                 "ece": "ECE",
                 "brier": "Brier",
             }[alias]

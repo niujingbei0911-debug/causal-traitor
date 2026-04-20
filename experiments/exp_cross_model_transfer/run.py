@@ -139,7 +139,7 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                     f"| {attacker_family} | {verifier_family} | {relation} | {split_name} | "
                     f"{metrics['verdict_accuracy']['formatted']} | "
                     f"{metrics['macro_f1']['formatted']} | "
-                    f"{metrics['unidentifiable_awareness']['formatted']} |"
+                    f"{metrics['wise_refusal_recall']['formatted']} |"
                 )
     lines.append("")
     for attacker_family, split_reports in payload["significance"].items():

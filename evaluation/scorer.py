@@ -159,10 +159,9 @@ class Scorer:
     """
 
     DEFAULT_WEIGHTS: Dict[str, float] = {
-        "unsafe_acceptance_rate": 0.25,
+        "unsafe_acceptance_rate": 0.40,
         "wise_refusal_recall": 0.15,
         "wise_refusal_precision": 0.15,
-        "over_commitment_rate": 0.15,
         "over_refusal_rate": 0.10,
         "ece": 0.05,
         "brier": 0.05,
@@ -305,8 +304,6 @@ class Scorer:
             CausalMetrics.verdict_accuracy(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.verdict_macro_f1(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.unsafe_acceptance_rate(paired_gold_labels, paired_predicted_labels),
-            CausalMetrics.invalid_claim_acceptance_rate(paired_gold_labels, paired_predicted_labels),
-            CausalMetrics.unidentifiable_awareness(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.wise_refusal_recall(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.wise_refusal_precision(paired_gold_labels, paired_predicted_labels),
             CausalMetrics.over_commitment_rate(paired_gold_labels, paired_predicted_labels),

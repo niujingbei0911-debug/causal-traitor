@@ -233,6 +233,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("test_iid", main_payload["aggregated_metrics"]["countermodel_grounded"])
             self.assertIn("test_ood", main_payload["aggregated_metrics"]["countermodel_grounded"])
             self.assertIn("verdict_accuracy", main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"])
+            self.assertIn("Unsafe Accept", main_payload["markdown_summary"])
+            self.assertIn("Wise Refusal Recall", main_payload["markdown_summary"])
+            self.assertNotIn("Invalid Accept", main_payload["markdown_summary"])
+            self.assertNotIn("Unidentifiable Awareness", main_payload["markdown_summary"])
             self.assertFalse(main_payload["protocol"]["compliant"])
             self.assertTrue(main_payload["protocol"]["override_used"])
             self.assertEqual(
@@ -293,8 +297,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for system_name in ("no_ledger", "no_countermodel", "no_abstention", "no_tools"):
                 self.assertIn(system_name, ablation_payload["aggregated_metrics"])
                 metrics = ablation_payload["aggregated_metrics"][system_name]["test_iid"]
-                self.assertIn("invalid_claim_acceptance_rate", metrics)
-                self.assertIn("unidentifiable_awareness", metrics)
+                self.assertIn("unsafe_acceptance_rate", metrics)
+                self.assertIn("wise_refusal_recall", metrics)
             self.assertFalse(ablation_payload["protocol"]["compliant"])
             self.assertTrue(ablation_payload["protocol"]["override_used"])
             self.assertEqual(
@@ -398,6 +402,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main_payload["blueprint_alignment"]["missing_blueprint_baseline_categories"], [])
             self.assertIn("ECE", main_payload["markdown_summary"])
             self.assertIn("Brier", main_payload["markdown_summary"])
+            self.assertIn("Unsafe Accept", main_payload["markdown_summary"])
+            self.assertIn("Wise Refusal Recall", main_payload["markdown_summary"])
+            self.assertNotIn("Invalid Accept", main_payload["markdown_summary"])
+            self.assertNotIn("Unidentifiable Awareness", main_payload["markdown_summary"])
 
             main_metrics = main_payload["aggregated_metrics"]["countermodel_grounded"]["test_iid"]
             self.assertIn("ece", main_metrics)

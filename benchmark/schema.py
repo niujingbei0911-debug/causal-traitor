@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
+import math
+import re
 from typing import Any, ClassVar
 
 import pandas as pd
@@ -210,10 +212,11 @@ def _normalize_str_list(values: list[Any] | tuple[Any, ...] | None) -> list[str]
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
-        normalized = str(value)
-        if normalized not in seen:
-            seen.add(normalized)
-            result.append(normalized)
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
     return result
 
 
@@ -263,20 +266,50 @@ def _serialize_json_safe(value: Any) -> Any:
 
 
 def _normalize_public_text(value: Any) -> str | None:
+    if value is None:
+        return None
     normalized = str(value).strip()
     return normalized or None
 
 
-def _normalize_public_text_list(value: Any) -> list[str]:
+def _mentions_forbidden_token(text: str, *, forbidden_tokens: list[str] | tuple[str, ...]) -> bool:
+    for raw_token in forbidden_tokens:
+        token = str(raw_token).strip()
+        if not token:
+            continue
+        pattern = rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])"
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def _sanitize_public_text(
+    value: Any,
+    *,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> str | None:
+    normalized = _normalize_public_text(value)
+    if normalized is None:
+        return None
+    if forbidden_tokens and _mentions_forbidden_token(normalized, forbidden_tokens=forbidden_tokens):
+        return None
+    return normalized
+
+
+def _normalize_public_text_list(
+    value: Any,
+    *,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
     if isinstance(value, str):
-        candidate = _normalize_public_text(value)
+        candidate = _sanitize_public_text(value, forbidden_tokens=forbidden_tokens)
         return [candidate] if candidate is not None else []
     if not isinstance(value, (list, tuple)):
         return []
     normalized: list[str] = []
     seen: set[str] = set()
     for item in value:
-        candidate = _normalize_public_text(item)
+        candidate = _sanitize_public_text(item, forbidden_tokens=forbidden_tokens)
         if candidate is None or candidate in seen:
             continue
         seen.add(candidate)
@@ -284,40 +317,68 @@ def _normalize_public_text_list(value: Any) -> list[str]:
     return normalized
 
 
-def sanitize_public_variable_descriptions(value: Any) -> dict[str, str]:
+def sanitize_public_variable_descriptions(
+    value: Any,
+    *,
+    observed_variables: list[str] | tuple[str, ...] | None = None,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
+    observed_variable_set = set(_normalize_str_list(observed_variables))
     descriptions: dict[str, str] = {}
     for raw_variable, raw_description in value.items():
         variable = _normalize_public_text(raw_variable)
-        if variable is None:
+        if variable is None or (observed_variable_set and variable not in observed_variable_set):
             continue
         description: str | None = None
         if isinstance(raw_description, dict):
             for candidate_key in ("public", "description", "text", "summary"):
-                description = _normalize_public_text(raw_description.get(candidate_key))
+                description = _sanitize_public_text(
+                    raw_description.get(candidate_key),
+                    forbidden_tokens=forbidden_tokens,
+                )
                 if description is not None:
                     break
         else:
-            description = _normalize_public_text(raw_description)
+            description = _sanitize_public_text(
+                raw_description,
+                forbidden_tokens=forbidden_tokens,
+            )
         if description is not None:
             descriptions[variable] = description
     return descriptions
 
 
-def sanitize_public_measurement_semantics(value: Any) -> dict[str, dict[str, Any]]:
+def sanitize_public_measurement_semantics(
+    value: Any,
+    *,
+    observed_variables: list[str] | tuple[str, ...] | None = None,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
+    observed_variable_set = set(_normalize_str_list(observed_variables))
     semantics: dict[str, dict[str, Any]] = {}
     for raw_variable, raw_entry in value.items():
         variable = _normalize_public_text(raw_variable)
-        if variable is None or not isinstance(raw_entry, dict):
+        if (
+            variable is None
+            or (observed_variable_set and variable not in observed_variable_set)
+            or not isinstance(raw_entry, dict)
+        ):
             continue
         entry: dict[str, Any] = {}
-        measurement_view = _normalize_public_text(raw_entry.get("measurement_view"))
+        measurement_view = _sanitize_public_text(
+            raw_entry.get("measurement_view"),
+            forbidden_tokens=forbidden_tokens,
+        )
         if measurement_view is not None:
             entry["measurement_view"] = measurement_view
-        notes = _normalize_public_text_list(raw_entry.get("notes"))
+        notes = _normalize_public_text_list(
+            raw_entry.get("notes"),
+            forbidden_tokens=forbidden_tokens,
+        )
         if notes:
             entry["notes"] = notes
         if entry:
@@ -325,24 +386,35 @@ def sanitize_public_measurement_semantics(value: Any) -> dict[str, dict[str, Any
     return semantics
 
 
-def _sanitize_public_metadata_value(key: str, value: Any) -> Any:
-    if key == "ood_split":
-        return _normalize_public_text(value)
-    if key == "selection_ratio":
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    if key == "task_level":
-        return _normalize_public_text(value)
+def _sanitize_public_metadata_value(
+    key: str,
+    value: Any,
+    *,
+    observed_variables: list[str] | tuple[str, ...] | None = None,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> Any:
     if key == "variable_descriptions":
-        return sanitize_public_variable_descriptions(value)
+        return sanitize_public_variable_descriptions(
+            value,
+            observed_variables=observed_variables,
+            forbidden_tokens=forbidden_tokens,
+        )
     if key == "measurement_semantics":
-        return sanitize_public_measurement_semantics(value)
+        return sanitize_public_measurement_semantics(
+            value,
+            observed_variables=observed_variables,
+            forbidden_tokens=forbidden_tokens,
+        )
     return _serialize_json_safe(value)
 
 
-def _sanitize_metadata(value: Any, *, root: bool = False) -> Any:
+def _sanitize_metadata(
+    value: Any,
+    *,
+    root: bool = False,
+    observed_variables: list[str] | tuple[str, ...] | None = None,
+    forbidden_tokens: list[str] | tuple[str, ...] | None = None,
+) -> Any:
     if isinstance(value, dict):
         if root:
             sanitized: dict[str, Any] = {}
@@ -350,21 +422,46 @@ def _sanitize_metadata(value: Any, *, root: bool = False) -> Any:
                 key = str(raw_key)
                 if key in _SANITIZED_METADATA_KEYS or key not in _PUBLIC_METADATA_ALLOWED_KEYS:
                     continue
-                cleaned = _sanitize_public_metadata_value(key, item)
+                cleaned = _sanitize_public_metadata_value(
+                    key,
+                    item,
+                    observed_variables=observed_variables,
+                    forbidden_tokens=forbidden_tokens,
+                )
                 if cleaned is None:
                     continue
                 sanitized[key] = cleaned
             return sanitized
         return {
-            key: _sanitize_metadata(item)
+            key: _sanitize_metadata(
+                item,
+                observed_variables=observed_variables,
+                forbidden_tokens=forbidden_tokens,
+            )
             for raw_key, item in value.items()
             for key in (str(raw_key),)
             if key not in _SANITIZED_METADATA_KEYS
         }
     if isinstance(value, list):
-        return [_sanitize_metadata(item, root=False) for item in value]
+        return [
+            _sanitize_metadata(
+                item,
+                root=False,
+                observed_variables=observed_variables,
+                forbidden_tokens=forbidden_tokens,
+            )
+            for item in value
+        ]
     if isinstance(value, tuple):
-        return tuple(_sanitize_metadata(item, root=False) for item in value)
+        return tuple(
+            _sanitize_metadata(
+                item,
+                root=False,
+                observed_variables=observed_variables,
+                forbidden_tokens=forbidden_tokens,
+            )
+            for item in value
+        )
     return value
 
 
@@ -377,6 +474,36 @@ def _sanitize_difficulty_config(value: Any) -> dict[str, Any]:
         for key in (str(raw_key),)
         if key in _PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS
     }
+
+
+def _normalize_selective_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    normalized = float(value)
+    if not math.isfinite(normalized) or not (0.0 <= normalized <= 1.0):
+        raise ValueError(f"confidence must be in [0, 1], got {value!r}.")
+    return normalized
+
+
+def _normalize_selective_probabilities(value: Any) -> dict[str, float]:
+    mapping = _normalize_optional_mapping(value, none_as_empty=True) or {}
+    unknown_labels = sorted(set(str(key) for key in mapping) - set(VERDICT_LABEL_SPACE))
+    if unknown_labels:
+        raise ValueError(
+            f"probabilities contains labels outside the frozen verdict space: {unknown_labels!r}."
+        )
+
+    normalized = {label: 0.0 for label in VERDICT_LABEL_SPACE}
+    for raw_key, raw_value in mapping.items():
+        weight = float(raw_value)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(f"probabilities must contain finite non-negative weights, got {raw_value!r}.")
+        normalized[str(raw_key)] = weight
+
+    total = sum(normalized.values())
+    if total == 0.0:
+        return normalized
+    return {label: round(normalized[label] / total, 12) for label in VERDICT_LABEL_SPACE}
 
 
 def _public_scenario_id(raw_scenario_id: str) -> str:
@@ -522,6 +649,28 @@ def _normalize_missing_information_spec(
     raise TypeError(f"Unsupported missing_information_spec type: {type(value)!r}")
 
 
+def derive_missing_information_spec(
+    *,
+    value: MissingInformationSpec | dict[str, Any] | None,
+    label: VerdictLabel | str | None,
+    assumption_ledger: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    reasoning_summary: str = "",
+) -> MissingInformationSpec:
+    spec = _normalize_missing_information_spec(value)
+    normalized_label = _coerce_label(label, field_name="label") if label is not None else None
+    if normalized_label is VerdictLabel.UNIDENTIFIABLE and not spec.missing_assumptions:
+        spec.missing_assumptions = _normalize_str_list(
+            [
+                entry.get("name")
+                for entry in list(assumption_ledger or [])
+                if str(entry.get("status", "")).strip().lower() == "unresolved"
+            ]
+        )
+    if normalized_label is VerdictLabel.UNIDENTIFIABLE and not spec.note and str(reasoning_summary).strip():
+        spec.note = str(reasoning_summary).strip()
+    return spec
+
+
 def _has_missing_information(spec: MissingInformationSpec) -> bool:
     return bool(spec.missing_assumptions or spec.required_evidence or spec.note)
 
@@ -613,23 +762,17 @@ class VerifierVerdict:
             self.identification_status,
             field_name="verdict.identification_status",
         ) or default_identification_status(self.label)
-        self.missing_information_spec = _normalize_missing_information_spec(
-            self.missing_information_spec
-        )
-        if (
-            self.label is VerdictLabel.UNIDENTIFIABLE
-            and not self.missing_information_spec.note
-            and self.reasoning_summary
-        ):
-            self.missing_information_spec.note = self.reasoning_summary
-        self.probabilities = {
-            str(key): float(value)
-            for key, value in (_normalize_optional_mapping(self.probabilities, none_as_empty=True) or {}).items()
-        }
         self.assumption_ledger = _normalize_mapping_sequence(
             self.assumption_ledger,
             field_name="verdict.assumption_ledger",
         )
+        self.missing_information_spec = derive_missing_information_spec(
+            value=self.missing_information_spec,
+            label=self.label,
+            assumption_ledger=self.assumption_ledger,
+            reasoning_summary=self.reasoning_summary,
+        )
+        self.probabilities = _normalize_selective_probabilities(self.probabilities)
         self.witness = _normalize_optional_mapping(self.witness, none_as_empty=False)
         self.support_witness = _normalize_optional_mapping(self.support_witness, none_as_empty=False)
         self.countermodel_witness = _normalize_optional_mapping(
@@ -654,8 +797,7 @@ class VerifierVerdict:
             refusal_reason=self.refusal_reason,
             missing_information_spec=self.missing_information_spec,
         )
-        if self.confidence is not None:
-            self.confidence = float(self.confidence)
+        self.confidence = _normalize_selective_confidence(self.confidence)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -776,7 +918,14 @@ class PublicCausalInstance:
         self.data = _copy_frame(observed)
         self.difficulty = 0.5
         self.difficulty_config = {}
-        self.metadata = dict(_sanitize_metadata(metadata, root=True))
+        self.metadata = dict(
+            _sanitize_metadata(
+                metadata,
+                root=True,
+                observed_variables=list(self.variables),
+                forbidden_tokens=(),
+            )
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -866,9 +1015,25 @@ class GoldCausalInstance:
         """Project the gold scenario into the verifier-visible schema."""
 
         public_scenario_id = _coerce_optional_string(self.metadata.get("public_scenario_id"))
-        public_description = _coerce_optional_string(self.metadata.get("public_description"))
+        forbidden_tokens = list(self.hidden_variables)
+        public_description = _sanitize_public_text(
+            self.metadata.get("public_description"),
+            forbidden_tokens=forbidden_tokens,
+        )
         treatment = _coerce_optional_string(self.ground_truth.get("treatment"))
         outcome = _coerce_optional_string(self.ground_truth.get("outcome"))
+        selection_mechanism = _sanitize_public_text(
+            self.metadata.get("selection_mechanism"),
+            forbidden_tokens=forbidden_tokens,
+        )
+        public_metadata = dict(
+            _sanitize_metadata(
+                self.metadata,
+                root=True,
+                observed_variables=list(self.variables),
+                forbidden_tokens=forbidden_tokens,
+            )
+        )
         return PublicCausalInstance(
             scenario_id=public_scenario_id or _public_scenario_id(self.scenario_id),
             description=public_description
@@ -880,13 +1045,13 @@ class GoldCausalInstance:
             ),
             variables=list(self.variables),
             proxy_variables=list(self.metadata.get("proxy_variables", [])),
-            selection_mechanism=self.metadata.get("selection_mechanism"),
+            selection_mechanism=selection_mechanism,
             observed_data=self.observed_data.copy(deep=True),
             data=self.observed_data.copy(deep=True),
             causal_level=self.causal_level,
             difficulty=self.difficulty,
             difficulty_config=_sanitize_difficulty_config(self.difficulty_config),
-            metadata=dict(_sanitize_metadata(self.metadata, root=True)),
+            metadata=public_metadata,
         )
 
     def public_view(self) -> PublicCausalInstance:

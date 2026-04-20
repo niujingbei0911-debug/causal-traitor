@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 from benchmark.schema import (
+    derive_missing_information_spec,
     IdentificationStatus,
     MissingInformationSpec,
     VerdictLabel,
@@ -181,48 +182,6 @@ def _normalize_probabilities(value: Any) -> dict[str, float]:
     }
 
 
-def _derive_missing_information_spec(
-    *,
-    value: MissingInformationSpec | dict[str, Any] | None,
-    label: VerdictLabel,
-    assumption_ledger: list[dict[str, Any]],
-    reasoning_summary: str,
-) -> MissingInformationSpec:
-    if isinstance(value, MissingInformationSpec):
-        spec = MissingInformationSpec(
-            missing_assumptions=list(value.missing_assumptions),
-            required_evidence=list(value.required_evidence),
-            note=value.note,
-        )
-    elif isinstance(value, dict):
-        raw_note = value.get("note")
-        if raw_note is None:
-            raw_note = value.get("reasoning_summary", "")
-        spec = MissingInformationSpec(
-            missing_assumptions=list(
-                value.get("missing_assumptions", value.get("unresolved_assumptions", [])) or []
-            ),
-            required_evidence=list(
-                value.get("required_evidence", value.get("required_observations", [])) or []
-            ),
-            note=_coerce_optional_string(raw_note) or "",
-        )
-    else:
-        spec = MissingInformationSpec()
-
-    if label is VerdictLabel.UNIDENTIFIABLE and not spec.missing_assumptions:
-        spec.missing_assumptions = _normalize_unique_strings(
-            [
-                entry.get("name")
-                for entry in assumption_ledger
-                if str(entry.get("status", "")).strip().lower() == "unresolved"
-            ]
-        )
-    if label is VerdictLabel.UNIDENTIFIABLE and not spec.note and reasoning_summary:
-        spec.note = reasoning_summary
-    return spec
-
-
 @dataclass(slots=True)
 class ParsedClaim:
     """Machine-readable representation of a natural-language causal claim."""
@@ -294,7 +253,7 @@ class SelectiveVerifierOutput:
         self.identification_status = _coerce_identification_status(
             self.identification_status
         ) or default_identification_status(self.label)
-        self.missing_information_spec = _derive_missing_information_spec(
+        self.missing_information_spec = derive_missing_information_spec(
             value=self.missing_information_spec,
             label=self.label,
             assumption_ledger=self.assumption_ledger,

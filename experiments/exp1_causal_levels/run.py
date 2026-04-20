@@ -164,8 +164,8 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
                 "rounds",
                 "verdict_accuracy",
                 "macro_f1",
-                "invalid_claim_acceptance_rate",
-                "unidentifiable_awareness",
+                "unsafe_acceptance_rate",
+                "wise_refusal_recall",
                 "verdict_accuracy_ci",
             ]
         )
@@ -178,13 +178,13 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
                     level_summary.get("rounds", 0),
                     f"{verdict_metrics.get('verdict_accuracy', 0.0):.4f}",
                     f"{verdict_metrics.get('macro_f1', 0.0):.4f}",
-                    f"{verdict_metrics.get('invalid_claim_acceptance_rate', 0.0):.4f}",
-                    f"{verdict_metrics.get('unidentifiable_awareness', 0.0):.4f}",
+                    f"{verdict_metrics.get('unsafe_acceptance_rate', 0.0):.4f}",
+                    f"{verdict_metrics.get('wise_refusal_recall', 0.0):.4f}",
                     accuracy_ci.get("formatted", ""),
                 ]
             )
     lines = ["# Experiment 1 — Pearl Ladder Benchmark", ""]
-    lines.append("| Level | Rounds | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness | 95% CI |")
+    lines.append("| Level | Rounds | Verdict Acc. | Macro-F1 | Unsafe Accept | Wise Refusal Recall | 95% CI |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for level_key, level_summary in summary.get("levels", {}).items():
         verdict_metrics = level_summary.get("verdict_metrics", {})
@@ -193,8 +193,8 @@ def _write_exp1_sidecars(json_path: Path, summary: dict[str, Any]) -> None:
             f"| {level_key} | {level_summary.get('rounds', 0)} | "
             f"{verdict_metrics.get('verdict_accuracy', 0.0):.3f} | "
             f"{verdict_metrics.get('macro_f1', 0.0):.3f} | "
-            f"{verdict_metrics.get('invalid_claim_acceptance_rate', 0.0):.3f} | "
-            f"{verdict_metrics.get('unidentifiable_awareness', 0.0):.3f} | "
+            f"{verdict_metrics.get('unsafe_acceptance_rate', 0.0):.3f} | "
+            f"{verdict_metrics.get('wise_refusal_recall', 0.0):.3f} | "
             f"{accuracy_ci.get('formatted', '')} |"
         )
     tracking = summary.get("tracking", {})

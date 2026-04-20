@@ -44,8 +44,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             lines.append(
                 f"| {system_name} | {split_name} | "
                 f"{metrics['verdict_accuracy']['formatted']} | "
-                f"{metrics['invalid_claim_acceptance_rate']['formatted']} | "
-                f"{metrics['unidentifiable_awareness']['formatted']} | "
+                f"{metrics['unsafe_acceptance_rate']['formatted']} | "
+                f"{metrics['wise_refusal_recall']['formatted']} | "
                 f"{metrics['countermodel_coverage']['formatted']} |"
             )
     lines.append("")

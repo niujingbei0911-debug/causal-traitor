@@ -1076,8 +1076,6 @@ class CausalMetrics:
                     cls.verdict_accuracy(gold_labels, predicted_labels),
                     cls.verdict_macro_f1(gold_labels, predicted_labels),
                     cls.unsafe_acceptance_rate(gold_labels, predicted_labels),
-                    cls.invalid_claim_acceptance_rate(gold_labels, predicted_labels),
-                    cls.unidentifiable_awareness(gold_labels, predicted_labels),
                     cls.wise_refusal_recall(gold_labels, predicted_labels),
                     cls.wise_refusal_precision(gold_labels, predicted_labels),
                     cls.over_commitment_rate(gold_labels, predicted_labels),

@@ -139,8 +139,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             [
                 f"## {system_name}",
                 "",
-                "| Split | Verdict Acc. | Macro-F1 | Invalid Accept | Unidentifiable Awareness | ECE | Brier | Countermodel Coverage |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- |",
+                "| Split | Verdict Acc. | Macro-F1 | Unsafe Accept | Wise Refusal Recall | Wise Refusal Precision | Over-Refusal | ECE | Brier | Countermodel Coverage |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for split_name in OOD_SPLITS:
@@ -149,8 +149,10 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
                 f"| {split_name} | "
                 f"{metrics['verdict_accuracy']['formatted']} | "
                 f"{metrics['macro_f1']['formatted']} | "
-                f"{metrics['invalid_claim_acceptance_rate']['formatted']} | "
-                f"{metrics['unidentifiable_awareness']['formatted']} | "
+                f"{metrics['unsafe_acceptance_rate']['formatted']} | "
+                f"{metrics['wise_refusal_recall']['formatted']} | "
+                f"{metrics['wise_refusal_precision']['formatted']} | "
+                f"{metrics['over_refusal_rate']['formatted']} | "
                 f"{metrics['ece']['formatted']} | "
                 f"{metrics['brier']['formatted']} | "
                 f"{metrics['countermodel_coverage']['formatted']} |"

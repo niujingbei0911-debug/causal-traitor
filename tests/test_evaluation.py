@@ -121,8 +121,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score_a.final_scores, score_b.final_scores)
         self.assertEqual(score_a.final_scores["verdict_accuracy"], 0.6667)
         self.assertEqual(score_a.final_scores["macro_f1"], 0.5556)
-        self.assertEqual(score_a.final_scores["invalid_claim_acceptance_rate"], 1.0)
-        self.assertEqual(score_a.final_scores["unidentifiable_awareness"], 1.0)
+        self.assertEqual(score_a.final_scores["unsafe_acceptance_rate"], 1.0)
         self.assertEqual(score_a.final_scores["wise_refusal_recall"], 1.0)
         self.assertEqual(score_a.final_scores["wise_refusal_precision"], 1.0)
         self.assertEqual(score_a.final_scores["over_commitment_rate"], 0.0)
@@ -130,7 +129,9 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(score_a.final_scores["ece"], 0.4)
         self.assertEqual(score_a.final_scores["brier"], 0.1789)
         self.assertEqual(score_a.final_scores["countermodel_coverage"], 0.5)
-        self.assertEqual(score_a.final_scores["overall"], 0.6711)
+        self.assertNotIn("invalid_claim_acceptance_rate", score_a.final_scores)
+        self.assertNotIn("unidentifiable_awareness", score_a.final_scores)
+        self.assertEqual(score_a.final_scores["overall"], 0.5211)
         self.assertNotEqual(score_a.summary["appendix_metrics"], score_b.summary["appendix_metrics"])
         self.assertIn("DSR", score_a.summary["appendix_metrics"])
         self.assertIn("jury_accuracy", score_a.summary["appendix_metrics"])
@@ -183,14 +184,10 @@ class EvaluationTests(unittest.TestCase):
         core_metrics = [
             MetricResult(name="verdict_accuracy", value=0.7, category="verdict", is_primary=True),
             MetricResult(name="macro_f1", value=0.6, category="verdict", is_primary=True),
-            MetricResult(
-                name="invalid_claim_acceptance_rate",
-                value=0.2,
-                category="verdict",
-                is_primary=True,
-                higher_is_better=False,
-            ),
-            MetricResult(name="unidentifiable_awareness", value=0.8, category="verdict", is_primary=True),
+            MetricResult(name="unsafe_acceptance_rate", value=0.2, category="selective", is_primary=True, higher_is_better=False),
+            MetricResult(name="wise_refusal_recall", value=0.8, category="selective", is_primary=True),
+            MetricResult(name="wise_refusal_precision", value=0.75, category="selective", is_primary=True),
+            MetricResult(name="over_refusal_rate", value=0.1, category="selective", is_primary=True, higher_is_better=False),
             MetricResult(name="ece", value=0.1, category="verdict", is_primary=True, higher_is_better=False),
             MetricResult(name="brier", value=0.15, category="verdict", is_primary=True, higher_is_better=False),
             MetricResult(name="countermodel_coverage", value=0.5, category="verdict", is_primary=True),
@@ -204,7 +201,7 @@ class EvaluationTests(unittest.TestCase):
         core_only = self.scorer.compute_weighted_score(core_metrics)
         with_appendix = self.scorer.compute_weighted_score(core_metrics + appendix_metrics)
 
-        self.assertEqual(core_only, 0.1375)
+        self.assertEqual(core_only, 0.78)
         self.assertEqual(with_appendix, core_only)
 
     def test_ece_keeps_confidences_aligned_with_filtered_labels(self) -> None:
@@ -265,6 +262,8 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(lookup["wise_refusal_precision"].value, 0.0)
         self.assertEqual(lookup["over_commitment_rate"].value, 1.0)
         self.assertEqual(lookup["over_refusal_rate"].value, 0.6667)
+        self.assertNotIn("invalid_claim_acceptance_rate", lookup)
+        self.assertNotIn("unidentifiable_awareness", lookup)
         self.assertTrue(lookup["wise_refusal_recall"].is_primary)
         self.assertTrue(lookup["wise_refusal_precision"].is_primary)
         self.assertFalse(lookup["over_commitment_rate"].higher_is_better)
@@ -420,7 +419,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(lookup["ece"].value, score.final_scores["ece"], places=4)
         self.assertAlmostEqual(lookup["brier"].value, score.final_scores["brier"], places=4)
 
-    def test_compute_weighted_score_includes_over_commitment_rate_in_primary_contract(self) -> None:
+    def test_compute_weighted_score_does_not_double_count_over_commitment_rate(self) -> None:
         core_metrics = [
             MetricResult(
                 name="unsafe_acceptance_rate",
@@ -450,7 +449,7 @@ class EvaluationTests(unittest.TestCase):
             MetricResult(name="countermodel_coverage", value=1.0, category="verdict", is_primary=True),
         ]
 
-        self.assertGreaterEqual(self.scorer.compute_weighted_score(core_metrics), 0.9)
+        self.assertAlmostEqual(self.scorer.compute_weighted_score(core_metrics), 1.0, places=4)
 
     def test_score_game_counts_missing_predictions_as_scored_failures(self) -> None:
         score = self.scorer.score_game(

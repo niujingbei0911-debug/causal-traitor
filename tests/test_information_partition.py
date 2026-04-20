@@ -262,6 +262,27 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(benchmark_payload["refusal_reason"], "observational_equivalence")
         self.assertEqual(benchmark_payload["refusal_reason"], verifier_payload["refusal_reason"])
 
+    def test_benchmark_and_verifier_align_missing_information_from_unresolved_ledger(self) -> None:
+        payload = {
+            "label": "unidentifiable",
+            "assumption_ledger": [
+                {"name": "valid adjustment set", "status": "unresolved"},
+                {"name": "positivity", "status": "supported"},
+            ],
+        }
+
+        benchmark_payload = VerifierVerdict(**payload).to_dict()
+        verifier_payload = SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+
+        self.assertEqual(
+            benchmark_payload["missing_information_spec"]["missing_assumptions"],
+            ["valid adjustment set"],
+        )
+        self.assertEqual(
+            benchmark_payload["missing_information_spec"],
+            verifier_payload["missing_information_spec"],
+        )
+
     def test_selective_contract_rejects_inconsistent_identification_status(self) -> None:
         with self.assertRaises(ValueError):
             VerifierVerdict(label="valid", identification_status="underdetermined")
@@ -302,6 +323,28 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertEqual(verifier_payload["assumption_ledger"], [])
         self.assertEqual(verifier_payload["tool_trace"], [])
         self.assertEqual(verifier_payload["metadata"], {})
+
+    def test_benchmark_verdict_validates_numeric_contract(self) -> None:
+        with self.assertRaises(ValueError):
+            VerifierVerdict(label="valid", confidence=1.7)
+        with self.assertRaises(ValueError):
+            VerifierVerdict(label="valid", probabilities={"valid": 9.0, "foo": -3.0})
+
+    def test_missing_information_spec_drops_blank_strings_before_deriving_refusal_reason(self) -> None:
+        verdict = VerifierVerdict(
+            label="unidentifiable",
+            missing_information_spec={"missing_assumptions": [""], "required_evidence": ["   "]},
+        )
+
+        self.assertEqual(
+            verdict.missing_information_spec.to_dict(),
+            {
+                "missing_assumptions": [],
+                "required_evidence": [],
+                "note": "",
+            },
+        )
+        self.assertEqual(verdict.refusal_reason, "insufficient_public_information")
 
     def test_gold_to_public_default_projection_does_not_leak_gold_description(self) -> None:
         gold = GoldCausalInstance(
@@ -462,6 +505,39 @@ class InformationPartitionTests(unittest.TestCase):
         self.assertIn("variable_descriptions", public.metadata)
         self.assertIn("measurement_semantics", public.metadata)
         self.assertNotIn("task_level", public.metadata)
+
+    def test_gold_to_public_strips_hidden_variable_mentions_from_public_metadata_fields(self) -> None:
+        gold = GoldCausalInstance(
+            scenario_id="public_metadata_hidden_variable_case",
+            description="Gold-only hidden variable should never appear in public hints.",
+            true_dag={"U": ["X", "Y"], "X": ["Y"]},
+            variables=["X", "Y", "U"],
+            hidden_variables=["U"],
+            observed_data=self.observed_data[["X", "Y"]].copy(),
+            full_data=self.full_data[["X", "Y", "U"]].copy(),
+            data=self.observed_data[["X", "Y"]].copy(),
+            gold_label="invalid",
+            metadata={
+                "public_description": "Observed case where hidden variable U explains the effect.",
+                "selection_mechanism": "conditioning_on_U",
+                "variable_descriptions": {
+                    "X": "Observed treatment proxy for U.",
+                    "U": "Hidden confounder should not leak.",
+                },
+                "measurement_semantics": {
+                    "Y": {"measurement_view": "outcome while U changes", "notes": ["mentions U"]},
+                    "U": {"measurement_view": "hidden"},
+                },
+            },
+        )
+
+        public = gold.to_public()
+
+        self.assertNotIn("U", public.description)
+        self.assertIsNone(public.selection_mechanism)
+        self.assertNotIn("U", public.metadata.get("variable_descriptions", {}))
+        self.assertNotIn("U", public.metadata.get("measurement_semantics", {}))
+        self.assertNotIn("U", json.dumps(public.to_dict(), ensure_ascii=False))
 
     def test_public_metadata_sanitizer_strips_nested_supervision_fields_from_allowed_roots(self) -> None:
         gold = GoldCausalInstance(

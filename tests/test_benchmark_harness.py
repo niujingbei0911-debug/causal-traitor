@@ -41,8 +41,14 @@ def _prediction_record(
 
 
 class BenchmarkHarnessTests(unittest.TestCase):
-    def test_primary_metric_contract_includes_over_commitment_rate(self) -> None:
-        self.assertIn("over_commitment_rate", PRIMARY_METRICS)
+    def test_primary_metric_contract_uses_v2_metric_names_without_alias_duplicates(self) -> None:
+        self.assertNotIn("invalid_claim_acceptance_rate", PRIMARY_METRICS)
+        self.assertNotIn("unidentifiable_awareness", PRIMARY_METRICS)
+        self.assertNotIn("over_commitment_rate", PRIMARY_METRICS)
+        self.assertIn("unsafe_acceptance_rate", PRIMARY_METRICS)
+        self.assertIn("wise_refusal_recall", PRIMARY_METRICS)
+        self.assertIn("wise_refusal_precision", PRIMARY_METRICS)
+        self.assertIn("over_refusal_rate", PRIMARY_METRICS)
 
     def test_write_artifacts_emits_phase4_sidecars(self) -> None:
         payload = {
@@ -313,11 +319,11 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 split_name="test_iid",
             )
 
-    def test_aggregate_seed_metrics_requires_over_commitment_rate(self) -> None:
+    def test_aggregate_seed_metrics_requires_over_refusal_rate(self) -> None:
         metrics = {metric_name: 1.0 for metric_name in PRIMARY_METRICS}
-        metrics.pop("over_commitment_rate")
+        metrics.pop("over_refusal_rate")
 
-        with self.assertRaisesRegex(ValueError, "over_commitment_rate"):
+        with self.assertRaisesRegex(ValueError, "over_refusal_rate"):
             aggregate_seed_metrics(
                 {
                     0: {

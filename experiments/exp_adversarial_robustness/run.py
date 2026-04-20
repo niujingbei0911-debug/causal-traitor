@@ -46,8 +46,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
             lines.append(
                 f"| {strength_name} | {split_name} | "
                 f"{metrics['verdict_accuracy']['formatted']} | "
-                f"{metrics['invalid_claim_acceptance_rate']['formatted']} | "
-                f"{metrics['unidentifiable_awareness']['formatted']} |"
+                f"{metrics['unsafe_acceptance_rate']['formatted']} | "
+                f"{metrics['wise_refusal_recall']['formatted']} |"
             )
     for split_name, comparison in payload.get("significance", {}).items():
         if comparison is None:
