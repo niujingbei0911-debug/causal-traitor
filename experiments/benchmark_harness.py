@@ -82,6 +82,14 @@ BASELINE_REGISTRY: dict[str, dict[str, Any]] = {
     },
 }
 MAIN_BENCHMARK_SYSTEMS: tuple[str, ...] = tuple(BASELINE_REGISTRY) + ("countermodel_grounded",)
+BLUEPRINT_PERSUASION_SYSTEMS: tuple[str, ...] = MAIN_BENCHMARK_SYSTEMS
+BLUEPRINT_PERSUASION_PRESSURE_TYPES: tuple[str, ...] = (
+    "none",
+    "authority_pressure",
+    "confidence_pressure",
+    "consensus_pressure",
+    "concealment_pressure",
+)
 
 
 def _unique_names_in_order(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -493,6 +501,26 @@ def _stable_sample_seed(seed: int, family_name: str, sample_index: int) -> int:
     return int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
 
 
+def _supports_paired_flip_generation(
+    generator: BenchmarkGenerator,
+    *,
+    family_name: str,
+    difficulty: float,
+    seed: int,
+) -> bool:
+    try:
+        generator.generate_paired_flip_samples(
+            family_name=family_name,
+            difficulty=difficulty,
+            seed=seed,
+        )
+    except ValueError as exc:
+        if "paired-flip generation" in str(exc):
+            return False
+        raise
+    return True
+
+
 def _apply_split_metadata_to_samples(
     *,
     sample_by_id: dict[str, BenchmarkSample],
@@ -539,10 +567,25 @@ def build_seed_benchmark_run(
         sample_slot = 0
         attempts = 0
         max_attempts = max(8, resolved_samples_per_family * 24)
+        paired_flip_supported = (
+            _supports_paired_flip_generation(
+                generator,
+                family_name=family_name,
+                difficulty=resolved_difficulty,
+                seed=_stable_sample_seed(seed, family_name, sample_index),
+            )
+            if paired_flip_holdout
+            else False
+        )
         while sample_slot < resolved_samples_per_family:
             sample_seed = _stable_sample_seed(seed, family_name, sample_index)
             try:
-                if paired_flip_holdout and sample_slot == 0 and resolved_samples_per_family - sample_slot >= 3:
+                if (
+                    paired_flip_holdout
+                    and paired_flip_supported
+                    and sample_slot == 0
+                    and resolved_samples_per_family - sample_slot >= 3
+                ):
                     anchor, flipped = generator.generate_paired_flip_samples(
                         family_name=family_name,
                         difficulty=resolved_difficulty,
@@ -550,15 +593,17 @@ def build_seed_benchmark_run(
                     )
                     samples.extend([anchor, flipped])
                     sample_slot += 2
-                else:
-                    samples.append(
-                        generator.generate_benchmark_sample(
-                            family_name=family_name,
-                            difficulty=resolved_difficulty,
-                            seed=sample_seed,
-                        )
+                    attempts = 0
+                    sample_index += 1
+                    continue
+                samples.append(
+                    generator.generate_benchmark_sample(
+                        family_name=family_name,
+                        difficulty=resolved_difficulty,
+                        seed=sample_seed,
                     )
-                    sample_slot += 1
+                )
+                sample_slot += 1
             except ValueError as exc:
                 attempts += 1
                 sample_index += 1

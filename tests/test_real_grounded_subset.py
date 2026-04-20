@@ -7,6 +7,7 @@ from benchmark.loaders import (
     load_real_grounded_cases,
     load_real_grounded_claims,
     load_real_grounded_dataset,
+    load_real_grounded_samples,
     save_real_grounded_dataset,
 )
 from benchmark.real_grounded import (
@@ -118,6 +119,39 @@ class RealGroundedSubsetTests(unittest.TestCase):
         self.assertIsInstance(loaded_claims[0], ClaimInstance)
         self.assertEqual(loaded_claims[0].instance_id, "real_grounded_claim_002")
         self.assertEqual(loaded_cases[0].source_citation.citation_text, "Garcia (2023), Observational Medicine Review.")
+
+    def test_real_grounded_loader_can_emit_benchmark_samples_for_phase4_runners(self) -> None:
+        dataset = RealGroundedDataset(
+            cases=[
+                RealGroundedCase(
+                    case_id="rg_eval_001",
+                    grounding_type="literature_grounded",
+                    claim=_build_claim("real_grounded_claim_eval_001"),
+                    source_citation=SourceCitation(
+                        citation_text="Rivera (2025), Policy Evaluation Letters.",
+                        title="Real-grounded evaluation case",
+                        year=2025,
+                    ),
+                    public_evidence_summary="Evaluation-ready grounded case with public summary and hidden reviewer note.",
+                    information_contract={
+                        "visible_information": ["Observed estimate"],
+                        "hidden_information": ["Private reviewer memo"],
+                    },
+                    identifying_assumptions=["Ignorability"],
+                    witness_note="Evaluation-ready witness note.",
+                )
+            ]
+        )
+
+        samples = load_real_grounded_samples(dataset)
+
+        self.assertEqual(len(samples), 1)
+        sample = samples[0]
+        self.assertEqual(sample.claim.meta["dataset_partition"], "real_grounded")
+        self.assertEqual(sample.claim.meta["data_origin"], "real_grounded")
+        self.assertEqual(sample.public.description, "Evaluation-ready grounded case with public summary and hidden reviewer note.")
+        self.assertEqual(sample.gold.gold_label.value, sample.claim.gold_label.value)
+        self.assertFalse(sample.public.observed_data.empty)
 
     def test_real_grounded_serializer_accepts_single_case_inputs(self) -> None:
         case = RealGroundedCase(

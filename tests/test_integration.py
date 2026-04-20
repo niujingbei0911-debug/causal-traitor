@@ -33,6 +33,8 @@ from experiments.exp_leakage_study.run import (
 )
 from experiments.exp_main_benchmark.run import run_experiment as run_main_benchmark
 from experiments.exp_ood_generalization.run import run_experiment as run_ood_generalization
+from experiments.exp_persuasion_robustness.run import run_experiment as run_persuasion_robustness
+from experiments.exp_real_grounded_subset.run import run_experiment as run_real_grounded_subset
 from game.config import ConfigLoader
 from game.data_generator import DataGenerator
 from game.debate_engine import DebateEngine
@@ -232,6 +234,18 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 allow_protocol_violations=True,
                 output_path=str(Path(tmp_dir) / "exp_human_audit.json"),
             )
+            persuasion_payload = run_persuasion_robustness(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_persuasion_robustness.json"),
+            )
+            real_grounded_payload = run_real_grounded_subset(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_real_grounded_subset.json"),
+            )
 
             self.assertIn("test_iid", main_payload["aggregated_metrics"]["countermodel_grounded"])
             self.assertIn("test_ood", main_payload["aggregated_metrics"]["countermodel_grounded"])
@@ -244,7 +258,15 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(main_payload["protocol"]["override_used"])
             self.assertEqual(
                 main_payload["systems"],
-                ["judge_direct", "debate_reduced", "tool_only", "countermodel_grounded"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
             )
             for artifact_key in (
                 "artifact_json",
@@ -387,6 +409,173 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for artifact_path in human_payload["artifacts"].values():
                 self.assertTrue(Path(artifact_path).exists())
 
+            self.assertEqual(
+                persuasion_payload["pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertTrue(persuasion_payload["raw_predictions"])
+            self.assertTrue(
+                all(
+                    record["pressure_type"] in persuasion_payload["pressure_types"]
+                    for record in persuasion_payload["raw_predictions"]
+                )
+            )
+            for system_name in persuasion_payload["systems"]:
+                self.assertIn("none", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertIn("authority_pressure", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertNotIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertIn(
+                    "test_iid",
+                    persuasion_payload["aggregated_metrics"][system_name]["authority_pressure"],
+                )
+                self.assertIn(
+                    "test_ood",
+                    persuasion_payload["aggregated_metrics"][system_name]["authority_pressure"],
+                )
+            self.assertIn("| direct_judge | authority_pressure | test_iid |", persuasion_payload["markdown_summary"])
+
+            self.assertEqual(
+                real_grounded_payload["dataset_partitions"],
+                ["synthetic", "real_grounded"],
+            )
+            self.assertEqual(
+                real_grounded_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertTrue(real_grounded_payload["raw_predictions"])
+            self.assertTrue(
+                all(
+                    record["dataset_partition"] in {"synthetic", "real_grounded"}
+                    for record in real_grounded_payload["raw_predictions"]
+                )
+            )
+            for dataset_partition in ("synthetic", "real_grounded"):
+                self.assertIn(dataset_partition, real_grounded_payload["aggregated_metrics"])
+                self.assertIn("countermodel_grounded", real_grounded_payload["aggregated_metrics"][dataset_partition])
+                self.assertIn(
+                    "test_iid",
+                    real_grounded_payload["aggregated_metrics"][dataset_partition]["countermodel_grounded"],
+                )
+                self.assertIn(
+                    "test_ood",
+                    real_grounded_payload["aggregated_metrics"][dataset_partition]["countermodel_grounded"],
+                )
+            self.assertIn("## synthetic", real_grounded_payload["markdown_summary"])
+            self.assertIn("## real_grounded", real_grounded_payload["markdown_summary"])
+            for artifact_key in (
+                "artifact_json",
+                "config",
+                "seed_list",
+                "aggregated_metrics",
+                "ci",
+            ):
+                self.assertIn(artifact_key, real_grounded_payload["artifacts"])
+                self.assertTrue(Path(real_grounded_payload["artifacts"][artifact_key]).exists())
+
+    def test_phase4_persuasion_and_real_grounded_emit_required_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            persuasion_payload = run_persuasion_robustness(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_persuasion_robustness.json"),
+            )
+            real_grounded_payload = run_real_grounded_subset(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_real_grounded_subset.json"),
+            )
+
+            self.assertEqual(
+                persuasion_payload["pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertTrue(persuasion_payload["raw_predictions"])
+            self.assertTrue(
+                all(
+                    record["pressure_type"] in persuasion_payload["pressure_types"]
+                    for record in persuasion_payload["raw_predictions"]
+                )
+            )
+            for system_name in persuasion_payload["systems"]:
+                self.assertIn("none", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertIn("authority_pressure", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertNotIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
+            self.assertIn("| direct_judge | authority_pressure | test_iid |", persuasion_payload["markdown_summary"])
+
+            self.assertEqual(
+                real_grounded_payload["dataset_partitions"],
+                ["synthetic", "real_grounded"],
+            )
+            self.assertEqual(
+                real_grounded_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertTrue(real_grounded_payload["raw_predictions"])
+            self.assertTrue(
+                all(
+                    record["dataset_partition"] in {"synthetic", "real_grounded"}
+                    for record in real_grounded_payload["raw_predictions"]
+                )
+            )
+            self.assertIn("synthetic", real_grounded_payload["aggregated_metrics"])
+            self.assertIn("real_grounded", real_grounded_payload["aggregated_metrics"])
+            self.assertIn("## synthetic", real_grounded_payload["markdown_summary"])
+            self.assertIn("## real_grounded", real_grounded_payload["markdown_summary"])
+
     def test_phase4_default_main_and_leakage_paths_match_paper_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             main_payload = run_main_benchmark(
@@ -399,7 +588,15 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(len(main_payload["seeds"]), 3)
             self.assertEqual(
                 main_payload["systems"],
-                ["judge_direct", "debate_reduced", "tool_only", "countermodel_grounded"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
             )
             self.assertTrue(main_payload["blueprint_alignment"]["full_baseline_matrix_connected"])
             self.assertEqual(main_payload["blueprint_alignment"]["missing_blueprint_baseline_categories"], [])
@@ -459,6 +656,80 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 expected_delta = leakage_payload["inflation"][split_name]["accuracy"]["delta_mean"]
                 self.assertAlmostEqual(comparison["observed_difference"], expected_delta)
 
+    def test_phase4_default_persuasion_and_real_grounded_paths_match_blueprint_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            persuasion_payload = run_persuasion_robustness(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_persuasion_robustness_defaultish.json"),
+            )
+            real_grounded_payload = run_real_grounded_subset(
+                seeds=[0],
+                samples_per_family=1,
+                allow_protocol_violations=True,
+                output_path=str(Path(tmp_dir) / "exp_real_grounded_subset_defaultish.json"),
+            )
+
+            self.assertEqual(
+                persuasion_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["config"]["comparison_axis"],
+                "system_pressure_matrix",
+            )
+            self.assertFalse(persuasion_payload["protocol"]["compliant"])
+            self.assertTrue(persuasion_payload["protocol"]["override_used"])
+            self.assertIn("countermodel_grounded", persuasion_payload["aggregated_metrics"])
+            self.assertIn(
+                "concealment_pressure",
+                persuasion_payload["aggregated_metrics"]["countermodel_grounded"],
+            )
+
+            self.assertEqual(
+                real_grounded_payload["systems"],
+                [
+                    "direct_judge",
+                    "cot_judge",
+                    "self_consistency_judge",
+                    "tool_baseline",
+                    "debate_baseline",
+                    "refusal_aware_baseline",
+                    "countermodel_grounded",
+                ],
+            )
+            self.assertEqual(
+                real_grounded_payload["dataset_partitions"],
+                ["synthetic", "real_grounded"],
+            )
+            self.assertFalse(real_grounded_payload["protocol"]["compliant"])
+            self.assertTrue(real_grounded_payload["protocol"]["override_used"])
+            self.assertIn("synthetic", real_grounded_payload["aggregated_metrics"])
+            self.assertIn("real_grounded", real_grounded_payload["aggregated_metrics"])
+            self.assertIn(
+                "countermodel_grounded",
+                real_grounded_payload["aggregated_metrics"]["real_grounded"],
+            )
+
     def test_phase4_leakage_control_reads_oracle_public_measurement_semantics(self) -> None:
         run = build_seed_benchmark_run(seed=0, difficulty=0.55, samples_per_family=2)
         sample = next(
@@ -506,6 +777,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         rounds = captured["game_data"]["rounds"]
         self.assertEqual(len(rounds), 1)
+        self.assertIn("verifier_verdict", rounds[0])
+        self.assertEqual(rounds[0]["verifier_verdict"]["final_verdict"], sample.claim.gold_label.value)
         self.assertEqual(
             rounds[0]["predicted_probabilities"],
             {

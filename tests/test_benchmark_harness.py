@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from experiments.benchmark_harness import (
     BASELINE_REGISTRY,
+    BLUEPRINT_PERSUASION_PRESSURE_TYPES,
+    BLUEPRINT_PERSUASION_SYSTEMS,
     PRIMARY_METRICS,
     _apply_no_abstention,
     _apply_family_postprocessing,
@@ -76,6 +78,19 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 "countermodel_grounded",
             ),
         )
+
+    def test_blueprint_persuasion_defaults_match_main_paper_axes(self) -> None:
+        self.assertEqual(
+            BLUEPRINT_PERSUASION_PRESSURE_TYPES,
+            (
+                "none",
+                "authority_pressure",
+                "confidence_pressure",
+                "consensus_pressure",
+                "concealment_pressure",
+            ),
+        )
+        self.assertEqual(BLUEPRINT_PERSUASION_SYSTEMS, DEFAULT_MAIN_SYSTEMS)
 
     def test_primary_metric_contract_uses_v2_metric_names_without_alias_duplicates(self) -> None:
         self.assertNotIn("invalid_claim_acceptance_rate", PRIMARY_METRICS)
@@ -495,10 +510,10 @@ class BenchmarkHarnessTests(unittest.TestCase):
         family_counts = Counter(sample.claim.graph_family for sample in run.samples)
         self.assertTrue(family_counts)
         self.assertTrue(all(count == 3 for count in family_counts.values()))
-        self.assertGreaterEqual(
-            sum(1 for sample in run.samples if sample.claim.meta.get("paired_flip_id")),
-            len(family_counts) * 2,
-        )
+        paired_flip_samples = [sample for sample in run.samples if sample.claim.meta.get("paired_flip_id")]
+        self.assertTrue(paired_flip_samples)
+        paired_flip_family_counts = Counter(sample.claim.graph_family for sample in paired_flip_samples)
+        self.assertTrue(all(count >= 2 for count in paired_flip_family_counts.values()))
 
     def test_build_seed_benchmark_run_rejects_paired_flip_holdout_below_minimum_samples(self) -> None:
         with self.assertRaisesRegex(ValueError, "paired_flip_holdout requires samples_per_family >= 3"):

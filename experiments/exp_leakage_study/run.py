@@ -32,6 +32,7 @@ from evaluation.significance import holm_bonferroni
 from verifier.assumption_ledger import build_assumption_ledger
 from verifier.claim_parser import parse_claim
 from verifier.decision import VerifierDecision
+from verifier.outputs import SelectiveVerifierOutput
 from verifier.pipeline import VerifierPipeline
 
 SYSTEMS: tuple[str, str] = ("countermodel_grounded", "oracle_leaking_partition")
@@ -75,6 +76,10 @@ def _serialize_verifier_decision(decision: VerifierDecision) -> dict[str, Any]:
     return payload
 
 
+def _canonicalize_verdict_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return SelectiveVerifierOutput.from_decision_payload(payload).to_dict()
+
+
 def _verifier_tool_context(
     sample: BenchmarkSample,
     public: PublicCausalInstance,
@@ -107,7 +112,7 @@ def _run_clean_partition(sample: BenchmarkSample) -> dict[str, Any]:
     return {
         "predicted_label": decision.label.value,
         "confidence": float(decision.confidence),
-        "verdict": _serialize_verifier_decision(decision),
+        "verdict": _canonicalize_verdict_payload(_serialize_verifier_decision(decision)),
         "tool_report": {
             "selected_tools": list(tool_report["selected_tools"]),
             "claim_stance": tool_report["claim_stance"],
@@ -276,7 +281,7 @@ def _run_oracle_leaking_partition(sample: BenchmarkSample) -> dict[str, Any]:
     return {
         "predicted_label": leaked_label,
         "confidence": 0.999,
-        "verdict": verdict,
+        "verdict": _canonicalize_verdict_payload(verdict),
         "tool_report": {
             "selected_tools": ["oracle_metadata_readout"],
             "claim_stance": "pro_causal",
@@ -358,6 +363,7 @@ def _evaluate_partition_on_samples(
                 "round_id": index,
                 "gold_label": record["gold_label"],
                 "verdict_label": record["predicted_label"],
+                "verifier_verdict": verdict,
                 "verifier_confidence": record["confidence"],
                 "predicted_probabilities": verdict.get("probabilities"),
                 "countermodel_witness": verdict.get("countermodel_witness"),
