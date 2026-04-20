@@ -1770,7 +1770,6 @@ def write_artifacts(
 
 
 def manifest_metadata(run: SeedBenchmarkRun) -> dict[str, Any]:
-    extended_holdout_strategy = dict(run.manifest.metadata.get("extended_holdout_strategy", {}))
     return {
         "dataset_name": run.manifest.dataset_name,
         "version": run.manifest.version,
@@ -1778,7 +1777,10 @@ def manifest_metadata(run: SeedBenchmarkRun) -> dict[str, Any]:
             "family_holdout": list(run.manifest.family_holdout),
             "lexical_holdout": list(run.manifest.lexical_holdout),
             "variable_renaming_holdout": bool(run.manifest.variable_renaming_holdout),
-            **extended_holdout_strategy,
+            "mechanism_holdout": list(run.manifest.mechanism_holdout),
+            "attack_family_holdout": list(run.manifest.attack_family_holdout),
+            "context_shift_holdout": list(run.manifest.context_shift_holdout),
+            "paired_flip_holdout": bool(run.manifest.paired_flip_holdout),
         },
         "metadata": dict(run.manifest.metadata),
     }

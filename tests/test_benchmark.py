@@ -184,7 +184,11 @@ class BenchmarkSchemaTests(unittest.TestCase):
             family_holdout=["l3_counterfactual_ambiguity_family"],
             lexical_holdout=["tmpl_holdout_03"],
             variable_renaming_holdout=True,
-            metadata={"seed": 13, "builder": "split_builder_v1"},
+            mechanism_holdout=["instrumental_variable"],
+            attack_family_holdout=["counterfactual_shortcut"],
+            context_shift_holdout=["policy"],
+            paired_flip_holdout=True,
+            metadata={"seed": 13, "builder": "split_builder_v2"},
         )
 
         payload = manifest.to_dict()
@@ -197,9 +201,17 @@ class BenchmarkSchemaTests(unittest.TestCase):
             ["l3_counterfactual_ambiguity_family"],
         )
         self.assertTrue(payload["holdout_strategy"]["variable_renaming_holdout"])
+        self.assertEqual(payload["holdout_strategy"]["mechanism_holdout"], ["instrumental_variable"])
+        self.assertEqual(payload["holdout_strategy"]["attack_family_holdout"], ["counterfactual_shortcut"])
+        self.assertEqual(payload["holdout_strategy"]["context_shift_holdout"], ["policy"])
+        self.assertTrue(payload["holdout_strategy"]["paired_flip_holdout"])
         self.assertEqual(restored.dataset_name, "main_benchmark_v1")
         self.assertEqual(restored.test_iid, ["inst_020"])
         self.assertEqual(restored.test_ood, ["inst_900", "inst_901"])
+        self.assertEqual(restored.mechanism_holdout, ["instrumental_variable"])
+        self.assertEqual(restored.attack_family_holdout, ["counterfactual_shortcut"])
+        self.assertEqual(restored.context_shift_holdout, ["policy"])
+        self.assertTrue(restored.paired_flip_holdout)
 
     def test_claim_instance_rejects_missing_gold_label(self) -> None:
         with self.assertRaises(ValueError):
@@ -839,8 +851,8 @@ class ShowcaseMigrationTests(unittest.TestCase):
         )
 
         self.assertEqual(claim.meta["claim_mode"], "attack")
-        self.assertEqual(claim.meta["persuasion_style_id"], "none")
-        self.assertEqual(claim.meta["pressure_type"], "none")
+        self.assertIn(claim.meta["persuasion_style_id"], PERSUASION_STYLE_SPACE)
+        self.assertEqual(claim.meta["pressure_type"], claim.meta["persuasion_style_id"])
         self.assertIn(claim.meta["persuasion_style_id"], claim.language_template_id)
 
     def test_benchmark_generator_supports_explicit_pressure_style_overrides(self) -> None:
@@ -854,6 +866,29 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(claim.meta["persuasion_style_id"], "authority_pressure")
         self.assertEqual(claim.meta["pressure_type"], "authority_pressure")
         self.assertIn("authority_pressure", claim.language_template_id)
+
+    def test_benchmark_generator_supports_explicit_no_pressure_override(self) -> None:
+        claim = BenchmarkGenerator(seed=17).generate_claim_instance(
+            family_name="l2_invalid_iv_family",
+            difficulty=0.35,
+            seed=29,
+            persuasion_style_id="none",
+        )
+
+        self.assertEqual(claim.meta["persuasion_style_id"], "none")
+        self.assertEqual(claim.meta["pressure_type"], "none")
+
+    def test_batch_generation_can_emit_persuasion_variants_by_default(self) -> None:
+        samples = BenchmarkGenerator(seed=17).generate_benchmark_samples(
+            num_samples=8,
+            family_names=["l2_invalid_iv_family"],
+            difficulty=0.35,
+            seed=17,
+        )
+
+        styles = [sample.claim.meta.get("persuasion_style_id") for sample in samples]
+        self.assertTrue(any(style in PERSUASION_STYLE_SPACE for style in styles))
+        self.assertGreaterEqual(len(set(styles)), 2)
 
     def test_invalid_and_unidentifiable_samples_do_not_share_the_same_public_contract(self) -> None:
         generator = BenchmarkGenerator(seed=29)
@@ -879,11 +914,13 @@ class ShowcaseMigrationTests(unittest.TestCase):
                     gold_label_override=VerdictLabel.UNIDENTIFIABLE,
                 )
 
-                invalid_contract = invalid.public.metadata["public_evidence_contract"]
-                unidentifiable_contract = unidentifiable.public.metadata["public_evidence_contract"]
+                invalid_contract = invalid.gold.metadata["public_evidence_contract"]
+                unidentifiable_contract = unidentifiable.gold.metadata["public_evidence_contract"]
                 self.assertEqual(invalid_contract["contract_label"], "invalid")
                 self.assertEqual(unidentifiable_contract["contract_label"], "unidentifiable")
                 self.assertNotEqual(invalid_contract["contract_status"], unidentifiable_contract["contract_status"])
+                self.assertNotIn("public_evidence_contract", invalid.public.metadata)
+                self.assertNotIn("public_evidence_contract", unidentifiable.public.metadata)
                 self.assertFalse(invalid.gold.observed_data.equals(unidentifiable.gold.observed_data))
                 self.assertNotEqual(invalid.public.to_dict(), unidentifiable.public.to_dict())
 
@@ -979,12 +1016,41 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertEqual(anchor.claim.graph_family, flipped.claim.graph_family)
         self.assertEqual(anchor.claim.query_type, flipped.claim.query_type)
         self.assertEqual(anchor.claim.target_variables, flipped.claim.target_variables)
+        self.assertEqual(anchor.claim.meta["claim_mode"], flipped.claim.meta["claim_mode"])
+        self.assertEqual(anchor.claim.meta["lexical_template_id"], flipped.claim.meta["lexical_template_id"])
+        self.assertEqual(anchor.claim.meta["persuasion_style_id"], flipped.claim.meta["persuasion_style_id"])
+        self.assertEqual(anchor.gold.true_dag, flipped.gold.true_dag)
+        self.assertTrue(anchor.gold.observed_data.equals(flipped.gold.observed_data))
+        self.assertEqual(anchor.public.to_dict(), flipped.public.to_dict())
         self.assertNotEqual(anchor.claim.gold_label, flipped.claim.gold_label)
+        self.assertNotEqual(anchor.claim.claim_text, flipped.claim.claim_text)
         self.assertEqual(anchor.claim.meta["paired_flip_id"], flipped.claim.meta["paired_flip_id"])
         self.assertEqual(anchor.claim.meta["paired_flip_role"], "anchor")
         self.assertEqual(flipped.claim.meta["paired_flip_role"], "flip")
         self.assertEqual(anchor.claim.meta["paired_flip_partner_id"], flipped.claim.instance_id)
         self.assertEqual(flipped.claim.meta["paired_flip_partner_id"], anchor.claim.instance_id)
+
+    def test_selection_bias_invalid_samples_keep_visible_nonconstant_selection_signal(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        for seed in range(11, 21):
+            with self.subTest(seed=seed):
+                sample = generator.generate_benchmark_sample(
+                    family_name="l1_selection_bias_family",
+                    difficulty=0.35,
+                    seed=seed,
+                    gold_label_override=VerdictLabel.INVALID,
+                    persuasion_style_id="none",
+                )
+                selection = sample.gold.metadata["selection_variables"][0]
+                self.assertGreater(sample.gold.observed_data[selection].nunique(dropna=True), 1)
+                self.assertGreater(
+                    float(
+                        sample.gold.metadata["public_evidence_contract"]["diagnostic_report"][
+                            "selection_bias_score"
+                        ]
+                    ),
+                    0.0,
+                )
 
     def test_benchmark_generator_rotates_query_types_within_family(self) -> None:
         generator = BenchmarkGenerator(seed=53)
@@ -1414,6 +1480,73 @@ class SplitBuilderTests(unittest.TestCase):
                 "paired_flip_holdout": True,
             },
         )
+
+    def test_split_builder_keeps_paired_flip_groups_out_of_train_when_one_side_hits_holdout(self) -> None:
+        instances = [
+            _build_claim_instance_for_split(
+                "pair_a",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="attack::iv_a",
+                observed_variables=["X", "Z", "Y"],
+                meta={
+                    "mechanism_ood_tag": "instrumental_variable",
+                    "paired_flip_id": "pair::1",
+                    "paired_flip_role": "anchor",
+                    "paired_flip_partner_id": "pair_b",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "pair_b",
+                graph_family="l2_invalid_iv_family",
+                language_template_id="attack::iv_b",
+                observed_variables=["X", "Z", "Y"],
+                meta={
+                    "mechanism_ood_tag": "instrumental_variable",
+                    "paired_flip_id": "pair::1",
+                    "paired_flip_role": "flip",
+                    "paired_flip_partner_id": "pair_a",
+                },
+            ),
+            _build_claim_instance_for_split(
+                "train_1",
+                graph_family="l1_latent_confounding_family",
+                language_template_id="tmpl_alpha",
+                observed_variables=["A", "B", "C"],
+            ),
+            _build_claim_instance_for_split(
+                "train_2",
+                graph_family="l1_proxy_disambiguation_family",
+                language_template_id="tmpl_beta",
+                observed_variables=["D", "E", "F"],
+            ),
+            _build_claim_instance_for_split(
+                "train_3",
+                graph_family="l2_valid_backdoor_family",
+                language_template_id="tmpl_gamma",
+                observed_variables=["G", "H", "I"],
+            ),
+            _build_claim_instance_for_split(
+                "train_4",
+                graph_family="l3_mediation_abduction_family",
+                language_template_id="tmpl_delta",
+                observed_variables=["J", "K", "L"],
+            ),
+        ]
+
+        manifest = build_split_manifest(
+            instances,
+            family_holdout=[],
+            lexical_holdout=["attack::iv_a"],
+            variable_renaming_holdout=False,
+            mechanism_holdout=[],
+            paired_flip_holdout=False,
+            seed=23,
+        )
+
+        self.assertIn("pair_a", manifest.test_ood)
+        self.assertIn("pair_b", manifest.test_ood)
+        self.assertEqual(manifest.metadata["ood_reasons"]["pair_a"], ["lexical_holdout"])
+        self.assertEqual(manifest.metadata["ood_reasons"]["pair_b"], ["paired_group_holdout"])
 
     def test_split_builder_default_manifest_auto_selects_mechanism_ood(self) -> None:
         generator = BenchmarkGenerator(seed=31)

@@ -92,7 +92,6 @@ _PUBLIC_METADATA_ALLOWED_KEYS = frozenset(
         "context_shift_group",
         "context_shift_id",
         "context_shift_profile",
-        "public_evidence_contract",
     }
 )
 _PUBLIC_DIFFICULTY_CONFIG_ALLOWED_KEYS = frozenset()
@@ -1317,6 +1316,10 @@ class BenchmarkSplitManifest:
     family_holdout: list[str] = field(default_factory=list)
     lexical_holdout: list[str] = field(default_factory=list)
     variable_renaming_holdout: bool = False
+    mechanism_holdout: list[str] = field(default_factory=list)
+    attack_family_holdout: list[str] = field(default_factory=list)
+    context_shift_holdout: list[str] = field(default_factory=list)
+    paired_flip_holdout: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     split_name_space: ClassVar[tuple[str, ...]] = BENCHMARK_SPLIT_SPACE
@@ -1331,6 +1334,10 @@ class BenchmarkSplitManifest:
         self.family_holdout = _normalize_str_list(self.family_holdout)
         self.lexical_holdout = _normalize_str_list(self.lexical_holdout)
         self.variable_renaming_holdout = bool(self.variable_renaming_holdout)
+        self.mechanism_holdout = _normalize_str_list(self.mechanism_holdout)
+        self.attack_family_holdout = _normalize_str_list(self.attack_family_holdout)
+        self.context_shift_holdout = _normalize_str_list(self.context_shift_holdout)
+        self.paired_flip_holdout = bool(self.paired_flip_holdout)
         self.metadata = dict(self.metadata)
 
     def split_map(self) -> dict[str, list[str]]:
@@ -1350,6 +1357,10 @@ class BenchmarkSplitManifest:
                 "family_holdout": list(self.family_holdout),
                 "lexical_holdout": list(self.lexical_holdout),
                 "variable_renaming_holdout": self.variable_renaming_holdout,
+                "mechanism_holdout": list(self.mechanism_holdout),
+                "attack_family_holdout": list(self.attack_family_holdout),
+                "context_shift_holdout": list(self.context_shift_holdout),
+                "paired_flip_holdout": self.paired_flip_holdout,
             },
             "metadata": _serialize_json_safe(self.metadata),
         }
@@ -1374,6 +1385,25 @@ class BenchmarkSplitManifest:
             variable_renaming_holdout=holdout_strategy.get(
                 "variable_renaming_holdout",
                 payload.get("variable_renaming_holdout", False),
+            ),
+            mechanism_holdout=list(
+                holdout_strategy.get("mechanism_holdout", payload.get("mechanism_holdout", []))
+            ),
+            attack_family_holdout=list(
+                holdout_strategy.get(
+                    "attack_family_holdout",
+                    payload.get("attack_family_holdout", []),
+                )
+            ),
+            context_shift_holdout=list(
+                holdout_strategy.get(
+                    "context_shift_holdout",
+                    payload.get("context_shift_holdout", []),
+                )
+            ),
+            paired_flip_holdout=holdout_strategy.get(
+                "paired_flip_holdout",
+                payload.get("paired_flip_holdout", False),
             ),
             metadata=dict(payload.get("metadata", {})),
         )

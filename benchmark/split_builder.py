@@ -106,6 +106,10 @@ def _lexical_axis(instance: ClaimInstance) -> str:
     )
 
 
+def _paired_group_id(instance: ClaimInstance) -> str | None:
+    return _meta_text(instance, "paired_flip_id")
+
+
 def _shuffle_ids(instance_ids: list[str], *, seed: int) -> list[str]:
     rng = random.Random(int(seed))
     shuffled = list(instance_ids)
@@ -425,6 +429,28 @@ def build_split_manifest(
         if reasons:
             ood_reasons[instance.instance_id] = reasons
 
+    paired_groups: dict[str, list[ClaimInstance]] = {}
+    for instance in normalized_instances:
+        pair_id = _paired_group_id(instance)
+        if pair_id is not None:
+            paired_groups.setdefault(pair_id, []).append(instance)
+
+    for pair_id, members in paired_groups.items():
+        triggering_members = [
+            member
+            for member in members
+            if member.instance_id in ood_reasons
+        ]
+        if not triggering_members:
+            continue
+        for member in members:
+            member_reasons = list(ood_reasons.get(member.instance_id, []))
+            if member_reasons:
+                ood_reasons[member.instance_id] = member_reasons
+                continue
+            member_reasons.append("paired_group_holdout")
+            ood_reasons[member.instance_id] = member_reasons
+
     if not ood_reasons:
         raise ValueError(
             "Unable to produce a test_ood split from the provided instances and holdout settings."
@@ -511,6 +537,10 @@ def build_split_manifest(
         family_holdout=selected_family_holdout,
         lexical_holdout=selected_lexical_holdout,
         variable_renaming_holdout=selected_variable_renaming_holdout,
+        mechanism_holdout=selected_mechanism_holdout,
+        attack_family_holdout=selected_attack_family_holdout,
+        context_shift_holdout=selected_context_shift_holdout,
+        paired_flip_holdout=selected_paired_flip_holdout,
         metadata=metadata,
     )
 
