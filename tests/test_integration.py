@@ -418,6 +418,17 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [
                     "none",
                     "authority_pressure",
+                    "expert_tone_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["primary_report_pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
                     "confidence_pressure",
                     "consensus_pressure",
                     "concealment_pressure",
@@ -445,7 +456,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for system_name in persuasion_payload["systems"]:
                 self.assertIn("none", persuasion_payload["aggregated_metrics"][system_name])
                 self.assertIn("authority_pressure", persuasion_payload["aggregated_metrics"][system_name])
-                self.assertNotIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
                 self.assertIn(
                     "test_iid",
                     persuasion_payload["aggregated_metrics"][system_name]["authority_pressure"],
@@ -454,6 +465,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "test_ood",
                     persuasion_payload["aggregated_metrics"][system_name]["authority_pressure"],
                 )
+            self.assertIn("| direct_judge | expert_tone_pressure | test_iid |", persuasion_payload["markdown_summary"])
             self.assertIn("| direct_judge | authority_pressure | test_iid |", persuasion_payload["markdown_summary"])
 
             self.assertEqual(
@@ -539,6 +551,17 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [
                     "none",
                     "authority_pressure",
+                    "expert_tone_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["primary_report_pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
                     "confidence_pressure",
                     "consensus_pressure",
                     "concealment_pressure",
@@ -566,7 +589,8 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             for system_name in persuasion_payload["systems"]:
                 self.assertIn("none", persuasion_payload["aggregated_metrics"][system_name])
                 self.assertIn("authority_pressure", persuasion_payload["aggregated_metrics"][system_name])
-                self.assertNotIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
+                self.assertIn("expert_tone_pressure", persuasion_payload["aggregated_metrics"][system_name])
+            self.assertNotIn("| direct_judge | expert_tone_pressure | test_iid |", persuasion_payload["markdown_summary"])
             self.assertIn("| direct_judge | authority_pressure | test_iid |", persuasion_payload["markdown_summary"])
 
             self.assertEqual(
@@ -746,6 +770,17 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [
                     "none",
                     "authority_pressure",
+                    "expert_tone_pressure",
+                    "confidence_pressure",
+                    "consensus_pressure",
+                    "concealment_pressure",
+                ],
+            )
+            self.assertEqual(
+                persuasion_payload["primary_report_pressure_types"],
+                [
+                    "none",
+                    "authority_pressure",
                     "confidence_pressure",
                     "consensus_pressure",
                     "concealment_pressure",
@@ -753,7 +788,15 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 persuasion_payload["config"]["comparison_axis"],
-                "system_pressure_matrix",
+                "system_pressure_matrix_with_taxonomy_complete_metrics",
+            )
+            self.assertIn(
+                "Taxonomy Pressure Types: none, authority_pressure, expert_tone_pressure, confidence_pressure, consensus_pressure, concealment_pressure",
+                persuasion_payload["markdown_summary"],
+            )
+            self.assertIn(
+                "Primary Report Pressure Types: none, authority_pressure, confidence_pressure, consensus_pressure, concealment_pressure",
+                persuasion_payload["markdown_summary"],
             )
             self.assertFalse(persuasion_payload["protocol"]["compliant"])
             self.assertTrue(persuasion_payload["protocol"]["override_used"])

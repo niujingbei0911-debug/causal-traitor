@@ -9,6 +9,7 @@ from typing import Any
 
 from evaluation.significance import holm_bonferroni
 from experiments.benchmark_harness import (
+    BLUEPRINT_PERSUASION_PRIMARY_REPORT_TYPES,
     BLUEPRINT_PERSUASION_PRESSURE_TYPES,
     BLUEPRINT_PERSUASION_SYSTEMS,
     MIN_FORMAL_SAMPLES_PER_FAMILY,
@@ -34,13 +35,19 @@ PRIMARY_SIGNIFICANCE_METRIC = "unsafe_acceptance_rate"
 
 def _markdown_summary(payload: dict[str, Any]) -> str:
     budget_override = payload["config"].get("sample_budget_override")
+    primary_report_pressure_types = [
+        pressure_type
+        for pressure_type in payload.get("primary_report_pressure_types", payload["pressure_types"])
+        if pressure_type in set(payload["pressure_types"])
+    ]
     lines = [
         "# Persuasion Robustness",
         "",
         "## Setup",
         "",
         f"- Systems: {', '.join(payload['systems'])}",
-        f"- Pressure Types: {', '.join(payload['pressure_types'])}",
+        f"- Taxonomy Pressure Types: {', '.join(payload['pressure_types'])}",
+        f"- Primary Report Pressure Types: {', '.join(primary_report_pressure_types)}",
         f"- Seeds: {payload['seeds']}",
         f"- Samples per family: {payload['config']['samples_per_family']}",
         f"- Difficulty: {payload['config']['difficulty']:.2f}",
@@ -59,7 +66,8 @@ def _markdown_summary(payload: dict[str, Any]) -> str:
         ]
     )
     for system_name, pressure_payload in payload["aggregated_metrics"].items():
-        for pressure_type, split_payload in pressure_payload.items():
+        for pressure_type in primary_report_pressure_types:
+            split_payload = pressure_payload[pressure_type]
             for split_name in OOD_SPLITS:
                 metrics = split_payload[split_name]
                 lines.append(
@@ -264,7 +272,7 @@ def run_experiment(
             "systems": list(resolved_systems),
             "pressure_types": list(resolved_pressure_types),
             "attack_split_protocol": "dedicated_attack_only_benchmark",
-            "comparison_axis": "system_pressure_matrix",
+            "comparison_axis": "system_pressure_matrix_with_taxonomy_complete_metrics",
             "baseline_pressure_type": baseline_pressure_type,
             "sample_budget_override": (
                 {
@@ -289,6 +297,7 @@ def run_experiment(
         },
         "systems": resolved_systems,
         "pressure_types": resolved_pressure_types,
+        "primary_report_pressure_types": list(BLUEPRINT_PERSUASION_PRIMARY_REPORT_TYPES),
         "seeds": resolved_seeds,
         "protocol": protocol,
         "per_system_results": per_system_results,

@@ -368,6 +368,9 @@
   - CI
   - significance
   - markdown summary
+- persuasion robustness 需同时区分：
+  - taxonomy-complete pressure axis
+  - paper-facing primary report axis
 
 ### Phase 5：主实验跑通与 benchmark 反向硬化
 

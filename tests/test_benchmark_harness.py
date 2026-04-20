@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from experiments.benchmark_harness import (
     BASELINE_REGISTRY,
+    BLUEPRINT_PERSUASION_PRIMARY_REPORT_TYPES,
     BLUEPRINT_PERSUASION_PRESSURE_TYPES,
     BLUEPRINT_PERSUASION_SYSTEMS,
     PRIMARY_METRICS,
@@ -83,6 +84,17 @@ class BenchmarkHarnessTests(unittest.TestCase):
     def test_blueprint_persuasion_defaults_match_main_paper_axes(self) -> None:
         self.assertEqual(
             BLUEPRINT_PERSUASION_PRESSURE_TYPES,
+            (
+                "none",
+                "authority_pressure",
+                "expert_tone_pressure",
+                "confidence_pressure",
+                "consensus_pressure",
+                "concealment_pressure",
+            ),
+        )
+        self.assertEqual(
+            BLUEPRINT_PERSUASION_PRIMARY_REPORT_TYPES,
             (
                 "none",
                 "authority_pressure",
@@ -559,6 +571,24 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 self.assertIn("identification_status", verdict)
                 self.assertIn("refusal_reason", verdict)
                 self.assertIn("missing_information_spec", verdict)
+
+    def test_self_consistency_judge_uses_single_canonical_judge_across_multiple_traces(self) -> None:
+        sample = build_seed_benchmark_run(
+            seed=0,
+            difficulty=0.55,
+            samples_per_family=1,
+        ).split_samples["test_iid"][0]
+
+        verdict = predict_sample(sample, system_name="self_consistency_judge")["verdict"]
+        metadata = verdict["metadata"]
+        votes = metadata["votes"]
+
+        self.assertEqual(metadata["aggregation_method"], "majority_vote")
+        self.assertEqual(metadata["base_judge"], "cot_judge")
+        self.assertEqual(metadata["trace_count"], 5)
+        self.assertEqual(len(votes), 5)
+        self.assertTrue(all(vote["base_judge"] == "cot_judge" for vote in votes))
+        self.assertTrue(all(vote["trace_profile"].startswith("self_consistency_trace_") for vote in votes))
 
     def test_protocol_compliance_tracks_non_seed_requirements(self) -> None:
         protocol = summarize_protocol_compliance(

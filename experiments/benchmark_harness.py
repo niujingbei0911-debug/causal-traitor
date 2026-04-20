@@ -86,6 +86,14 @@ BLUEPRINT_PERSUASION_SYSTEMS: tuple[str, ...] = MAIN_BENCHMARK_SYSTEMS
 BLUEPRINT_PERSUASION_PRESSURE_TYPES: tuple[str, ...] = (
     "none",
     "authority_pressure",
+    "expert_tone_pressure",
+    "confidence_pressure",
+    "consensus_pressure",
+    "concealment_pressure",
+)
+BLUEPRINT_PERSUASION_PRIMARY_REPORT_TYPES: tuple[str, ...] = (
+    "none",
+    "authority_pressure",
     "confidence_pressure",
     "consensus_pressure",
     "concealment_pressure",
@@ -1311,11 +1319,88 @@ def _run_cot_judge_baseline(sample: BenchmarkSample) -> dict[str, Any]:
     )
 
 
+SELF_CONSISTENCY_TRACE_PROFILES: tuple[dict[str, Any], ...] = (
+    {
+        "trace_profile": "self_consistency_trace_1_balanced",
+        "reasoning_suffix": "Trace profile 1 keeps the base CoT decision rule unchanged.",
+        "confidence_offset": 0.0,
+        "fallback_family": None,
+    },
+    {
+        "trace_profile": "self_consistency_trace_2_balanced",
+        "reasoning_suffix": "Trace profile 2 revisits the same CoT assumptions with a slightly more cautious confidence readout.",
+        "confidence_offset": -0.03,
+        "fallback_family": None,
+    },
+    {
+        "trace_profile": "self_consistency_trace_3_skeptical",
+        "reasoning_suffix": "Trace profile 3 uses the same CoT judge but applies a stricter support threshold before committing to valid.",
+        "confidence_offset": -0.02,
+        "fallback_family": "skeptical_family",
+    },
+    {
+        "trace_profile": "self_consistency_trace_4_balanced",
+        "reasoning_suffix": "Trace profile 4 reruns the same CoT decomposition and reports a slightly sharper confidence margin.",
+        "confidence_offset": 0.02,
+        "fallback_family": None,
+    },
+    {
+        "trace_profile": "self_consistency_trace_5_optimistic",
+        "reasoning_suffix": "Trace profile 5 uses the same CoT judge but resolves residual non-countermodel uncertainty slightly more optimistically.",
+        "confidence_offset": 0.03,
+        "fallback_family": "optimistic_family",
+    },
+)
+
+
+def _run_cot_self_consistency_trace(
+    sample: BenchmarkSample,
+    *,
+    trace_profile: str,
+    reasoning_suffix: str,
+    confidence_offset: float = 0.0,
+    fallback_family: str | None = None,
+) -> dict[str, Any]:
+    base = _run_cot_judge_baseline(sample)
+    if fallback_family is not None:
+        base = _apply_family_postprocessing(fallback_family, base)
+    adjusted = deepcopy(base)
+    verdict = dict(adjusted["verdict"])
+    confidence = max(0.51, min(0.9, float(adjusted["confidence"]) + float(confidence_offset)))
+    verdict["confidence"] = confidence
+    verdict["probabilities"] = _override_probabilities(
+        dict(verdict.get("probabilities", {})),
+        forced_label=str(adjusted["predicted_label"]),
+        minimum_mass=confidence,
+    )
+    verdict["reasoning_summary"] = (
+        f"{str(verdict.get('reasoning_summary', '')).strip()} {reasoning_suffix}".strip()
+    )
+    verdict["metadata"] = {
+        **dict(verdict.get("metadata", {})),
+        "baseline_system": "self_consistency_judge",
+        "base_judge": "cot_judge",
+        "trace_profile": trace_profile,
+        "trace_generation_method": "deterministic_profiled_cot",
+        "fallback_family": fallback_family,
+    }
+    adjusted["confidence"] = confidence
+    adjusted["verdict"] = _canonicalize_verdict_payload(verdict)
+    adjusted["system_notes"] = list(base.get("system_notes", [])) + [trace_profile]
+    return adjusted
+
+
 def _run_self_consistency_judge_baseline(sample: BenchmarkSample) -> dict[str, Any]:
-    direct = _run_direct_judge_baseline(sample)
-    cot = _run_cot_judge_baseline(sample)
-    skeptical_cot = _apply_family_postprocessing("skeptical_family", cot)
-    votes = [direct, cot, skeptical_cot]
+    votes = [
+        _run_cot_self_consistency_trace(
+            sample,
+            trace_profile=str(profile["trace_profile"]),
+            reasoning_suffix=str(profile["reasoning_suffix"]),
+            confidence_offset=float(profile["confidence_offset"]),
+            fallback_family=profile["fallback_family"],
+        )
+        for profile in SELF_CONSISTENCY_TRACE_PROFILES
+    ]
     vote_counts = {
         label: sum(1 for vote in votes if vote["predicted_label"] == label)
         for label in (
@@ -1331,7 +1416,7 @@ def _run_self_consistency_judge_baseline(sample: BenchmarkSample) -> dict[str, A
     elif VerdictLabel.UNIDENTIFIABLE.value in leaders:
         label = VerdictLabel.UNIDENTIFIABLE.value
     else:
-        label = cot["predicted_label"]
+        label = votes[0]["predicted_label"]
 
     confidence_by_label = {
         candidate: _mean(
@@ -1370,14 +1455,21 @@ def _run_self_consistency_judge_baseline(sample: BenchmarkSample) -> dict[str, A
                 "countermodel_witness": None,
                 "tool_trace": [],
                 "reasoning_summary": (
-                    "Self-consistency judge baseline aggregates a direct-judge vote, a CoT vote, "
-                    "and a more skeptical CoT vote, then selects the majority verdict."
+                    "Self-consistency judge baseline aggregates five traces from the same CoT judge "
+                    "family and selects the majority verdict."
                 ),
                 "metadata": {
+                    "base_judge": "cot_judge",
+                    "trace_count": len(votes),
+                    "aggregation_method": "majority_vote",
                     "vote_counts": vote_counts,
                     "votes": [
                         {
                             "vote_id": index,
+                            "base_judge": "cot_judge",
+                            "trace_profile": str(
+                                vote["verdict"].get("metadata", {}).get("trace_profile")
+                            ),
                             "predicted_label": vote["predicted_label"],
                             "confidence": float(vote["confidence"]),
                         }

@@ -556,10 +556,13 @@ v2 benchmark 新增 persuasion layer，需要独立实验承接。
 - persuasion robustness artifact
 - 按 pressure 类型切分的聚合报表
 - 对应 markdown summary
+- taxonomy-complete pressure 结果与 primary report pressure 结果的明确区分
 
 **验收标准**
 
 - 能按 pressure 类型切分报表
+- `expert tone pressure` 出现在 taxonomy-complete artifact 中
+- paper-facing primary axis 与 taxonomy-complete axis 不再混淆
 
 **推荐测试**
 

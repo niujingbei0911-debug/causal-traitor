@@ -486,13 +486,25 @@ verifier 的任务不是恢复宇宙真理，也不是恢复唯一真实 SCM。
 
 ### Exp 4：Persuasion Robustness
 
-比较：
+默认主报告轴比较：
 
 - no pressure
 - authority pressure
 - confidence pressure
 - consensus pressure
 - concealment pressure
+
+扩展 taxonomy 结果：
+
+- expert tone pressure
+
+说明：
+
+- persuasion overlay taxonomy 保持完整集合：
+  `authority / expert tone / confidence / consensus / concealment`
+- Exp 4 默认主表使用 paper-facing primary axis：
+  `none / authority / confidence / consensus / concealment`
+- `expert tone pressure` 保留在 taxonomy-complete artifact 中，用于完整压力类型覆盖与附加分析
 
 ### Exp 5：OOD Suite
 
