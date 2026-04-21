@@ -78,6 +78,7 @@ def _round_for_scoring(result: dict[str, Any]) -> dict[str, Any]:
         "verdict_label": result.get("verdict_label") or audit.get("verdict_label"),
         "verifier_confidence": result.get("verifier_confidence", audit.get("verifier_confidence", 0.0)),
         "predicted_probabilities": verifier_verdict.get("probabilities"),
+        "verifier_verdict": dict(verifier_verdict),
         "countermodel_witness": audit.get("countermodel_witness"),
         "deception_succeeded": result.get("deception_succeeded", result.get("deception_success")),
     }

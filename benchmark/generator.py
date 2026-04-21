@@ -2054,9 +2054,8 @@ class BenchmarkGenerator:
                 context_shift_group=context_payload["context_shift_group"],
             ),
         )
-        scenario.metadata.setdefault(
-            "public_scenario_id",
-            _public_scenario_id(f"showcase:{showcase_scenario_id}:{sample_variant_tag or seed}"),
+        scenario.metadata["public_scenario_id"] = _public_scenario_id(
+            f"showcase:{showcase_scenario_id}:{sample_variant_tag or seed}"
         )
         for key, value in context_payload.items():
             scenario.metadata.setdefault(key, value)

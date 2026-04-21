@@ -10,6 +10,7 @@ from unittest.mock import patch
 from agents.tool_executor import ToolExecutor
 from benchmark.schema import ensure_public_instance
 from evaluation.tracker import ExperimentConfig, ExperimentTracker
+from evaluation.scorer import Scorer
 from experiments.benchmark_harness import build_seed_benchmark_run
 from experiments.exp_adversarial_robustness.run import run_experiment as run_adversarial_robustness
 from experiments.exp1_causal_levels.run import _round_for_scoring as round_for_scoring_exp1
@@ -934,6 +935,48 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "unidentifiable": 0.08,
                     },
                 )
+
+    def test_appendix_experiments_round_payloads_satisfy_scorer_prediction_contract(self) -> None:
+        result = {
+            "round_number": 1,
+            "scenario": SimpleNamespace(gold_label="valid", ground_truth={"label": "valid"}),
+            "verdict_label": "valid",
+            "verifier_confidence": 0.9,
+            "deception_succeeded": False,
+            "audit_verdict": {
+                "verdict_label": "valid",
+                "verifier_confidence": 0.9,
+                "countermodel_witness": None,
+                "verifier_verdict": {
+                    "label": "valid",
+                    "final_verdict": "valid",
+                    "identification_status": "identified",
+                    "refusal_reason": None,
+                    "missing_information_spec": {
+                        "missing_assumptions": [],
+                        "required_evidence": [],
+                        "note": "",
+                    },
+                    "probabilities": {
+                        "valid": 0.9,
+                        "invalid": 0.05,
+                        "unidentifiable": 0.05,
+                    }
+                },
+            },
+            "jury_verdict": {"agreement_rate": 1.0, "final_winner": "agent_b"},
+        }
+
+        scorer = Scorer()
+        for builder in (
+            round_for_scoring_exp1,
+            round_for_scoring_exp2,
+            round_for_scoring_exp3,
+            round_for_scoring_exp4,
+        ):
+            with self.subTest(builder=builder.__module__):
+                score = scorer.score_game({"game_id": "repro", "rounds": [builder(result)]})
+                self.assertEqual(score.summary["scored_rounds"], 1)
 
     def test_phase4_main_benchmark_rejects_oracle_leaking_system(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

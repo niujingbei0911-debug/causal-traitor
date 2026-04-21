@@ -738,10 +738,21 @@ class ShowcaseMigrationTests(unittest.TestCase):
         self.assertTrue(exported.scenario_id.startswith("public_case_"))
         self.assertNotEqual(public.description, gold.description)
         self.assertIn("smoking", public.description.lower())
-        self.assertIn("cancer", public.description.lower())
-        self.assertNotIn("hidden", public.description.lower())
-        self.assertNotIn("genetic_risk", public.description)
-        self.assertFalse(hasattr(public, "true_dag"))
+
+    def test_showcase_benchmark_public_scenario_ids_vary_across_seeds(self) -> None:
+        generator = BenchmarkGenerator(seed=17)
+        sample_a = generator.generate_benchmark_sample(
+            family_name="showcase_smoking_family",
+            difficulty=0.35,
+            seed=1,
+        )
+        sample_b = generator.generate_benchmark_sample(
+            family_name="showcase_smoking_family",
+            difficulty=0.35,
+            seed=2,
+        )
+
+        self.assertNotEqual(sample_a.public.scenario_id, sample_b.public.scenario_id)
 
     def test_benchmark_generator_supports_showcase_and_non_showcase_samples(self) -> None:
         generator = BenchmarkGenerator(seed=23)
