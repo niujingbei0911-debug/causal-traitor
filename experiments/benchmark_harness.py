@@ -584,7 +584,7 @@ def build_seed_benchmark_run(
     for family_name in families:
         sample_slot = 0
         attempts = 0
-        max_attempts = max(8, resolved_samples_per_family * 24)
+        max_attempts = max(8, resolved_samples_per_family * 48)  # Increased from 24 to 48
         paired_flip_supported = (
             _supports_paired_flip_generation(
                 generator,
@@ -679,11 +679,23 @@ def build_seed_attack_benchmark_run(
         max_attempts = max(8, resolved_samples_per_family * 24)
         while collected < resolved_samples_per_family:
             sample_seed = _stable_sample_seed(seed, family_name, sample_index)
-            candidate = generator.generate_benchmark_sample(
-                family_name=family_name,
-                difficulty=resolved_difficulty,
-                seed=sample_seed,
-            )
+            try:
+                candidate = generator.generate_benchmark_sample(
+                    family_name=family_name,
+                    difficulty=resolved_difficulty,
+                    seed=sample_seed,
+                )
+            except ValueError as e:
+                # Skip seeds that fail to generate (e.g., public-self-consistent constraint failures)
+                sample_index += 1
+                attempts += 1
+                if attempts >= max_attempts:
+                    raise ValueError(
+                        "Unable to build an attack-only benchmark run with enough samples for "
+                        f"family={family_name!r}, seed={seed}, samples_per_family={resolved_samples_per_family}. "
+                        f"Last error: {e}"
+                    )
+                continue
             sample_index += 1
             attempts += 1
             if candidate.claim.meta.get("attack_name") is None or candidate.claim.meta.get("claim_mode") != "attack":
