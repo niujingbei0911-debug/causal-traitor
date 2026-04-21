@@ -100,7 +100,11 @@ def _build_summary(results: list[dict[str, Any]], engine: DebateEngine) -> dict[
     return {
         "n_rounds": len(results),
         "scored_rounds": scored_rounds,
-        "primary_metric": score.summary.get("primary_metric", "unsafe_acceptance_rate"),
+        "primary_metric": (
+            score.summary.get("primary_metric", "unsafe_acceptance_rate")
+            if verdict_metrics_available
+            else None
+        ),
         "verdict_metrics_available": verdict_metrics_available,
         "verdict_metrics_unavailable_reason": (
             None

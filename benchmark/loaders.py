@@ -344,7 +344,7 @@ def _real_grounded_public_instance(
         description=case.public_evidence_summary,
         variables=list(observed_data.columns),
         proxy_variables=list(claim.proxy_variables),
-        selection_mechanism=claim.meta.get("selection_mechanism"),
+        selection_mechanism=claim.selection_mechanism or claim.meta.get("selection_mechanism"),
         observed_data=observed_data.copy(deep=True),
         data=observed_data.copy(deep=True),
         causal_level=int(str(claim.causal_level).lstrip("L")),

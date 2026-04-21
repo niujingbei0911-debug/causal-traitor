@@ -130,7 +130,11 @@ async def run_experiment(
         )
         summary["levels"][f"L{level}"] = {
             "rounds": rounds_per_level,
-            "primary_metric": game_score.summary.get("primary_metric", "unsafe_acceptance_rate"),
+            "primary_metric": (
+                game_score.summary.get("primary_metric", "unsafe_acceptance_rate")
+                if verdict_metrics_available
+                else None
+            ),
             "scored_rounds": scored_round_count,
             "verdict_metrics_available": verdict_metrics_available,
             "verdict_metrics_unavailable_reason": (
