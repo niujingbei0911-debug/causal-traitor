@@ -155,3 +155,114 @@ models:
     assert manifest["jobs"][0]["max_tokens"] == 1024
     assert manifest["jobs"][0]["timeout"] == 120
     assert manifest["jobs"][0]["thinking"] == "enabled"
+
+
+def test_llm_baseline_matrix_writes_paper_facing_aggregate_artifacts(tmp_path: Path) -> None:
+    config_path = tmp_path / "matrix.yaml"
+    output_dir = (tmp_path / "out").as_posix()
+    config_path.write_text(
+        f"""
+run:
+  output_dir: {output_dir}
+  samples_per_family: 10
+  difficulty: 0.55
+  seeds: [0, 1]
+  splits: [test_iid]
+  max_public_rows: 5
+  temperature: 0.0
+  max_tokens: 128
+  timeout: 30
+  reject_mock_fallback: true
+models:
+  - id: live_model
+    enabled: true
+    backend: openai
+    model: gpt-5.5
+    api_mode: responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    reasoning_effort: high
+""",
+        encoding="utf-8",
+    )
+
+    def fake_run_one(**kwargs: Any) -> dict[str, Any]:
+        seed = int(kwargs["seed"])
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        records = [
+            {
+                "instance_id": f"sample-{seed}-valid",
+                "split": kwargs["split_name"],
+                "seed": seed,
+                "graph_family": "chain",
+                "query_type": "ate",
+                "claim_text": "Claim",
+                "gold_label": "valid",
+                "predicted_label": "valid",
+                "correct": True,
+                "parse_error": False,
+                "fallback_detected": False,
+                "prompt_sha256": "a" * 64,
+                "raw_response": '{"verdict":"valid"}',
+                "parsed_payload": {"verdict": "valid"},
+                "response_metadata": {"finish_reason": "stop"},
+                "backend": kwargs["backend"],
+                "model_name": kwargs["model"],
+            },
+            {
+                "instance_id": f"sample-{seed}-invalid",
+                "split": kwargs["split_name"],
+                "seed": seed,
+                "graph_family": "fork",
+                "query_type": "ate",
+                "claim_text": "Claim",
+                "gold_label": "invalid",
+                "predicted_label": "valid" if seed == 0 else "invalid",
+                "correct": seed == 1,
+                "parse_error": False,
+                "fallback_detected": False,
+                "prompt_sha256": "b" * 64,
+                "raw_response": '{"verdict":"valid"}',
+                "parsed_payload": {"verdict": "valid"},
+                "response_metadata": {"finish_reason": "stop"},
+                "backend": kwargs["backend"],
+                "model_name": kwargs["model"],
+            },
+        ]
+        payload = {
+            "status": "llm_baseline_matrix_job",
+            "summary": {
+                "total": len(records),
+                "correct": sum(1 for record in records if record["correct"]),
+                "parse_errors": 0,
+                "fallback_records": 0,
+            },
+            "records": records,
+        }
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    manifest = run_llm_baseline_matrix(config_path=config_path, run_one=fake_run_one)
+
+    artifacts = manifest["artifacts"]
+    aggregate_path = Path(artifacts["aggregated_metrics"])
+    csv_path = Path(artifacts["summary_csv"])
+    raw_path = Path(artifacts["raw_predictions"])
+    markdown_path = Path(artifacts["summary_markdown"])
+    assert aggregate_path.exists()
+    assert csv_path.exists()
+    assert raw_path.exists()
+    assert markdown_path.exists()
+
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    metrics = aggregate["models"]["live_model"]["test_iid"]
+    assert metrics["total"] == 4
+    assert metrics["accuracy"]["mean"] == 0.75
+    assert metrics["unsafe_acceptance_rate"]["mean"] == 0.5
+    assert metrics["parse_error_rate"]["mean"] == 0.0
+    assert metrics["seeds"]["0"]["accuracy"] == 0.5
+    assert metrics["seeds"]["1"]["accuracy"] == 1.0
+    assert "live_model,test_iid,ALL,4,3,0.7500" in csv_path.read_text(encoding="utf-8")
+    assert len(raw_path.read_text(encoding="utf-8").strip().splitlines()) == 4
+    assert "Strong LLM Baseline Matrix" in markdown_path.read_text(encoding="utf-8")

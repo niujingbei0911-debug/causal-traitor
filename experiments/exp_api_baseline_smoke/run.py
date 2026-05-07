@@ -139,6 +139,8 @@ async def _run_api_baseline_smoke_async(
     max_public_rows: int,
     generated_at_utc: str,
     reject_mock_fallback: bool,
+    run_status: str,
+    run_note: str | None,
 ) -> dict[str, Any]:
     try:
         run = build_seed_benchmark_run(
@@ -195,9 +197,10 @@ async def _run_api_baseline_smoke_async(
         correct = sum(1 for record in records if record["correct"])
         parse_errors = sum(1 for record in records if record["parse_error"])
         payload = {
-            "status": "api_smoke",
+            "status": run_status,
             "generated_at_utc": generated_at_utc,
-            "note": (
+            "note": run_note
+            or (
                 "Tiny API-backed plumbing smoke. Do not cite as a strong LLM baseline "
                 "or as the paper's full model matrix."
             ),
@@ -293,6 +296,8 @@ def run_api_baseline_smoke(
     max_public_rows: int = 5,
     generated_at_utc: str | None = None,
     reject_mock_fallback: bool = True,
+    run_status: str = "api_smoke",
+    run_note: str | None = None,
 ) -> dict[str, Any]:
     resolved_service = service or _build_service(
         model=model,
@@ -318,6 +323,8 @@ def run_api_baseline_smoke(
             max_public_rows=max_public_rows,
             generated_at_utc=generated_at_utc or _now_utc(),
             reject_mock_fallback=reject_mock_fallback,
+            run_status=run_status,
+            run_note=run_note,
         )
     )
 

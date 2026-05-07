@@ -310,6 +310,50 @@ def _discover_api_smoke_runs(source_dir: Path) -> list[dict[str, Any]]:
     return runs
 
 
+def _artifact_path(source_dir: Path, value: Any) -> Path:
+    path = Path(str(value))
+    return path if path.is_absolute() else source_dir / path
+
+
+def _discover_llm_baseline_matrix(source_dir: Path) -> dict[str, Any] | None:
+    manifest_path = source_dir / "llm_baseline_matrix" / "manifest.json"
+    if not manifest_path.exists():
+        return None
+
+    manifest = _read_json(manifest_path)
+    summary = dict(manifest.get("summary") or {})
+    artifacts = dict(manifest.get("artifacts") or {})
+    files: dict[str, dict[str, str]] = {
+        "manifest": {
+            "path": str(manifest_path.as_posix()),
+            "sha256": _sha256(manifest_path),
+        }
+    }
+    for artifact_name, artifact_value in artifacts.items():
+        artifact_path = _artifact_path(source_dir, artifact_value)
+        if artifact_path.exists():
+            files[artifact_name] = {
+                "path": str(artifact_path.as_posix()),
+                "sha256": _sha256(artifact_path),
+            }
+
+    completed = (
+        manifest.get("status") == "llm_baseline_matrix"
+        and int(summary.get("total_predictions", 0)) > 0
+        and int(summary.get("failed", 0)) == 0
+        and int(summary.get("fallback_records", 0)) == 0
+        and int(summary.get("parse_errors", 0)) == 0
+    )
+    return {
+        "status": manifest.get("status"),
+        "generated_at_utc": manifest.get("generated_at_utc"),
+        "summary": summary,
+        "completed": completed,
+        "probe": bool(manifest.get("probe", False)),
+        "files": files,
+    }
+
+
 def build_paper_facing_package(
     *,
     source_dir: Path | str = Path("outputs"),
@@ -367,22 +411,27 @@ def build_paper_facing_package(
     written["poster_metrics"] = poster_metrics_path
 
     api_smoke_runs = _discover_api_smoke_runs(source_path)
+    llm_baseline_matrix = _discover_llm_baseline_matrix(source_path)
     real_api_smoke_completed = any(
         int((run.get("summary") or {}).get("fallback_records", 0)) == 0
         and int((run.get("summary") or {}).get("total", 0)) > 0
         for run in api_smoke_runs
     )
+    full_llm_matrix_completed = bool(llm_baseline_matrix and llm_baseline_matrix.get("completed"))
     manifest = {
         "generated_at_utc": generated,
         "generator": "experiments.paper_artifacts.build_paper_facing_package",
         "artifact_status": "fixed-code exploratory snapshot",
         "human_audit_status": "pending_external_dual_annotation",
         "api_model_baseline_status": (
-            "real_api_smoke_completed; full baseline matrix pending"
+            "full_llm_baseline_matrix_completed"
+            if full_llm_matrix_completed
+            else "real_api_smoke_completed; full baseline matrix pending"
             if real_api_smoke_completed
             else "smoke_runner_available; full baseline matrix pending"
         ),
         "api_smoke_runs": api_smoke_runs,
+        "llm_baseline_matrix": llm_baseline_matrix,
         "source_runs": manifest_runs,
         "tables": {key: str(path.as_posix()) for key, path in written.items() if key.endswith("_rows")},
         "poster_metrics": str(poster_metrics_path.as_posix()),

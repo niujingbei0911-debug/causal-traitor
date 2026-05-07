@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.paper_artifacts import build_paper_facing_package
+from experiments.paper_artifacts import build_paper_facing_package, _discover_llm_baseline_matrix
 from poster import build_poster
 
 
@@ -59,6 +59,46 @@ def test_build_paper_facing_package_freezes_traceable_tables(tmp_path: Path) -> 
 def test_build_paper_facing_package_rejects_missing_sources(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="review_fixed_exp_main_benchmark_aggregated_metrics.json"):
         build_paper_facing_package(source_dir=tmp_path / "missing", output_dir=tmp_path / "out")
+
+
+def test_discover_llm_baseline_matrix_freezes_manifest_and_artifacts(tmp_path: Path) -> None:
+    matrix_dir = tmp_path / "llm_baseline_matrix"
+    matrix_dir.mkdir()
+    aggregate_path = matrix_dir / "llm_baseline_aggregated_metrics.json"
+    csv_path = matrix_dir / "llm_baseline_summary.csv"
+    aggregate_path.write_text('{"status":"llm_baseline_matrix_aggregate"}', encoding="utf-8")
+    csv_path.write_text("model_id,split\n", encoding="utf-8")
+    manifest_path = matrix_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "llm_baseline_matrix",
+                "summary": {
+                    "jobs_total": 30,
+                    "succeeded": 30,
+                    "failed": 0,
+                    "total_predictions": 1260,
+                    "fallback_records": 0,
+                    "parse_errors": 0,
+                },
+                "artifacts": {
+                    "aggregated_metrics": str(aggregate_path),
+                    "summary_csv": str(csv_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    matrix = _discover_llm_baseline_matrix(tmp_path)
+
+    assert matrix is not None
+    assert matrix["status"] == "llm_baseline_matrix"
+    assert matrix["summary"]["total_predictions"] == 1260
+    assert matrix["completed"] is True
+    assert matrix["files"]["manifest"]["sha256"]
+    assert matrix["files"]["aggregated_metrics"]["sha256"]
+    assert matrix["files"]["summary_csv"]["sha256"]
 
 
 def test_paper_uses_tabular_safe_row_inputs() -> None:
