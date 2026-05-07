@@ -10,9 +10,10 @@ Supported backends:
 * ``vllm`` / ``ollama`` — kept as declared options, but currently route to
   the mock fallback until a local server is connected.
 
-The service never embeds a real API key in code or config defaults. If the
-env variable is missing, requests silently degrade to the mock response so
-the rest of the pipeline keeps running.
+The service never embeds a real API key in code or config defaults. Offline
+agents may opt into mock fallback for local demos, but evaluation runners can
+disable fallback so missing credentials or backend failures are surfaced as
+errors rather than being recorded as model evidence.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - python-dotenv is declared in requireme
 
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DOTENV_LOADED_PATHS: set[str] = set()
 
 
@@ -81,12 +83,15 @@ class LLMService:
         self.temperature = float(config.get("temperature", 0.3))
         self.max_tokens = int(config.get("max_tokens", 512))
         self.base_url = config.get("base_url") or DASHSCOPE_BASE_URL
+        self.api_key_env = config.get("api_key_env")
+        self.api_mode = str(config.get("api_mode") or "chat_completions").lower()
+        self.reasoning_effort = config.get("reasoning_effort")
         self._explicit_api_key = config.get("api_key")  # allow override, but prefer env var
         self._client: Any | None = None
         self.initialized = False
 
     async def initialize(self) -> None:
-        if self.backend in {"dashscope", "api"}:
+        if self.backend in {"dashscope", "api", "openai"}:
             api_key = self._resolve_api_key()
             if api_key and AsyncOpenAI is not None:
                 self._client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
@@ -106,7 +111,9 @@ class LLMService:
         used_temperature = self.temperature if temperature is None else float(temperature)
         used_max_tokens = self.max_tokens if max_tokens is None else int(max_tokens)
 
-        if self.backend in {"dashscope", "api"}:
+        if self.backend in {"dashscope", "api", "openai"}:
+            if self.api_mode == "responses":
+                return await self._call_responses(prompt, system_prompt, used_temperature, used_max_tokens)
             return await self._call_dashscope(prompt, system_prompt, used_temperature, used_max_tokens)
 
         if self.backend in {"vllm", "ollama"}:
@@ -148,6 +155,19 @@ class LLMService:
         )
         return response, self.extract_json_object(response.text)
 
+    async def close(self) -> None:
+        """Close the underlying async API client when one was created."""
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        close = getattr(client, "close", None)
+        if close is None:
+            return
+        result = close()
+        if asyncio.iscoroutine(result):
+            await result
+
     # ------------------------------------------------------------------
     # backends
     # ------------------------------------------------------------------
@@ -160,6 +180,10 @@ class LLMService:
         max_tokens: int,
     ) -> LLMResponse:
         if self._client is None:
+            if not self.allow_mock_fallback:
+                raise RuntimeError(
+                    "DASHSCOPE_API_KEY missing or openai SDK unavailable; mock fallback is disabled."
+                )
             return self._mock_response(
                 prompt,
                 temperature,
@@ -174,14 +198,21 @@ class LLMService:
 
         model_id = _MODEL_ALIAS.get(self.model_name.lower(), self.model_name)
         timeout_sec = float(self.config.get("timeout", 60))
+        request: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if self.reasoning_effort:
+            request["reasoning_effort"] = str(self.reasoning_effort)
+        thinking = self.config.get("thinking")
+        if thinking:
+            request["extra_body"] = {"thinking": {"type": str(thinking)}}
+
         try:
             completion = await asyncio.wait_for(
-                self._client.chat.completions.create(
-                    model=model_id,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ),
+                self._client.chat.completions.create(**request),
                 timeout=timeout_sec,
             )
         except asyncio.TimeoutError:
@@ -211,8 +242,13 @@ class LLMService:
         metadata: dict[str, Any] = {
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "api_mode": "chat_completions",
             "finish_reason": getattr(choice, "finish_reason", None) if choice else None,
         }
+        if self.reasoning_effort:
+            metadata["reasoning_effort"] = str(self.reasoning_effort)
+        if thinking:
+            metadata["thinking"] = str(thinking)
         if usage is not None:
             metadata["usage"] = {
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
@@ -221,7 +257,89 @@ class LLMService:
             }
         return LLMResponse(
             text=text,
-            backend="dashscope",
+            backend=self.backend,
+            model_name=model_id,
+            metadata=metadata,
+        )
+
+    async def _call_responses(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        if self._client is None:
+            if not self.allow_mock_fallback:
+                raise RuntimeError(
+                    "API key missing or openai SDK unavailable; mock fallback is disabled."
+                )
+            return self._mock_response(
+                prompt,
+                temperature,
+                max_tokens,
+                note="API key missing or openai SDK unavailable; using mock fallback.",
+            )
+
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        model_id = _MODEL_ALIAS.get(self.model_name.lower(), self.model_name)
+        timeout_sec = float(self.config.get("timeout", 60))
+        request: dict[str, Any] = {
+            "model": model_id,
+            "input": messages,
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
+        if self.reasoning_effort:
+            request["reasoning"] = {"effort": str(self.reasoning_effort)}
+        try:
+            completion = await asyncio.wait_for(
+                self._client.responses.create(**request),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            if not self.allow_mock_fallback:
+                raise
+            return self._mock_response(
+                prompt,
+                temperature,
+                max_tokens,
+                note=f"Responses API call timed out after {timeout_sec}s for model {model_id}; using mock fallback.",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not self.allow_mock_fallback:
+                raise
+            return self._mock_response(
+                prompt,
+                temperature,
+                max_tokens,
+                note=f"Responses API call failed ({type(exc).__name__}): {exc}; using mock fallback.",
+            )
+
+        text = self._extract_responses_text(completion)
+        usage = getattr(completion, "usage", None)
+        metadata: dict[str, Any] = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "api_mode": "responses",
+        }
+        if self.reasoning_effort:
+            metadata["reasoning_effort"] = str(self.reasoning_effort)
+        if usage is not None:
+            metadata["usage"] = {
+                "prompt_tokens": getattr(usage, "input_tokens", None),
+                "completion_tokens": getattr(usage, "output_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+        return LLMResponse(
+            text=text,
+            backend=self.backend,
             model_name=model_id,
             metadata=metadata,
         )
@@ -247,6 +365,20 @@ class LLMService:
             model_name=self.model_name,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _extract_responses_text(completion: Any) -> str:
+        output_text = getattr(completion, "output_text", None)
+        if output_text:
+            return str(output_text)
+
+        chunks: list[str] = []
+        for item in getattr(completion, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if text:
+                    chunks.append(str(text))
+        return "\n".join(chunks)
 
     @staticmethod
     def extract_json_object(text: str | None) -> dict[str, Any] | None:
@@ -296,6 +428,9 @@ class LLMService:
 
     def _resolve_api_key(self) -> str | None:
         self._load_dotenv_if_available()
+        if self.api_key_env:
+            value = os.environ.get(str(self.api_key_env))
+            return value if value and _looks_like_api_key(value) else None
         for env_name in ("DASHSCOPE_API_KEY", "OPENAI_API_KEY"):
             value = os.environ.get(env_name)
             if value and _looks_like_api_key(value):

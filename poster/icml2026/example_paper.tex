@@ -83,11 +83,11 @@ assumption ledger, searches for observationally compatible countermodels, and
 returns an abstention-aware verdict. On a fixed-code exploratory snapshot
 (three seeds, ten samples per family, difficulty $0.55$), the reference
 verifier improves the accuracy/unsafe-acceptance/wise-refusal tradeoff over
-judge-style baselines, while a deliberately leaking positive control shows how
-oracle information can inflate benchmark scores. These results support the
-need for public/gold partitioning in causal oversight benchmarks; larger
-synthetic runs, real-grounded cases, API-based model baselines, and human audit
-remain required before claiming a mature benchmark release.
+public-view heuristic baselines, while a deliberately leaking positive control
+shows how oracle information can inflate benchmark scores. These results
+support the need for public/gold partitioning in causal oversight benchmarks;
+larger synthetic runs, real-grounded cases, full API-based model baselines, and
+human audit remain required before claiming a mature benchmark release.
 \end{abstract}
 
 \section{Introduction}
@@ -413,10 +413,10 @@ counted as identifying support.
 
 \paragraph{Stage 3: Countermodel search.}
 The countermodel module enumerates structurally-compatible alternative SCMs
-for the public scenario and scores each on (a) observational match score, (b)
-disagreement with the claim on the target query, (c) which identifying
-assumption it triggers. The module returns a chosen candidate, a short
-explanation, and a verdict suggestion.
+for the public scenario and scores each on (a) the public-equivalence distance
+defined in Section~\ref{sec:theory}, (b) disagreement with the claim on the
+target query, and (c) which identifying assumption it triggers. The module
+returns a chosen candidate, a short explanation, and a verdict suggestion.
 
 \paragraph{Stage 4: Tool-backed adjudication.}
 When no countermodel survives, a tool runner executes the appropriate
@@ -474,33 +474,52 @@ verdict is wrong under exactly one.
 abstention head retains $0.856$/$0.462$ raw accuracy on IID/OOD but zeroes out
 unidentifiable-awareness.
 
+\begin{definition}[$\varepsilon$-public equivalence]
+\label{def:public-equivalence}
+Fix a public projection $\Pi(\mathcal{M})$ that contains exactly the fields
+available to the verifier, and a finite public evidence map
+$\phi(\Pi(\mathcal{M}))$ containing the symbolic public fields plus the
+observable summary statistics used by the verifier. Two SCMs are
+$\varepsilon$-public-equivalent, written
+$\mathcal{M}_1 \equiv_{\Pi,\varepsilon} \mathcal{M}_2$, when their symbolic
+public fields match and
+$\|\phi(\Pi(\mathcal{M}_1))-\phi(\Pi(\mathcal{M}_2))\|_\infty \le
+\varepsilon$ on the numeric public summaries.
+\end{definition}
+
 \begin{proposition}[Countermodel Witness Soundness]
 \label{prop:witness}
-Suppose the verifier exhibits an SCM $\mathcal{M}'$ that (a) is consistent with
-$E$ up to an observational match score $s \ge 1 - \varepsilon$ and (b)
-disagrees with the claim on $q$. Then under standard SCM identifiability
-\cite{shpitser2008complete}, the claim cannot be uniquely determined by $E$
-alone for any $\varepsilon$ such that $\mathcal{M}'$ remains in the equivalence
-class.
+Suppose a verifier exhibits an SCM $\mathcal{M}'$ such that
+$\mathcal{M}' \equiv_{\Pi,\varepsilon} \mathcal{M}$ for the benchmark's
+declared public evidence map, but $q(\mathcal{M}') \neq q(\mathcal{M})$ for
+the target query. Then no verifier whose input is restricted to the
+$\varepsilon$-public-equivalence class can uniquely identify the value of
+$q$. A countermodel witness is therefore a certificate of non-identifiability
+relative to $(\Pi,\phi,\varepsilon)$, not a claim about all possible evidence
+outside the public contract.
 \end{proposition}
 \begin{proof}[Proof sketch]
-If $\mathcal{M}'$ matches $E$ to within the equivalence-class tolerance and
-disagrees with the claim on $q$, then $E$ is consistent with at least two
-distinct values of $q$, contradicting any claim that $E$ alone uniquely
-determines $q$. The qualitative shuffle/delete probe in
-Section~\ref{sec:experiments} provides exploratory empirical support.
+The verifier's admissible input is invariant over the
+$\varepsilon$-public-equivalence class, while the query value differs across
+two members of that class. Any rule that commits to a unique value of $q$ from
+that input alone must be wrong for at least one member. The qualitative
+shuffle/delete probe in Section~\ref{sec:experiments} provides exploratory
+empirical support that these witnesses are load-bearing in the implemented
+pipeline.
 \end{proof}
 
 \begin{proposition}[Oracle Leakage Inflation]
 \label{prop:leakage}
-Let $V_{\text{public}}$ and $V_{\text{leak}}$ be two verifiers that differ only
-in that $V_{\text{leak}}$ has read access to a gold-only field
-$g \in \texttt{GOLD\_ONLY\_FIELDS}$. Then
-$\mathbb{E}[\text{Acc}(V_{\text{leak}})] \ge
- \mathbb{E}[\text{Acc}(V_{\text{public}})]$ for an oracle-positive-control
-verifier that can decode label signal from $g$, with strict inequality
-whenever the decoded signal changes at least one expected error of
-$V_{\text{public}}$ into a correct prediction.
+Let $V_{\text{public}}$ be any fixed verifier over public inputs, and let
+$g \in \texttt{GOLD\_ONLY\_FIELDS}$ contain a decodable label signal. Define an
+oracle-positive-control verifier $V_{\text{leak}}^\star$ that uses
+$V_{\text{public}}$ when the decoded signal is unavailable and otherwise
+returns the decoded label. Then
+$\mathbb{E}[\text{Acc}(V_{\text{leak}}^\star)] \ge
+ \mathbb{E}[\text{Acc}(V_{\text{public}})]$, with strict inequality whenever
+the decoded signal corrects at least one expected error of $V_{\text{public}}$.
+This is not a monotonicity statement about arbitrary verifiers with extra
+fields; it is a positive-control construction.
 \end{proposition}
 
 \emph{Empirical correspondence.} Section~\ref{sec:experiments} (Leakage Study)
@@ -521,26 +540,34 @@ observed there is, by construction, leakage rather than oversight ability.
 We report the current workspace snapshot: three seeds with ten samples per
 family across all twelve graph families. The main benchmark runs at difficulty
 $0.55$ and compares the full \emph{countermodel-grounded} verifier against
-judge-style, debate-style, tool-only and refusal-aware baselines. The component
-ablation suite replaces one or more pipeline stages with a no-op surrogate. We
+public-view heuristic judge/debate, tool-only and refusal-aware baselines. The
+component ablation suite replaces one or more pipeline stages with a no-op surrogate. We
 also include a dedicated attack-only leakage study under the
 hidden-information-aware profile. These runs are reproducible from the current
-repository state, but they are not a saturation study: the synthetic core is
-still modest, the leakage study is exploratory because it uses ten rather than
-the pre-registered sixty samples per family, and the real-grounded, human-audit
-and API-based model-baseline phases are not yet complete. We therefore present
-the empirical results as fixed-code evidence for the benchmark contract and
+repository state. All paper-facing tables in this draft are generated by
+\texttt{python -m experiments.paper\_artifacts} from the hashed bundle recorded
+in \texttt{outputs/paper\_facing/manifest.json}. They are not a saturation
+study: the synthetic core is still modest, the leakage study is exploratory
+because it uses ten rather than the pre-registered sixty samples per family,
+and the real-grounded and human-audit phases are not yet complete. We also
+include two live DashScope \texttt{qwen2.5-7b-instruct} API plumbing smoke runs
+covering the available IID smoke slice ($n=9$) and an OOD smoke slice ($n=12$);
+they record prompts, raw responses, model settings, and fallback status, and
+are not treated as a full API baseline matrix. We therefore present the
+empirical results as fixed-code evidence for the benchmark contract and
 reference verifier, not as a final benchmark release.
 
 \subsection{Main Benchmark}
 
 Table~\ref{tab:main} compares the full \textsc{Countermodel-Grounded}
-verifier against compact judge-style and system-style baselines on
-\texttt{test\_iid} and \texttt{test\_ood}. We report the three metrics most
+verifier against compact public-view heuristic baselines on \texttt{test\_iid}
+and \texttt{test\_ood}. These baselines are deterministic runner
+implementations named after common judge/debate prompting patterns; they are
+not claimed to be strong API LLM baselines. We report the three metrics most
 central to our task definition: verdict accuracy, unsafe-acceptance rate, and
-wise-refusal recall. \textsc{Self-Consistency Judge} matches
-\textsc{CoT Judge} exactly in this snapshot and is omitted from the compact
-table for readability; the full artifact retains it.
+wise-refusal recall. \textsc{Self-Consistency Judge} matches \textsc{CoT
+Judge} exactly in this snapshot and is omitted from the compact table for
+readability; the full artifact retains it.
 
 \begin{table*}[t]
 \caption{Main benchmark, current mainline snapshot (three seeds, ten
@@ -555,18 +582,7 @@ table for readability; the full artifact retains it.
 \toprule
 System & Split & Verdict Acc.\ & Unsafe Accept & Wise Refusal Recall \\
 \midrule
-\textsc{Direct Judge}          & test\_iid & $0.504 \pm 0.090$ & $0.889 \pm 0.192$ & $0.500 \pm 0.500$ \\
-\textsc{Direct Judge}          & test\_ood & $0.161 \pm 0.056$ & $0.970 \pm 0.029$ & $0.184 \pm 0.034$ \\
-\textsc{CoT Judge}             & test\_iid & $0.322 \pm 0.019$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
-\textsc{CoT Judge}             & test\_ood & $0.592 \pm 0.053$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
-\textsc{Tool Baseline}         & test\_iid & $0.54 \pm 0.12$ & $0.37 \pm 0.26$ & $0.67 \pm 0.58$ \\
-\textsc{Tool Baseline}         & test\_ood & $0.346 \pm 0.092$ & $0.423 \pm 0.057$ & $0.560 \pm 0.067$ \\
-\textsc{Debate Baseline}       & test\_iid & $0.322 \pm 0.019$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
-\textsc{Debate Baseline}       & test\_ood & $0.456 \pm 0.040$ & $0.000 \pm 0.000$ & $0.610 \pm 0.026$ \\
-\textsc{Refusal-Aware}         & test\_iid & $0.752 \pm 0.045$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
-\textsc{Refusal-Aware}         & test\_ood & $0.504 \pm 0.090$ & $0.000 \pm 0.000$ & $0.591 \pm 0.020$ \\
-\textsc{Countermodel-Grounded} & test\_iid & $1.000 \pm 0.000$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
-\textsc{Countermodel-Grounded} & test\_ood & $0.891 \pm 0.005$ & $0.000 \pm 0.000$ & $0.825 \pm 0.018$ \\
+\input ../../outputs/paper_facing/main_table_rows.tex
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -585,8 +601,8 @@ system. Third, the near-perfect IID score should be read as a reference-verifier
 sanity check on the synthetic contract, not as evidence that generic LLMs have
 solved causal oversight. The stronger claim is the tradeoff shape: the full
 pipeline maintains zero unsafe acceptance while preserving OOD wise-refusal
-recall and substantially improving raw verdict accuracy over public judge-style
-baselines.
+recall and substantially improving raw verdict accuracy over public-view
+heuristic baselines.
 
 \subsection{Component Ablation: What Drives Wise Refusal?}
 
@@ -619,16 +635,7 @@ balanced reference verifier, not as uniformly best on every scalar metric.
 \toprule
 System & Split & Acc.\ & Unident.\ Awareness \\
 \midrule
-\textsc{Full}            & iid & $1.000$ & $1.000$ \\
-\textsc{Full}            & ood & $0.891$ & $0.825$ \\
-\textsc{No-Ledger}       & iid & $0.144$ & $1.000$ \\
-\textsc{No-Ledger}       & ood & $0.520$ & $1.000$ \\
-\textsc{No-Countermodel} & iid & $0.752$ & $1.000$ \\
-\textsc{No-Countermodel} & ood & $0.504$ & $0.591$ \\
-\textsc{No-Abstention}   & iid & $0.856$ & $0.000$ \\
-\textsc{No-Abstention}   & ood & $0.462$ & $0.000$ \\
-\textsc{No-Tools}        & iid & $0.570$ & $1.000$ \\
-\textsc{No-Tools}        & ood & $0.911$ & $0.964$ \\
+\input ../../outputs/paper_facing/ablation_table_rows.tex
 \bottomrule
 \end{tabular}
 }
@@ -670,23 +677,15 @@ illustrating how leaked supervision can masquerade as calibration.
 \begin{center}
 \begin{small}
 \begin{sc}
-\begin{tabular}{lccc}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
 \toprule
-Metric (test\_iid) & Clean & Leaking & $\Delta$ \\
+Split & Clean Acc. & Leaking Acc. & $\Delta$ & Clean 95\% CI & Leaking 95\% CI \\
 \midrule
-Accuracy             & $0.579$ & $1.000$ & $+0.421$ \\
-Macro-F1             & $0.373$ & $0.667$ & $+0.294$ \\
-ECE ($\downarrow$)   & $0.400$ & $0.000$ & $-0.400$ \\
-Brier ($\downarrow$) & $0.220$ & $0.000$ & $-0.220$ \\
-\midrule
-Metric (test\_ood) & Clean & Leaking & $\Delta$ \\
-\midrule
-Accuracy             & $0.845$ & $1.000$ & $+0.155$ \\
-Macro-F1             & $0.563$ & $0.667$ & $+0.104$ \\
-ECE ($\downarrow$)   & $0.077$ & $0.000$ & $-0.077$ \\
-Brier ($\downarrow$) & $0.086$ & $0.000$ & $-0.086$ \\
+\input ../../outputs/paper_facing/leakage_table_rows.tex
 \bottomrule
 \end{tabular}
+}
 \end{sc}
 \end{small}
 \end{center}
@@ -718,14 +717,7 @@ testing rather than a headline robustness claim.
 \toprule
 Strength & Split & Acc.\ & Wise Refusal Recall \\
 \midrule
-\textsc{Weak}                       & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
-\textsc{Weak}                       & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
-\textsc{Medium}                     & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
-\textsc{Medium}                     & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
-\textsc{Strong}                     & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
-\textsc{Strong}                     & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
-\textsc{Leak-Aware}                 & iid & $0.579 \pm 0.417$ & $0.667 \pm 0.577$ \\
-\textsc{Leak-Aware}                 & ood & $0.845 \pm 0.067$ & $0.844 \pm 0.104$ \\
+\input ../../outputs/paper_facing/adversarial_table_rows.tex
 \bottomrule
 \end{tabular}
 }
@@ -746,6 +738,29 @@ clearest current stress case for structural disambiguation. The current
 significance artifact reports uninformative $p=1$ rows for these bucket gaps,
 so we avoid strong significance claims until the OOD estimand and sample count
 are upgraded.
+
+\begin{table}[t]
+\caption{OOD bucket breakdown for the full verifier. The rows are generated
+  from \texttt{outputs/paper\_facing/ood\_table\_rows.tex}; CIs are bootstrap
+  $95\%$ intervals over seed means.}
+\label{tab:ood}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{sc}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Bucket & Acc.\ & Macro-F1 & Unsafe Accept & Wise Refusal Recall & Acc.\ 95\% CI \\
+\midrule
+\input ../../outputs/paper_facing/ood_table_rows.tex
+\bottomrule
+\end{tabular}
+}
+\end{sc}
+\end{small}
+\end{center}
+\end{table}
 
 \subsection{Witness Faithfulness (qualitative)}
 
@@ -777,19 +792,23 @@ world itself. The real-grounded subset is small, and full human dual-annotation
 is in progress. The current mainline snapshot uses ten samples per family, so
 bucket-level estimates can still have wide CIs; the dedicated leakage study is
 explicitly exploratory; and the hidden-information-aware IID robustness slice is
-not yet stable enough to support strong quantitative claims. Larger runs and
-completed human audit will be needed before any broad statement about absolute
-performance is defensible. The existing transfer matrix is likewise a pilot:
-it shows that family-swapped attacker/verifier profiles are testable inside the
-benchmark contract, but it is still too small to support model-family
-conclusions. We document these caveats in the artifact and in this paper.
+not yet stable enough to support strong quantitative claims. The API-backed
+model evidence is currently a one-sample smoke test for the runner and audit
+schema, not a competitive baseline. Larger runs, completed human audit, and a
+pre-registered API model matrix will be needed before any broad statement about
+absolute performance is defensible. The existing transfer matrix is likewise a
+pilot: it shows that family-swapped attacker/verifier profiles are testable
+inside the benchmark contract, but it is still too small to support
+model-family conclusions. We document these caveats in the artifact and in
+this paper.
 
 \paragraph{Future work.}
-Two priorities: (i) closing the real-grounded subset with dual annotation
+Three priorities: (i) closing the real-grounded subset with dual annotation
 and Cohen's $\kappa$ on the four primary audit fields; (ii) scaling the
 current transfer pilot into a full-budget cross-model study across verifier
-families and sizes, which will let us connect the structural conclusions of
-this paper to specific model regimes.
+families and sizes; and (iii) replacing the API smoke with a pre-registered
+closed/open model baseline matrix using fixed prompts, raw-response logging,
+and fallback rejection.
 
 \section{Conclusion}
 
@@ -804,12 +823,15 @@ families, real-grounded human-audited cases, and cross-model transfer.
 \section*{Software and Data}
 The repository contains the benchmark generator, verifier pipeline, experiment
 runners, fixed-code result artifacts, and regression tests used for the current
-snapshot. A paper-facing reproducibility package will be released after the
-real-grounded subset, human audit, and API-model baseline runs are completed.
-Each experiment emits a configuration JSON, a seed list, raw per-sample
-predictions, an aggregated metrics file, $95\%$ CIs, paired-significance tests,
-and a markdown summary. The leakage study additionally emits a leakage-warning
-field that downstream consumers can use as a contamination check.
+snapshot. The current paper-facing reproducibility package is
+\texttt{outputs/paper\_facing/}: its manifest records source artifact hashes,
+configuration, seeds, generated table rows, poster metrics, and the available
+API smoke artifact. Each experiment emits a configuration JSON, a seed list,
+raw per-sample predictions, an aggregated metrics file, $95\%$ CIs,
+paired-significance tests, and a markdown summary. The leakage study
+additionally emits a leakage-warning field that downstream consumers can use
+as a contamination check. The human-audit and full API-model baseline gates are
+explicitly pending rather than backfilled.
 
 \section*{Impact Statement}
 This paper presents work whose goal is to advance the field of Machine
@@ -944,7 +966,11 @@ The aggregator reports seed-mean estimates and paired bootstrap $95\%$ CIs;
 the significance file applies Holm-Bonferroni correction within and across
 splits. The leakage runner additionally writes a
 \texttt{supports\_warning} field that downstream consumers can use as a
-hard gate on contamination, in line with \cref{prop:leakage}.
+hard gate on contamination, in line with \cref{prop:leakage}. The command
+\texttt{python -m experiments.paper\_artifacts} freezes the paper-facing
+manifest and LaTeX rows in \texttt{outputs/paper\_facing/}. The command
+\texttt{python -m experiments.exp\_api\_baseline\_smoke.run} performs the
+API-smoke path and rejects mock fallback by default.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \end{document}

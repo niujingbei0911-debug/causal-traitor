@@ -1,0 +1,57 @@
+# Strong LLM baseline matrix configuration.
+# Keep API keys in .env only. This file stores env var names, not secrets.
+
+run:
+  output_dir: outputs/llm_baseline_matrix
+  samples_per_family: 10
+  difficulty: 0.55
+  seeds: [0, 1, 2]
+  splits: [test_iid, test_ood]
+  max_public_rows: 5
+  temperature: 0.0
+  max_tokens: 512
+  timeout: 180
+  reject_mock_fallback: true
+
+models:
+  - id: qwen25_7b
+    enabled: true
+    backend: dashscope
+    model: qwen2.5-7b-instruct
+    api_mode: chat_completions
+    api_key_env: DASHSCOPE_API_KEY
+
+  - id: qwen25_14b
+    enabled: true
+    backend: dashscope
+    model: qwen2.5-14b-instruct
+    api_mode: chat_completions
+    api_key_env: DASHSCOPE_API_KEY
+
+  - id: qwen25_72b
+    enabled: true
+    backend: dashscope
+    model: qwen2.5-72b-instruct
+    api_mode: chat_completions
+    api_key_env: DASHSCOPE_API_KEY
+
+  - id: gpt55_xhigh
+    enabled: true
+    backend: openai
+    model: gpt-5.5
+    api_mode: responses
+    base_url: https://api2.penguinsaichat.dpdns.org/v1
+    api_key_env: OPENAI_API_KEY
+    reasoning_effort: xhigh
+    max_tokens: 32768
+
+  - id: deepseek_v4
+    enabled: true
+    backend: openai
+    model: deepseek-v4-pro
+    api_mode: chat_completions
+    base_url: https://api.deepseek.com
+    api_key_env: CUSTOM_API_KEY
+    reasoning_effort: max
+    thinking: enabled
+    max_tokens: 32768

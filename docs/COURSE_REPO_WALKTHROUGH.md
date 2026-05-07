@@ -8,7 +8,7 @@
 现在这个仓库的正确介绍方式是：
 
 > 我们把项目从“多智能体因果欺骗系统”收缩成了一个论文主线明确的研究仓库：
-> 一个 selective causal oversight 新任务、一个 leakage-free benchmark、
+> 一个 selective causal oversight 新任务、一个 information-partitioned benchmark prototype、
 > 一个 countermodel-grounded selective verifier。
 
 不要把仓库开场介绍成：
@@ -89,7 +89,7 @@
 这一段的讲法应该是：
 
 - main benchmark 证明整体有效
-- leakage study 证明评估必须 leakage-free
+- leakage study 证明评估必须做 leakage control，并且当前只能作为 positive-control sanity check
 - ablation 证明关键组件必要
 - robustness/OOD 证明不是只会做熟题
 - human audit 证明输出解释可接受

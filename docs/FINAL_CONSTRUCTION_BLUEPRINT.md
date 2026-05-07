@@ -97,13 +97,13 @@
 
 #### benchmark 导向备选
 
-**A Leakage-Free Benchmark for Adversarial Causal Claim Verification**
+**An Information-Partitioned Benchmark Prototype for Adversarial Causal Claim Verification**
 
 `The Causal Traitor` 建议保留为项目名、系统名或仓库名，而不是主论文标题。
 
 ### 2.2 论文摘要草稿
 
-> Large language models are increasingly used to reason about causal claims, yet real-world causal oversight is often adversarial: a claimant may possess hidden information, selectively present assumptions, or exploit non-identifiability while sounding persuasive. We formalize this setting as **Adversarial Causal Oversight**, where a verifier must judge whether a natural-language causal claim is **valid**, **invalid**, or **unidentifiable** using only observable evidence, optional proxy variables, and tool-backed analysis. We introduce a new leakage-free benchmark spanning Pearl's three causal levels, with hidden confounding, selection bias, proxy-based identification, and counterfactual ambiguity. We further propose **Countermodel-Grounded Verification**, a verifier that parses claims into structured assumptions, constructs an assumption ledger, searches for observationally consistent countermodels, and only endorses claims when identification survives explicit adversarial scrutiny. Our empirical goal is to show that standard LLM judges and debate-based systems remain brittle under hidden-information attacks, while countermodel-grounded verification improves robustness, calibration, and unidentifiability awareness.
+> Large language models are increasingly used to reason about causal claims, yet real-world causal oversight is often adversarial: a claimant may possess hidden information, selectively present assumptions, or exploit non-identifiability while sounding persuasive. We formalize this setting as **Adversarial Causal Oversight**, where a verifier must judge whether a natural-language causal claim is **valid**, **invalid**, or **unidentifiable** using only observable evidence, optional proxy variables, and tool-backed analysis. We design and prototype an information-partitioned benchmark spanning Pearl's three causal levels, with hidden confounding, selection bias, proxy-based identification, and counterfactual ambiguity. We further propose **Countermodel-Grounded Verification**, a verifier that parses claims into structured assumptions, constructs an assumption ledger, searches for observationally consistent countermodels, and only endorses claims when identification survives explicit adversarial scrutiny. Our empirical goal is to test whether standard LLM judges and debate-based systems remain brittle under hidden-information attacks, and whether countermodel-grounded verification improves robustness, calibration, and unidentifiability awareness.
 
 ### 2.3 贡献写法
 
@@ -622,7 +622,7 @@ ledger 输出应包含：
 
 论文作用：
 
-- 为 leakage-free benchmark 的必要性提供理论和实验支撑
+- 为 information-partitioned benchmark prototype 的必要性提供理论和实验支撑
 
 ### 8.3 理论边界
 
@@ -982,7 +982,7 @@ ledger 输出应包含：
 1. Introduction
 2. Related Work
 3. Adversarial Causal Oversight Task
-4. Leakage-Free Benchmark
+4. Information-Partitioned Benchmark Prototype
 5. Countermodel-Grounded Verification
 6. Theoretical Motivation
 7. Experiments

@@ -18,7 +18,7 @@ If any older document conflicts with them, the v2 documents win.
 
 The repository's active research goal is:
 
-> a selective causal oversight task + a leakage-free benchmark +
+> a selective causal oversight task + an information-partitioned benchmark prototype +
 > a countermodel-grounded selective verifier under information asymmetry
 
 That means the primary story is no longer:

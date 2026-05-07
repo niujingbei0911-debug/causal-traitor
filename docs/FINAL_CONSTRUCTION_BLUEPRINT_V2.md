@@ -52,7 +52,7 @@
 1. **新任务**
    `Selective Adversarial Causal Oversight`
 2. **新 benchmark**
-   `public-gold partitioned leakage-free benchmark`
+   `public-gold partitioned information-partitioned benchmark prototype`
 3. **新 verifier**
    `Countermodel-Grounded Selective Verification`
 
@@ -95,20 +95,20 @@
 
 benchmark 导向备选：
 
-**A Leakage-Free Benchmark for Selective Adversarial Causal Oversight**
+**An Information-Partitioned Benchmark Prototype for Selective Adversarial Causal Oversight**
 
 ### 2.2 摘要草稿
 
-> Large language models are increasingly used to evaluate causal claims, yet real-world causal oversight is often selective and adversarial: claimants may possess hidden information, exploit non-identifiability, and present persuasive but incomplete reasoning. We formalize this setting as selective adversarial causal oversight, where a verifier must determine whether a natural-language causal claim is valid, invalid, or requires wise refusal under public evidence constraints. We introduce a leakage-free benchmark with strict public-gold partitioning, adversarial hidden-information attacks, persuasion-aware claim variants, and both synthetic and literature-grounded evaluation subsets. We further propose countermodel-grounded selective verification, a verifier that parses claims into identifying assumptions, constructs an assumption ledger, searches for observationally compatible countermodels, and abstains when public evidence cannot uniquely support the claim. Our goal is to show that standard LLM judges, debate systems, and tool-only baselines remain brittle under adversarial causal oversight, while countermodel-grounded verification improves unsafe-acceptance control, wise-refusal quality, calibration, and robustness under mechanism and attack-family shift.
+> Large language models are increasingly used to evaluate causal claims, yet real-world causal oversight is often selective and adversarial: claimants may possess hidden information, exploit non-identifiability, and present persuasive but incomplete reasoning. We formalize this setting as selective adversarial causal oversight, where a verifier must determine whether a natural-language causal claim is valid, invalid, or requires wise refusal under public evidence constraints. We design and prototype an information-partitioned benchmark with strict public-gold partitioning, adversarial hidden-information attacks, persuasion-aware claim variants, and planned synthetic plus literature-grounded evaluation subsets. We further propose countermodel-grounded selective verification, a verifier that parses claims into identifying assumptions, constructs an assumption ledger, searches for observationally compatible countermodels, and abstains when public evidence cannot uniquely support the claim. Our goal is to test whether standard LLM judges, debate systems, and tool-only baselines remain brittle under adversarial causal oversight, and whether countermodel-grounded verification improves unsafe-acceptance control, wise-refusal quality, calibration, and robustness under mechanism and attack-family shift.
 
 ### 2.3 贡献写法
 
 最终贡献建议严格写成四点：
 
 1. 我们提出一个 **selective adversarial causal oversight** 任务，把自然语言因果 claim 审计建模为 information asymmetry 下的选择性决策问题。
-2. 我们构建一个 **public-gold partitioned leakage-free benchmark**，显式覆盖 hidden information、non-identifiability、persuasion pressure、mechanism shift 和 real-grounded evaluation。
+2. 我们设计并原型化一个 **public-gold partitioned information-partitioned benchmark**，当前显式覆盖 hidden information、non-identifiability、persuasion pressure、mechanism shift，并把 real-grounded evaluation 标为待人工审计完成后再作为主证据。
 3. 我们提出 **countermodel-grounded selective verification**，通过 claim parsing、assumption ledger、countermodel search 和 tool-backed adjudication 支撑 unsafe rejection 与 wise refusal。
-4. 我们通过 synthetic、real-grounded、human-audited 三层证据展示：现有 judge/debate/tool systems 的系统脆弱性，并证明 countermodel-grounded verification 在 unsafe acceptance、wise refusal、calibration 和 robustness 上更可靠。
+4. 我们先通过 synthetic 主线证据与 leakage/OOD/ablation diagnostics 检验：现有 judge/debate/tool systems 是否存在系统脆弱性，以及 countermodel-grounded verification 是否在 unsafe acceptance、wise refusal、calibration 和 robustness 上更可靠；real-grounded 与 human audit 仍是人工审计完成后的升级证据。
 
 ---
 
@@ -134,7 +134,7 @@ benchmark 导向备选：
 1. **information asymmetry 下的 causal claim oversight**
 2. **把 wise refusal / unidentifiability 正式纳入任务定义**
 3. **把 observationally compatible countermodel 作为 claim rejection / refusal 的核心证据**
-4. **在 public-gold 严格分区下进行 leakage-free evaluation**
+4. **在 public-gold 严格分区下进行 leakage-controlled evaluation**
 
 ### 3.3 新颖性边界声明
 
