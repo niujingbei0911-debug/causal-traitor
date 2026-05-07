@@ -81,3 +81,9 @@ poster/**/*.run.xml
 
 # LaTeX template archive (sty files already tracked separately)
 poster/**/icml2026.zip
+
+# Poster build scripts (scratch artifacts; only PPTX + PNGs should ship)
+poster/*.py
+poster/template_structure.txt
+poster/fill_log.txt
+poster/poster_template.bak.pptx
