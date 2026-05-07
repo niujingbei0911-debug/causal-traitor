@@ -182,7 +182,7 @@ def run_experiment(
     seeds: list[int] | tuple[int, ...] | None = None,
     systems: list[str] | None = None,
     samples_per_family: int = DEFAULT_SAMPLES_PER_FAMILY,
-    difficulty: float = 0.55,
+    difficulty: float = 0.70,
     allow_protocol_violations: bool = False,
     output_path: str | None = None,
 ) -> dict[str, Any]:
@@ -308,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SAMPLES_PER_FAMILY,
         help="Samples generated per benchmark family.",
     )
-    parser.add_argument("--difficulty", type=float, default=0.55, help="Benchmark generation difficulty.")
+    parser.add_argument("--difficulty", type=float, default=0.70, help="Benchmark generation difficulty.")
     parser.add_argument(
         "--allow-protocol-violations",
         action="store_true",

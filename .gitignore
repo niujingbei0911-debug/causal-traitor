@@ -60,3 +60,30 @@ _*.txt
 node_modules/
 visualization/frontend/dist/
 visualization/frontend/build/
+
+# LaTeX build artifacts (poster/ only — scoped to avoid catching unrelated logs)
+poster/**/*.aux
+poster/**/*.bbl
+poster/**/*.blg
+poster/**/*.fdb_latexmk
+poster/**/*.fls
+poster/**/*.log
+poster/**/*.out
+poster/**/*.synctex.gz
+poster/**/*.toc
+poster/**/*.lof
+poster/**/*.lot
+poster/**/*.nav
+poster/**/*.snm
+poster/**/*.vrb
+poster/**/*.bcf
+poster/**/*.run.xml
+
+# LaTeX template archive (sty files already tracked separately)
+poster/**/icml2026.zip
+
+# Poster build scripts (scratch artifacts; only PPTX + PNGs should ship)
+poster/*.py
+poster/template_structure.txt
+poster/fill_log.txt
+poster/poster_template.bak.pptx

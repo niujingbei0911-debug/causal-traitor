@@ -1,0 +1,217 @@
+% Bibliography for "Selective Adversarial Causal Oversight"
+% ICML 2026 submission
+
+% --- Causal foundations ---
+@book{pearl2009causality,
+  author    = {Judea Pearl},
+  title     = {Causality: Models, Reasoning, and Inference},
+  publisher = {Cambridge University Press},
+  year      = {2009},
+  edition   = {2nd}
+}
+
+@book{pearl2018book,
+  author    = {Judea Pearl and Dana Mackenzie},
+  title     = {The Book of Why: The New Science of Cause and Effect},
+  publisher = {Basic Books},
+  year      = {2018}
+}
+
+@incollection{bareinboim2022pearl,
+  author    = {Elias Bareinboim and Juan D. Correa and Duligur Ibeling and Thomas Icard},
+  title     = {On {P}earl's Hierarchy and the Foundations of Causal Inference},
+  booktitle = {Probabilistic and Causal Inference: The Works of Judea Pearl},
+  editor    = {Hector Geffner and Rina Dechter and Joseph Y. Halpern},
+  publisher = {ACM Books},
+  year      = {2022},
+  pages     = {507--556},
+  doi       = {10.1145/3501714.3501743}
+}
+
+@article{shpitser2008complete,
+  author  = {Ilya Shpitser and Judea Pearl},
+  title   = {Complete Identification Methods for the Causal Hierarchy},
+  journal = {Journal of Machine Learning Research},
+  year    = {2008},
+  volume  = {9},
+  pages   = {1941--1979}
+}
+
+@article{tian2000probabilities,
+  author  = {Jin Tian and Judea Pearl},
+  title   = {Probabilities of Causation: Bounds and Identification},
+  journal = {Annals of Mathematics and Artificial Intelligence},
+  year    = {2000},
+  volume  = {28},
+  number  = {1--4},
+  pages   = {287--313}
+}
+
+@article{imbens1994late,
+  author  = {Guido W. Imbens and Joshua D. Angrist},
+  title   = {Identification and Estimation of Local Average Treatment Effects},
+  journal = {Econometrica},
+  year    = {1994},
+  volume  = {62},
+  number  = {2},
+  pages   = {467--475}
+}
+
+@article{sharma2020dowhy,
+  author  = {Amit Sharma and Emre Kiciman},
+  title   = {{DoWhy}: An End-to-End Library for Causal Inference},
+  journal = {arXiv preprint arXiv:2011.04216},
+  year    = {2020},
+  url     = {https://arxiv.org/abs/2011.04216}
+}
+
+% --- Causal benchmarks for LLMs ---
+@inproceedings{jin2023cladder,
+  author    = {Zhijing Jin and Yuen Chen and Felix Leeb and Luigi Gresele and
+               Ojasv Kamal and Zhiheng Lyu and Kevin Blin and
+               Fernando Gonzalez Adauto and Max Kleiman-Weiner and
+               Mrinmaya Sachan and Bernhard Sch{\"o}lkopf},
+  title     = {{CLadder}: Assessing Causal Reasoning in Language Models},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2023}
+}
+
+@inproceedings{jin2024corr2cause,
+  author    = {Zhijing Jin and Jiarui Liu and Zhiheng LYU and Spencer Poff and
+               Mrinmaya Sachan and Rada Mihalcea and Mona T. Diab and
+               Bernhard Sch{\"o}lkopf},
+  title     = {Can Large Language Models Infer Causation from Correlation?},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2024}
+}
+
+@inproceedings{frohberg2022crass,
+  author    = {J{\"o}rg Frohberg and Frank Binder},
+  title     = {{CRASS}: A Novel Data Set and Benchmark to Test Counterfactual
+               Reasoning of Large Language Models},
+  booktitle = {Proceedings of the Thirteenth Language Resources and Evaluation
+               Conference (LREC)},
+  year      = {2022},
+  pages     = {2126--2140}
+}
+
+% --- Selective prediction / abstention ---
+@inproceedings{geifman2017selective,
+  author    = {Yonatan Geifman and Ran El-Yaniv},
+  title     = {Selective Classification for Deep Neural Networks},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2017}
+}
+
+@inproceedings{geifman2019selectivenet,
+  author    = {Yonatan Geifman and Ran El-Yaniv},
+  title     = {{SelectiveNet}: A Deep Neural Network with an Integrated Reject
+               Option},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2019}
+}
+
+@article{wen2025abstention,
+  author    = {Bingbing Wen and Jihan Yao and Shangbin Feng and Chenjun Xu and
+               Yulia Tsvetkov and Bill Howe and Lucy Lu Wang},
+  title     = {Know Your Limits: A Survey of Abstention in Large Language Models},
+  journal   = {Transactions of the Association for Computational Linguistics},
+  volume    = {13},
+  pages     = {529--556},
+  year      = {2025},
+  doi       = {10.1162/tacl_a_00754},
+  url       = {https://aclanthology.org/2025.tacl-1.26/}
+}
+
+@inproceedings{guo2017calibration,
+  author    = {Chuan Guo and Geoff Pleiss and Yu Sun and Kilian Q. Weinberger},
+  title     = {On Calibration of Modern Neural Networks},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2017}
+}
+
+% --- LLM-as-judge / sycophancy ---
+@inproceedings{sharma2024sycophancy,
+  author    = {Mrinank Sharma and Meg Tong and Tomasz Korbak and David Duvenaud and
+               Amanda Askell and Samuel R. Bowman and Newton Cheng and
+               Esin Durmus and Zac Hatfield-Dodds and Scott R. Johnston and
+               Shauna Kravec and Timothy Maxwell and Sam McCandlish and
+               Kamal Ndousse and Oliver Rausch and Nicholas Schiefer and
+               Da Yan and Miranda Zhang and Ethan Perez},
+  title     = {Towards Understanding Sycophancy in Language Models},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2024}
+}
+
+@inproceedings{chen2024judge,
+  author    = {Guiming Hardy Chen and Shunian Chen and Ziche Liu and Feng Jiang
+               and Benyou Wang},
+  title     = {Humans or {LLM}s as the Judge? A Study on Judgement Bias},
+  booktitle = {Proceedings of the 2024 Conference on Empirical Methods in
+               Natural Language Processing (EMNLP)},
+  year      = {2024}
+}
+
+@article{ye2024justice,
+  author  = {Jiayi Ye and Yanbo Wang and Yue Huang and Dongping Chen and
+             Qihui Zhang and Nuno Moniz and Tian Gao and Werner Geyer and
+             Chao Huang and Pin-Yu Chen and Nitesh V. Chawla and Xiangliang Zhang},
+  title   = {Justice or Prejudice? {Q}uantifying Biases in {LLM}-as-a-Judge},
+  journal = {arXiv preprint arXiv:2410.02736},
+  year    = {2024}
+}
+
+% --- Scalable oversight / debate ---
+@article{irving2018debate,
+  author  = {Geoffrey Irving and Paul Christiano and Dario Amodei},
+  title   = {{AI} Safety via Debate},
+  journal = {arXiv preprint arXiv:1805.00899},
+  year    = {2018}
+}
+
+@article{bowman2022measuring,
+  author  = {Samuel R. Bowman and Jeeyoon Hyun and Ethan Perez and Edwin Chen
+             and Craig Pettit and Scott Heiner and Kamile Lukosiute and
+             Amanda Askell and Andy Jones and Anna Chen and others},
+  title   = {Measuring Progress on Scalable Oversight for Large Language Models},
+  journal = {arXiv preprint arXiv:2211.03540},
+  year    = {2022}
+}
+
+% --- Persuasion / faithfulness ---
+@inproceedings{zeng2024johnny,
+  author    = {Yi Zeng and Hongpeng Lin and Jingwen Zhang and Diyi Yang and
+               Ruoxi Jia and Weiyan Shi},
+  title     = {How {J}ohnny Can Persuade {LLM}s to Jailbreak Them: Rethinking
+               Persuasion to Challenge {AI} Safety by Humanizing {LLM}s},
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for
+               Computational Linguistics (ACL)},
+  year      = {2024}
+}
+
+@article{lanham2023measuring,
+  author  = {Tamera Lanham and Anna Chen and Ansh Radhakrishnan and Benoit Steiner
+             and Carson Denison and Danny Hernandez and Dustin Li and
+             Esin Durmus and Evan Hubinger and Jackson Kernion and Kamile Lukosiute
+             and Karina Nguyen and Newton Cheng and Nicholas Joseph and
+             Nicholas Schiefer and Oliver Rausch and Robin Larson and
+             Sam McCandlish and Sandipan Kundu and Saurav Kadavath and
+             Shannon Yang and Thomas Henighan and Timothy Maxwell and
+             Timothy Telleen-Lawton and Tristan Hume and Zac Hatfield-Dodds and
+             Jared Kaplan and Jan Brauner and Samuel R. Bowman and Ethan Perez},
+  title   = {Measuring Faithfulness in Chain-of-Thought Reasoning},
+  journal = {arXiv preprint arXiv:2307.13702},
+  year    = {2023}
+}
+
+% Required by the icml2026 stylefile to keep an example reference for nocite usage
+@inproceedings{langley00,
+ author    = {P. Langley},
+ title     = {Crafting Papers on Machine Learning},
+ year      = {2000},
+ pages     = {1207--1216},
+ editor    = {Pat Langley},
+ booktitle = {Proceedings of the 17th International Conference on Machine Learning (ICML 2000)},
+ address   = {Stanford, CA},
+ publisher = {Morgan Kaufmann}
+}
