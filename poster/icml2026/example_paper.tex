@@ -43,7 +43,7 @@
 \begin{document}
 
 \twocolumn[
-  \icmltitle{Selective Adversarial Causal Oversight: \\
+  \icmltitle{Selective Adversarial Causal Oversight:\texorpdfstring{\\}{}%
     A Leakage-Free Benchmark and Countermodel-Grounded Verifier under Information Asymmetry}
 
   \icmlsetsymbol{equal}{*}
@@ -67,52 +67,51 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-Large language models (LLMs) are increasingly deployed to evaluate causal claims,
-but real-world causal oversight is both \emph{selective} and \emph{adversarial}:
-claimants often hold private information, exploit non-identifiability, and
-present persuasive yet incomplete reasoning. We formalize this setting as
-\emph{selective adversarial causal oversight}, in which a verifier that observes
-only public evidence must decide whether a natural-language causal claim is
-\textsc{valid}, \textsc{invalid}, or \textsc{unidentifiable}. We release a
-leakage-free benchmark with public/gold partitioning, twelve graph families
-spanning the three rungs of Pearl's hierarchy, structurally-grounded attacks, a
-five-axis persuasion overlay, and out-of-distribution buckets that probe
-mechanism, attack-family, paired-flip and context shift. We further propose
-\emph{countermodel-grounded selective verification}, a four-stage pipeline that
-parses the claim, builds an assumption ledger, searches for observationally
-compatible countermodels, and reaches an abstention-aware verdict. Across our
-exploratory main benchmark, ablations, leakage controls and OOD buckets,
-countermodel-grounded verification outperforms ablations of the tool,
-countermodel, and ledger components in this exploratory run; a deliberately
-oracle-leaking positive control behaves as our Proposition 3 predicts,
-illustrating why public/gold partitioning is a necessary contract for selective
-causal oversight benchmarks.
+LLMs are increasingly used to evaluate causal claims, but real causal oversight
+is both \emph{selective} and \emph{adversarial}: claimants may hold private
+information, exploit non-identifiability, and present persuasive but incomplete
+arguments. We formalize this setting as \emph{selective adversarial causal
+oversight}, where a verifier with only public evidence must decide whether a
+natural-language claim is \textsc{valid}, \textsc{invalid}, or
+\textsc{unidentifiable}. We release a leakage-free benchmark with schema-level
+public/gold partitioning, twelve graph families across Pearl's hierarchy,
+structurally grounded attacks, a persuasion overlay, and OOD buckets for
+mechanism, attack-family, context shift, and paired-flip shifts. We also
+propose \emph{countermodel-grounded selective verification}, a four-stage
+pipeline that parses the claim, builds an assumption ledger, searches for
+observationally compatible countermodels, and returns an abstention-aware
+verdict. On the current mainline snapshot, the full system improves the
+accuracy/unsafe-acceptance/wise-refusal tradeoff over judge-style baselines,
+while a deliberately leaking positive control behaves exactly as our
+oracle-leakage proposition predicts. These results illustrate why
+public/gold partitioning is a necessary contract for causal oversight
+benchmarks.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-LLMs are now used as judges, debate moderators, and policy-relevant explainers,
-but evaluating their \emph{causal} reasoning remains awkward. Existing
-benchmarks largely treat causal questions as graded multiple-choice problems
+LLMs are now used as judges, debate moderators, and policy explainers, but
+evaluating their \emph{causal} reasoning remains awkward. Existing benchmarks
+largely treat causal questions as graded multiple-choice problems
 \cite{jin2023cladder,jin2024corr2cause,frohberg2022crass}: the evaluator
 inspects an oracle structural causal model, fixes a yes/no answer, and scores
 the LLM's prediction against it. This format is convenient but masks two
 features that dominate causal oversight in practice.
 
-\textbf{Information asymmetry.} A claimant who issues a causal statement -- a
-clinician, a policy advocate, a research summary, or a deceptive agent -- often
-has access to private information that the verifier does not: the underlying
-data-generating process, hidden confounders, selection mechanisms, or simply
-domain familiarity. The verifier sees only public evidence and the natural-language
-claim. Failing to model this asymmetry collapses a hard \emph{oversight} problem
-into an easy \emph{closed-world recall} problem.
+\textbf{Information asymmetry.} A claimant -- a clinician, policy advocate,
+research summarizer, or deceptive agent -- often has access to private
+information that the verifier does not: the data-generating process, hidden
+confounders, selection mechanisms, or simply domain familiarity. The verifier
+sees only public evidence and the claim text. Ignoring this asymmetry
+collapses a hard \emph{oversight} problem into an easy
+\emph{closed-world recall} problem.
 
 \textbf{Wise refusal.} A core lesson of causal inference is that, given a fixed
-public evidence base, many queries are simply not identifiable
+public evidence base, many queries are not identifiable
 \cite{pearl2009causality,bareinboim2022pearl}. In such cases the correct
 behaviour is not to commit to a verdict, but to abstain with a reason. Modern
-LLM judges, however, are trained to commit, and exhibit sycophancy and
+LLM judges, however, are trained to commit and exhibit sycophancy and
 position bias when uncertain
 \cite{sharma2024sycophancy,chen2024judge,ye2024justice}. Existing causal
 benchmarks rarely measure ``did the model refuse for the right reason'' as a
@@ -148,17 +147,19 @@ missing-information specification.
 \paragraph{Our claims.} Three propositions
 (Section~\ref{sec:theory}) tie selective abstention, countermodel witnesses,
 and oracle leakage to formal properties of the task. Empirically
-(Section~\ref{sec:experiments}), under controlled exploratory budgets we observe
-(a) the full system reaches $1.00$ accuracy on both IID and OOD test buckets
-while ablations of the ledger, countermodel, and tool components drop to
-$0.36$--$0.61$; (b) a positive control that decodes oracle metadata leaks
-$+0.67$ accuracy on IID and is therefore a useful negative example for any
-benchmark that does not enforce a public/gold partition; and (c) component
-removal of \emph{abstention} alone barely affects raw accuracy yet zeroes out
-unidentifiable awareness, which is exactly the failure mode the task is
-designed to surface. We discuss limitations -- in particular, the small
-samples-per-family budget that makes our results exploratory rather than
-definitive -- in Section~\ref{sec:experiments} and Section~\ref{sec:limitations}.
+(Section~\ref{sec:experiments}), on the current three-seed,
+ten-samples-per-family workspace snapshot we observe that (a) the full system
+improves verdict accuracy over \textsc{Direct Judge} from $0.50$ to $0.83$ on
+\texttt{test\_iid} and from $0.16$ to $0.85$ on \texttt{test\_ood}, while
+driving unsafe acceptance from $0.89/0.97$ to $0.00/0.00$; (b) a deliberate
+oracle-leaking positive control reaches $1.00$ accuracy on both dedicated
+attack-only splits and therefore remains a useful negative example for any
+benchmark that does not enforce a public/gold partition; and (c) removing
+\emph{abstention} preserves much of IID raw accuracy ($0.79$) but collapses
+wise-refusal recall to $0.00$ on both splits, which is exactly the failure mode
+the task is designed to surface. We discuss limitations -- in particular, the
+still-modest benchmark scale and the exploratory status of the leakage study --
+in Section~\ref{sec:experiments} and Section~\ref{sec:limitations}.
 
 \section{Related Work}
 \label{sec:related}
@@ -183,9 +184,8 @@ to deep classifiers. Recent work re-derives this idea for LLMs and finds that
 abstention quality is sensitive to calibration
 \cite{guo2017calibration,wen2025abstention}. Our task definition is closest to
 this literature in spirit: the verifier explicitly outputs an abstention reason
-(\textsc{observational\_equivalence}, \textsc{missing\_identifying\_support},
-\textsc{missing\_primary\_identifying\_support}) when the public evidence does
-not uniquely determine the query.
+when public evidence does not determine the query, for example observational
+equivalence or missing identifying support.
 
 \paragraph{LLM-as-judge and sycophancy.}
 LLM judges show systematic biases: sycophancy
@@ -231,12 +231,10 @@ contracted views:
 \end{itemize}
 
 The contract is enforced at the schema level: the
-\texttt{PublicCausalInstance} dataclass strips a frozen set of gold-only fields
-(\texttt{true\_dag}, \texttt{hidden\_variables}, \texttt{true\_scm},
-\texttt{full\_data}, \texttt{ground\_truth}, \texttt{gold\_label}) and sanitizes
-public text against semantic leakage patterns (e.g., the literal substring
-``hidden confounder'' or ``true label'' is removed before the public view is
-emitted).
+\texttt{PublicCausalInstance} dataclass strips gold-only fields such as the
+true DAG, hidden variables, full SCM, full data, and gold labels, and sanitizes
+public text against explicit leakage patterns before the verifier-side view is
+emitted.
 
 \subsection{Output and Label Spaces}
 
@@ -246,14 +244,14 @@ $q \in \{$association, intervention, counterfactual$\}$, the verifier outputs
 \begin{itemize}
 \item a verdict $\hat{y} \in \{\textsc{valid}, \textsc{invalid},
   \textsc{unidentifiable}\}$,
-\item an identification status
-  $s \in \{\textsc{identified}, \textsc{contradicted}, \textsc{underdetermined}\}$
-  consistent with $\hat{y}$,
+\item an identification status $s$ that is either \textsc{identified},
+  \textsc{contradicted}, or \textsc{underdetermined}, consistent with
+  $\hat{y}$,
 \item a refusal reason $r$ when $\hat{y} = \textsc{unidentifiable}$,
 \item an assumption ledger of typed entries
   (\textsc{supported}, \textsc{contradicted}, \textsc{unresolved}),
-\item three witness slots: \texttt{support\_witness},
-  \texttt{countermodel\_witness}, and \texttt{assumption\_witness}, and
+\item witness slots for supporting evidence, countermodels, and assumptions,
+  and
 \item a missing-information spec listing the unsupported assumptions and the
   evidence that would close the identification gap.
 \end{itemize}
@@ -293,6 +291,7 @@ catalogue of attack modes that match the family's structure.
 \begin{center}
 \begin{small}
 \begin{sc}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lllll}
 \toprule
 Rung & Family & ID/PU & Supported Labels & Primary Attack Modes \\
@@ -311,6 +310,7 @@ L3 & mediation\_abduction        & ID & valid, invalid          & function-form 
 L3 & monotonicity\_cross\_world  & PU & invalid, unidentifiable & cross-world failure, function-form \\
 \bottomrule
 \end{tabular}
+}
 \end{sc}
 \end{small}
 \end{center}
@@ -330,28 +330,26 @@ authority effects in the main table.
 \subsection{Witnesses}
 
 Every gold sample carries up to three structured witnesses:
-\texttt{support\_witness} (why the gold label holds under public evidence),
-\texttt{countermodel\_witness} (an observationally compatible alternative
-SCM disagreeing with the claim on the target query), and
-\texttt{assumption\_witness} (which identifying assumption is unsupported or
-contradicted). These witnesses are first-class evaluation objects rather than
-narrative decoration: they ground the decision rule in
-Section~\ref{sec:method} and the qualitative witness-faithfulness probe in
-Section~\ref{sec:experiments}.
+a support witness (why the gold label holds under public evidence), a
+countermodel witness (an observationally compatible alternative SCM that
+disagrees with the claim on the target query), and an assumption witness
+(which identifying assumption is unsupported or contradicted). These witnesses
+are first-class evaluation objects rather than narrative decoration: they
+ground the decision rule in Section~\ref{sec:method} and the qualitative
+witness-faithfulness probe in Section~\ref{sec:experiments}.
 
 \subsection{Splits and Holdouts}
 
 The split manifest enforces non-overlapping \texttt{train}, \texttt{dev},
 \texttt{test\_iid}, and \texttt{test\_ood} subsets. The holdout strategy
-explicitly tracks several orthogonal axes: family, lexical/template, variable
-renaming, mechanism (e.g.\ confounding vs.\ collider), attack-family,
-context-shift domain, and paired-flip pairs. This goes beyond the
-lexical-perturbation OOD studied in prior work \cite{jin2024corr2cause}, which
-we view as a useful but insufficient stress test. Section~\ref{sec:experiments}
-reports an exploratory subset of these axes (graph-family, lexical,
-variable-naming, and mixed buckets); the mechanism, attack-family, paired-flip,
-and context-shift axes belong to the design space and are reserved for the
-full-budget evaluation.
+explicitly tracks several orthogonal axes: graph family, mechanism
+(e.g.\ confounding vs.\ collider), attack-family, context-shift domain,
+paired-flip pairs, plus lexical/template and variable-renaming controls inside
+the generator. This goes beyond the lexical-perturbation OOD studied in prior
+work \cite{jin2024corr2cause}, which we view as a useful but insufficient
+stress test. Section~\ref{sec:experiments} reports the five paper-facing OOD
+buckets that correspond directly to the benchmark contract: graph-family,
+mechanism, attack-family, context-shift, and paired-flip OOD.
 
 \subsection{Real-Grounded Subset}
 
@@ -362,9 +360,10 @@ visible-vs-hidden information contract, the gold label, identifying
 assumptions, and a witness note. The synthetic and real-grounded subsets share
 the same claim schema, so models trained or tuned on the synthetic core can be
 zero-shot evaluated on the real-grounded subset. This subset is part of the
-benchmark \emph{design}; the present paper does not include real-grounded
-evaluation results, which are reserved for the human-audit phase (see
-Section~\ref{sec:limitations}).
+benchmark \emph{design}; the current workspace also includes a $150$-case
+human-audit package generator, but not yet dual-annotator agreement results.
+Full real-grounded evaluation is therefore reserved for the human-audit phase
+(see Section~\ref{sec:limitations}).
 
 \section{Method: Countermodel-Grounded Selective Verification}
 \label{sec:method}
@@ -375,10 +374,8 @@ The verifier pipeline runs four sequential stages and emits a single
 \paragraph{Stage 1: Claim parsing.}
 Given a public scenario and the natural-language claim, the parser extracts
 treatment, outcome, query type, polarity, strength, mentioned and implied
-assumptions, the rhetorical strategy (e.g.\
-\texttt{adjustment\_sufficiency\_assertion},
-\texttt{instrumental\_variable\_appeal}), and an
-\texttt{abstention\_risk} flag derived from claim-level cues.
+assumptions, the rhetorical strategy (e.g.\ an adjustment-sufficiency claim
+or an IV appeal), and an abstention-risk flag derived from claim-level cues.
 
 \paragraph{Stage 2: Assumption ledger.}
 The ledger initializes one entry per identifying precondition required by the
@@ -392,8 +389,8 @@ counted as identifying support.
 The countermodel module enumerates structurally-compatible alternative SCMs
 for the public scenario and scores each on (a) observational match score, (b)
 disagreement with the claim on the target query, (c) which identifying
-assumption it triggers. The module returns a \texttt{CountermodelSearchResult}
-with a chosen candidate, an explanation string, and a verdict suggestion.
+assumption it triggers. The module returns a chosen candidate, a short
+explanation, and a verdict suggestion.
 
 \paragraph{Stage 4: Tool-backed adjudication.}
 When no countermodel survives, a tool runner executes the appropriate
@@ -401,8 +398,8 @@ identification tools for the rung -- conditional independence and association
 checks for L1, backdoor, frontdoor and IV estimators for L2, and SCM-based
 counterfactual reasoning plus probability-of-necessity bounds for L3
 \cite{tian2000probabilities,sharma2020dowhy}. Tool outputs are stored as a
-structured \texttt{tool\_trace} that maps records to \texttt{supports} /
-\texttt{contradicts} on individual ledger entries.
+structured trace that records which ledger entries are supported or
+contradicted.
 
 \paragraph{Decision rule.}
 The four stages are combined by a fixed rule:
@@ -416,9 +413,8 @@ The four stages are combined by a fixed rule:
   \textsc{invalid}.
 \item Else if any core identifying assumption remains unsupported or no
   primary-supporting tool record exists, return \textsc{unidentifiable} with
-  refusal reason \texttt{missing\_identifying\_support} (or
-  \texttt{missing\_primary\_identifying\_support} when the abstention gate
-  fires on a high-risk claim).
+  a missing-identifying-support reason; when the abstention gate fires on a
+  high-risk claim, we return the stricter primary-support variant.
 \item Else return \textsc{valid}.
 \end{enumerate}
 This rule is deterministic, auditable, and is implemented in fewer than $300$
@@ -436,7 +432,8 @@ rather than aesthetic.
 Let $E$ denote the public evidence and $q$ the target query. Suppose there
 exist SCMs $\mathcal{M}_1, \mathcal{M}_2$ that both induce $E$ as their
 observational marginal but disagree on $q$. Then any verifier that does not
-admit \textsc{unidentifiable} as an output produces an incorrect verdict on
+admit {\normalfont\textsc{unidentifiable}} as an output produces an incorrect
+verdict on
 at least one of $\mathcal{M}_1, \mathcal{M}_2$.
 \end{proposition}
 \begin{proof}[Proof sketch]
@@ -448,8 +445,8 @@ verdict is wrong under exactly one.
 
 \emph{Empirical correspondence.} Section~\ref{sec:experiments}
 (\textsc{No-Abstention} ablation) instantiates this proposition: removing the
-abstention head retains $0.78$/$0.94$ raw accuracy on IID/OOD but zeroes out
-unidentifiable awareness.
+abstention head retains $0.79$/$0.44$ raw accuracy on IID/OOD but zeroes out
+wise-refusal recall.
 
 \begin{proposition}[Countermodel Witness Soundness]
 \label{prop:witness}
@@ -493,44 +490,54 @@ observed there is, by construction, leakage rather than oversight ability.
 \subsection{Experimental Setup}
 \label{sec:setup}
 
-We report exploratory results from three seeds with two samples per family
-(``$3$-seed exploratory budget''), spanning all twelve families. The verifier
-under study is the full \emph{countermodel-grounded} system. Ablations replace
-one or more pipeline components with a no-op surrogate. \emph{We caveat
-explicitly}: the per-family budget is small, so individual cell variances are
-wide and headline accuracy values cluster near $\{0, 0.5, 1\}$. The numbers
-are reported as a sanity check on the contract and not as a final empirical
-claim; we treat them as evidence for the \emph{shape} of the comparison rather
-than the magnitude.
+We report the current workspace snapshot: three seeds with ten samples per
+family across all twelve graph families. The main benchmark runs at difficulty
+$0.70$ and compares the full \emph{countermodel-grounded} verifier against
+judge-style, debate-style, tool-only and refusal-aware baselines. The component
+ablation suite replaces one or more pipeline stages with a no-op surrogate. We
+also include a dedicated attack-only leakage study at difficulty $0.55$ under
+the hidden-information-aware profile. These runs are reproducible and
+paper-facing, but they are not a saturation study: the synthetic core is still
+modest, the leakage study remains exploratory, and the real-grounded and
+human-audit phases are not yet complete. The current workspace also ships a
+$150$-case audit package and a pilot cross-model transfer matrix; we treat both
+as scope markers rather than headline claims.
 
 \subsection{Main Benchmark}
 
-Table~\ref{tab:main} compares four systems on \texttt{test\_iid} and
-\texttt{test\_ood}: the full \textsc{Countermodel-Grounded} verifier, a
-\textsc{No-Tools} ablation, a \textsc{No-Countermodel} ablation, and a
-heuristic \textsc{Claim-Only} baseline (which never engages either the ledger
-or countermodel module).
+Table~\ref{tab:main} compares the full \textsc{Countermodel-Grounded}
+verifier against compact judge-style and system-style baselines on
+\texttt{test\_iid} and \texttt{test\_ood}. We report the three metrics most
+central to our task definition: verdict accuracy, unsafe-acceptance rate, and
+wise-refusal recall. \textsc{Self-Consistency Judge} matches
+\textsc{CoT Judge} exactly in this snapshot and is omitted from the compact
+table for readability; the full artifact retains it.
 
 \begin{table*}[t]
-\caption{Main benchmark, $3$-seed exploratory budget. Mean $\pm$ std across
-  seeds; full $95\%$ CIs are reported in the artifact at
-  \texttt{outputs/main\_benchmark\_3seed.md}.}
+\caption{Main benchmark, current mainline snapshot (three seeds, ten
+  samples per family, difficulty $0.70$). Mean $\pm$ std across seeds; full
+  $95\%$ CIs, calibration metrics, and over-refusal rates are reported in
+  the accompanying \texttt{exp\_main\_benchmark.md} artifact.}
 \label{tab:main}
 \begin{center}
 \begin{small}
 \begin{sc}
-\begin{tabular}{llcccc}
+\begin{tabular}{llccc}
 \toprule
-System & Split & Verdict Acc.\ & Macro-F1 & ECE & Unident.\ Awareness \\
+System & Split & Verdict Acc.\ & Unsafe Accept & Wise Refusal Recall \\
 \midrule
-\textsc{Countermodel-Grounded} & test\_iid & $1.00 \pm 0.00$ & $0.89 \pm 0.19$ & $0.09 \pm 0.02$ & $0.67 \pm 0.58$ \\
-\textsc{Countermodel-Grounded} & test\_ood & $1.00 \pm 0.00$ & $0.78 \pm 0.19$ & $0.08 \pm 0.01$ & $0.33 \pm 0.58$ \\
-\textsc{No-Tools}              & test\_iid & $0.61 \pm 0.10$ & $0.48 \pm 0.13$ & $0.32 \pm 0.13$ & $0.67 \pm 0.58$ \\
-\textsc{No-Tools}              & test\_ood & $0.61 \pm 0.19$ & $0.41 \pm 0.13$ & $0.36 \pm 0.17$ & $0.33 \pm 0.58$ \\
-\textsc{No-Countermodel}       & test\_iid & $0.61 \pm 0.10$ & $0.48 \pm 0.13$ & $0.30 \pm 0.13$ & $0.67 \pm 0.58$ \\
-\textsc{No-Countermodel}       & test\_ood & $0.44 \pm 0.10$ & $0.37 \pm 0.06$ & $0.47 \pm 0.08$ & $0.33 \pm 0.58$ \\
-\textsc{Claim-Only}            & test\_iid & $0.39 \pm 0.10$ & $0.19 \pm 0.03$ & $0.37 \pm 0.10$ & $0.00 \pm 0.00$ \\
-\textsc{Claim-Only}            & test\_ood & $0.39 \pm 0.19$ & $0.18 \pm 0.07$ & $0.37 \pm 0.19$ & $0.00 \pm 0.00$ \\
+\textsc{Direct Judge}          & test\_iid & $0.50 \pm 0.09$ & $0.89 \pm 0.19$ & $0.50 \pm 0.50$ \\
+\textsc{Direct Judge}          & test\_ood & $0.16 \pm 0.06$ & $0.97 \pm 0.03$ & $0.18 \pm 0.03$ \\
+\textsc{CoT Judge}             & test\_iid & $0.29 \pm 0.08$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
+\textsc{CoT Judge}             & test\_ood & $0.57 \pm 0.05$ & $0.00 \pm 0.00$ & $0.96 \pm 0.04$ \\
+\textsc{Tool Baseline}         & test\_iid & $0.54 \pm 0.12$ & $0.37 \pm 0.26$ & $0.67 \pm 0.58$ \\
+\textsc{Tool Baseline}         & test\_ood & $0.36 \pm 0.10$ & $0.42 \pm 0.06$ & $0.58 \pm 0.10$ \\
+\textsc{Debate Baseline}       & test\_iid & $0.29 \pm 0.08$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
+\textsc{Debate Baseline}       & test\_ood & $0.43 \pm 0.04$ & $0.00 \pm 0.00$ & $0.59 \pm 0.07$ \\
+\textsc{Refusal-Aware}         & test\_iid & $0.61 \pm 0.10$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
+\textsc{Refusal-Aware}         & test\_ood & $0.47 \pm 0.09$ & $0.00 \pm 0.00$ & $0.57 \pm 0.06$ \\
+\textsc{Countermodel-Grounded} & test\_iid & $0.83 \pm 0.11$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
+\textsc{Countermodel-Grounded} & test\_ood & $0.85 \pm 0.01$ & $0.00 \pm 0.00$ & $0.79 \pm 0.06$ \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -538,53 +545,60 @@ System & Split & Verdict Acc.\ & Macro-F1 & ECE & Unident.\ Awareness \\
 \end{center}
 \end{table*}
 
-Three observations: (i) the full system outperforms each ablation in accuracy
-and Macro-F1 within this exploratory budget; (ii) ECE is sharply lower for the
-full system, reflecting the structured probability assignment in the decision
-rule; (iii) unidentifiable awareness on \texttt{test\_ood} is uniformly low
-($0.33$) across the full system and all ablations, reflecting small per-bucket
-support rather than a clean ablation signal.
-Paired-difference tests against each ablation are significant
-($p < 10^{-3}$ before Holm correction; $p < 3\times 10^{-3}$ after) on at
-least one of the two splits; we caution that the per-family budget is small
-($n=2$) and these p-values should be read as run-level signals rather than
-population-level claims.
+Three observations matter. First, \textsc{Direct Judge} exhibits exactly the
+failure mode that motivates the task: extremely high unsafe acceptance
+($0.89$ IID, $0.97$ OOD) under public evidence constraints. Second,
+\textsc{CoT Judge}, \textsc{Debate Baseline}, and the explicit
+\textsc{Refusal-Aware} baseline drive unsafe acceptance to zero, but do so by
+over-refusing: on \texttt{test\_ood}, their over-refusal rates are
+$0.86$, $0.70$, and $0.59$, respectively, versus $0.07$ for the full system.
+Third, \textsc{Countermodel-Grounded} is the best-balanced selective verifier
+in this snapshot: it maintains zero unsafe acceptance, preserves strong
+wise-refusal recall, and substantially improves verdict accuracy over both
+direct and tool-style baselines.
 
 \subsection{Component Ablation: What Drives Wise Refusal?}
 
 Table~\ref{tab:ablation} extends the ablation to four pipeline components,
 including a \textsc{No-Abstention} variant that disables the third-label
-output entirely. The pattern is illuminating: \textsc{No-Abstention} retains
-high raw accuracy ($0.78$ IID, $0.94$ OOD) but zeroes out unidentifiable
-awareness. In other words, removing the abstention head buys back surface
-accuracy by predicting yes/no on \emph{every} sample, including those that
-the gold label declares unidentifiable. This is exactly the failure mode the
-selective task is designed to surface.
+output entirely. Two patterns are especially important. First,
+\textsc{No-Abstention} preserves much of the IID raw accuracy of the full
+system ($0.79$ vs.\ $0.83$) but zeroes out wise-refusal recall on both splits,
+which is exactly the failure mode the selective task is designed to surface.
+Second, removing the countermodel stage hurts both OOD verdict accuracy and OOD
+wise-refusal recall ($0.49$ and $0.59$). The current snapshot is not a strict
+monotone ranking across every metric: \textsc{No-Tools} slightly exceeds the
+full system on OOD raw accuracy ($0.87$ vs.\ $0.85$), but does so with
+substantially higher over-refusal ($0.19$ vs.\ $0.07$) and lower
+wise-refusal precision ($0.84$ vs.\ $0.93$).
 
 \begin{table}[t]
-\caption{Component ablation. \textsc{No-Abstention} keeps high accuracy by
-  abolishing the abstention head, but loses all unidentifiable awareness.}
+\caption{Component ablation. Wise-refusal recall is the task-critical
+  third-label measure; the full artifact includes precision, over-refusal,
+  calibration, and countermodel coverage.}
 \label{tab:ablation}
 \vskip 0.05in
 \begin{center}
 \begin{small}
 \begin{sc}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{llcc}
 \toprule
-System & Split & Acc.\ & Unid.\ Aware. \\
+System & Split & Acc.\ & Wise Refusal Recall \\
 \midrule
-\textsc{Full}            & iid & $1.00$ & $0.67$ \\
-\textsc{Full}            & ood & $1.00$ & $0.33$ \\
-\textsc{No-Ledger}       & iid & $0.39$ & $0.67$ \\
-\textsc{No-Ledger}       & ood & $0.36$ & $0.33$ \\
-\textsc{No-Countermodel} & iid & $0.61$ & $0.67$ \\
-\textsc{No-Countermodel} & ood & $0.44$ & $0.33$ \\
-\textsc{No-Abstention}   & iid & $0.78$ & $0.00$ \\
-\textsc{No-Abstention}   & ood & $0.94$ & $0.00$ \\
-\textsc{No-Tools}        & iid & $0.61$ & $0.67$ \\
-\textsc{No-Tools}        & ood & $0.61$ & $0.33$ \\
+\textsc{Full}            & iid & $0.83$ & $1.00$ \\
+\textsc{Full}            & ood & $0.85$ & $0.79$ \\
+\textsc{No-Ledger}       & iid & $0.18$ & $1.00$ \\
+\textsc{No-Ledger}       & ood & $0.57$ & $1.00$ \\
+\textsc{No-Countermodel} & iid & $0.61$ & $1.00$ \\
+\textsc{No-Countermodel} & ood & $0.49$ & $0.59$ \\
+\textsc{No-Abstention}   & iid & $0.79$ & $0.00$ \\
+\textsc{No-Abstention}   & ood & $0.44$ & $0.00$ \\
+\textsc{No-Tools}        & iid & $0.50$ & $1.00$ \\
+\textsc{No-Tools}        & ood & $0.87$ & $0.93$ \\
 \bottomrule
 \end{tabular}
+}
 \end{sc}
 \end{small}
 \end{center}
@@ -592,29 +606,30 @@ System & Split & Acc.\ & Unid.\ Aware. \\
 
 \subsection{Leakage Study}
 
-Under the corrected protocol, this exploratory run does \emph{not} yet support
-a leakage warning (the artifact records \texttt{Supports Warning = no}); we
-therefore present the $+0.67$ IID gap as a positive-control sanity check that
-the public/gold contract behaves as Proposition~\ref{prop:leakage} predicts,
-rather than as confirmed evidence of leakage in any specific competing
-benchmark. Full leakage evidence requires increasing samples\_per\_family to
-$\geq 60$.
+The current leakage study is explicitly exploratory because it uses only ten
+samples per family. We therefore present it as a positive-control sanity check
+that the public/gold contract behaves as Proposition~\ref{prop:leakage}
+predicts, rather than as a definitive estimate of contamination magnitude.
+Full leakage evidence requires increasing samples\_per\_family to at least
+$60$.
 
 We instantiate two verifiers on a dedicated attack-only benchmark with the
-\texttt{hidden\_information\_aware} attack profile: a clean public verifier
-and a deliberately oracle-leaking control that decodes benchmark-answer
-supervision from public metadata. Per \cref{prop:leakage}, any positive gap is
+hidden-information-aware attack profile: a clean public verifier and a
+deliberately oracle-leaking control that decodes benchmark-answer supervision
+from public metadata. Per \cref{prop:leakage}, any positive gap is
 \emph{by construction} leakage inflation. Table~\ref{tab:leakage} shows a gap
-of $+0.67$ on \texttt{test\_iid} and $+0.13$ on \texttt{test\_ood}; the
-\texttt{test\_iid} bootstrap test is significant at $p = 0.002$. ECE on
-\texttt{test\_iid} drops from $0.43$ (clean) to $0.001$ (leaking), a
-$430\times$ reduction that any benchmark which does not enforce a public/gold
-contract risks confusing for genuine calibration.
+of $+0.19$ on \texttt{test\_iid} and $+0.12$ on \texttt{test\_ood}. The
+artifact's warning logic is supported on \texttt{test\_ood} but not yet on
+\texttt{test\_iid}, so the run only partially supports a formal leakage
+warning. Even so, ECE drops from $0.168$ to $0.001$ on \texttt{test\_iid} and
+from $0.101$ to $0.001$ on \texttt{test\_ood}, illustrating how leaked
+supervision can masquerade as calibration.
 
 \begin{table}[t]
 \caption{Leakage study. Clean public verifier vs.\ a positive control that
   reads gold-only fields. Any positive gap is leakage inflation
-  (\cref{prop:leakage}). Numbers from \texttt{outputs/leakage\_study\_3seed.md}.}
+  (\cref{prop:leakage}). Numbers from the accompanying
+  \texttt{exp\_leakage\_study.md} artifact.}
 \label{tab:leakage}
 \vskip 0.05in
 \begin{center}
@@ -624,17 +639,17 @@ contract risks confusing for genuine calibration.
 \toprule
 Metric (test\_iid) & Clean & Leaking & $\Delta$ \\
 \midrule
-Accuracy            & $0.33$ & $1.00$ & $+0.67$ \\
-Macro-F1            & $0.15$ & $0.56$ & $+0.41$ \\
-ECE ($\downarrow$)  & $0.43$ & $0.001$ & $-0.43$ \\
-Brier ($\downarrow$) & $0.24$ & $0.00$ & $-0.24$ \\
+Accuracy             & $0.81$ & $1.00$ & $+0.19$ \\
+Macro-F1             & $0.53$ & $0.67$ & $+0.13$ \\
+ECE ($\downarrow$)   & $0.168$ & $0.001$ & $-0.167$ \\
+Brier ($\downarrow$) & $0.076$ & $0.00$ & $-0.076$ \\
 \midrule
 Metric (test\_ood) & Clean & Leaking & $\Delta$ \\
 \midrule
-Accuracy           & $0.87$ & $1.00$ & $+0.13$ \\
-Macro-F1           & $0.49$ & $0.56$ & $+0.07$ \\
-ECE ($\downarrow$) & $0.11$ & $0.001$ & $-0.11$ \\
-Brier ($\downarrow$) & $0.06$ & $0.00$ & $-0.06$ \\
+Accuracy             & $0.88$ & $1.00$ & $+0.12$ \\
+Macro-F1             & $0.56$ & $0.67$ & $+0.10$ \\
+ECE ($\downarrow$)   & $0.101$ & $0.001$ & $-0.100$ \\
+Brier ($\downarrow$) & $0.049$ & $0.00$ & $-0.049$ \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -645,33 +660,38 @@ Brier ($\downarrow$) & $0.06$ & $0.00$ & $-0.06$ \\
 \subsection{Adversarial Robustness}
 
 Table~\ref{tab:adv} reports robustness across four attack-strength regimes:
-\textsc{weak}, \textsc{medium}, \textsc{strong}, and
-\textsc{hidden\_information\_aware}. The full system holds at $1.00$ in three
-of four regimes on \texttt{test\_iid}, but drops to $0.50$ under
-\textsc{medium} and \textsc{hidden\_information\_aware}, indicating that
-information-asymmetric attacks are genuinely harder than naive adversarial
-perturbations.
+\textsc{weak}, \textsc{medium}, \textsc{strong}, and a leak-aware
+hidden-information profile. On \texttt{test\_ood}, the verifier stays
+in a relatively narrow $0.81$--$0.83$ accuracy band across all four regimes
+while maintaining zero invalid acceptance. The \texttt{test\_iid} picture is
+less stable: the hidden-information-aware regime drops to $0.58 \pm 0.42$,
+making it the hardest current IID stress case.
 
 \begin{table}[t]
-\caption{Adversarial robustness, \texttt{test\_iid}. We report
-  \texttt{test\_iid} only here; the corresponding \texttt{test\_ood} numbers
-  are in the artifact at
-  \texttt{outputs/smoke\_adversarial\_robustness.md}.}
+\caption{Adversarial robustness. Mean $\pm$ std across seeds; full results are
+  reported in the accompanying \texttt{exp\_adversarial\_robustness.md}
+  artifact.}
 \label{tab:adv}
 \vskip 0.05in
 \begin{center}
 \begin{small}
 \begin{sc}
-\begin{tabular}{lccc}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llcc}
 \toprule
-Strength & Acc.\ & Inv.\ Accept & Unid.\ Aware. \\
+Strength & Split & Acc.\ & Wise Refusal Recall \\
 \midrule
-\textsc{Weak}                       & $1.00$ & $0.00$ & $1.00$ \\
-\textsc{Medium}                     & $0.50$ & $0.00$ & $1.00$ \\
-\textsc{Strong}                     & $1.00$ & $0.00$ & $1.00$ \\
-\textsc{Hidden-Info-Aware}          & $0.50$ & $0.00$ & $1.00$ \\
+\textsc{Weak}                       & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
+\textsc{Weak}                       & ood & $0.81 \pm 0.05$ & $0.65 \pm 0.07$ \\
+\textsc{Medium}                     & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
+\textsc{Medium}                     & ood & $0.83 \pm 0.04$ & $0.68 \pm 0.09$ \\
+\textsc{Strong}                     & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
+\textsc{Strong}                     & ood & $0.82 \pm 0.03$ & $0.66 \pm 0.08$ \\
+\textsc{Leak-Aware}                 & iid & $0.58 \pm 0.42$ & $0.67 \pm 0.58$ \\
+\textsc{Leak-Aware}                 & ood & $0.81 \pm 0.06$ & $0.79 \pm 0.09$ \\
 \bottomrule
 \end{tabular}
+}
 \end{sc}
 \end{small}
 \end{center}
@@ -679,14 +699,14 @@ Strength & Acc.\ & Inv.\ Accept & Unid.\ Aware. \\
 
 \subsection{OOD Buckets}
 
-We slice the test set into \texttt{graph\_family\_ood},
-\texttt{lexical\_ood}, \texttt{variable\_naming\_ood}, and
-\texttt{mixed\_ood} buckets. The full system reaches $1.00$ accuracy on the
-three buckets that have non-zero pure support but zero on
-\texttt{graph\_family\_ood}, where the per-seed support count is zero
-(no held-out sample of that family fell into the bucket). This is a known
-artifact of the small budget and is reported transparently as an
-under-determination warning by the runner.
+The current OOD artifact evaluates the five buckets defined by the benchmark
+contract: graph-family, mechanism, attack-family, context-shift, and
+paired-flip OOD. The full system remains perfect on graph-family and mechanism
+OOD, stays strong on attack-family ($0.77$ accuracy) and context-shift
+($0.80$), and drops sharply on paired-flip ($0.42$). All five buckets retain zero unsafe
+acceptance in the current snapshot, so paired-flip is best understood as a
+structured abstention-and-disambiguation failure mode rather than a simple
+unsafe-acceptance failure.
 
 \subsection{Witness Faithfulness (qualitative)}
 
@@ -697,38 +717,40 @@ unidentifiable-awareness collapses on the families that rely on
 observational-equivalence reasoning
 (\texttt{l1\_latent\_confounding\_family},
 \texttt{l3\_counterfactual\_ambiguity\_family}). This indicates that the
-witness is load-bearing rather than ornamental, but the full quantitative
-study is deferred to an extended budget.
-A full quantitative study (witness shuffle/delete with paired-bootstrap
+witness is load-bearing rather than ornamental. A full quantitative study
+(witness shuffle/delete with paired-bootstrap
 $95\%$ CIs across all twelve families) is reserved for future work.
 
-\section{Discussion}
+\section{Discussion and Limitations}
 \label{sec:limitations}
 
 \paragraph{What we are not claiming.}
 We are \emph{not} claiming a state-of-the-art result on a saturated benchmark,
-nor that LLM judges are uniformly bad at causal reasoning. Our exploratory
-budget is too small for that. The claim is structural: the task formulation
-(public/gold contract, three-way verdict, abstention reason, witness slots)
-is the right shape for evaluating selective causal oversight, and a verifier
-that takes this shape seriously outperforms verifiers that flatten it in this
-exploratory run.
+nor that LLM judges are uniformly bad at causal reasoning. The claim is
+structural: once the task enforces a public/gold contract and rewards correct
+abstention, the ranking of systems changes, and a verifier that takes this
+shape seriously offers a better accuracy/refusal tradeoff than verifiers that
+flatten the problem into a closed-world judgment task.
 
 \paragraph{Limitations.}
 The synthetic core is, by construction, a model of the world rather than the
 world itself. The real-grounded subset is small, and full human dual-annotation
-is in progress. Our exploratory budget of two samples per family across three
-seeds gives wide CIs and clusters accuracy near $\{0, 0.5, 1\}$; production
-runs at $30$+ samples per family will be needed before any aggregate
-statement about absolute performance is defensible. We document these caveats
-in the artifact and in this paper.
+is in progress. The current mainline snapshot uses ten samples per family, so
+bucket-level estimates can still have wide CIs; the dedicated leakage study is
+explicitly exploratory; and the hidden-information-aware IID robustness slice is
+not yet stable enough to support strong quantitative claims. Larger runs and
+completed human audit will be needed before any broad statement about absolute
+performance is defensible. The existing transfer matrix is likewise a pilot:
+it shows that family-swapped attacker/verifier profiles are testable inside the
+benchmark contract, but it is still too small to support model-family
+conclusions. We document these caveats in the artifact and in this paper.
 
 \paragraph{Future work.}
 Two priorities: (i) closing the real-grounded subset with dual annotation
-and Cohen's $\kappa$ on the four primary audit fields; (ii) running a
-full-budget cross-model transfer study comparing verifier behaviour across
-LLM families and sizes, which will let us connect the structural conclusions
-of this paper to specific model regimes.
+and Cohen's $\kappa$ on the four primary audit fields; (ii) scaling the
+current transfer pilot into a full-budget cross-model study across verifier
+families and sizes, which will let us connect the structural conclusions of
+this paper to specific model regimes.
 
 \section{Conclusion}
 
@@ -737,7 +759,7 @@ LLM-based causal evaluation. By modelling information asymmetry, treating
 \textsc{unidentifiable} as a first-class label, partitioning public from gold
 at the schema level, and grounding the verifier in countermodel witnesses,
 we obtain a benchmark and a method whose comparison shape is meaningful even
-under exploratory budgets. The next step is scale: more samples, more graph
+under current mainline budgets. The next step is scale: more samples, more graph
 families, real-grounded human-audited cases, and cross-model transfer.
 
 \section*{Software and Data}
