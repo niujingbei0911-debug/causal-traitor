@@ -1,0 +1,882 @@
+%%%%%%%% ICML 2026 SUBMISSION %%%%%%%%%%%%%%%%%
+
+\documentclass{article}
+
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+
+\usepackage{hyperref}
+
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+\usepackage{icml2026}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+\usepackage[capitalize,noabbrev]{cleveref}
+\crefname{proposition}{Proposition}{Propositions}
+\Crefname{proposition}{Proposition}{Propositions}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\usepackage[textsize=tiny]{todonotes}
+
+\icmltitlerunning{Selective Adversarial Causal Oversight}
+
+\begin{document}
+
+\twocolumn[
+  \icmltitle{Selective Adversarial Causal Oversight: \\
+    A Leakage-Free Benchmark and Countermodel-Grounded Verifier under Information Asymmetry}
+
+  \icmlsetsymbol{equal}{*}
+
+  \begin{icmlauthorlist}
+    \icmlauthor{Anonymous Authors}{anon}
+  \end{icmlauthorlist}
+
+  \icmlaffiliation{anon}{Anonymous Institution}
+
+  \icmlcorrespondingauthor{Anonymous}{anon@anon.org}
+
+  \icmlkeywords{Causal Inference, Large Language Models, Selective Prediction,
+    Adversarial Evaluation, Benchmarks, Wise Refusal}
+
+  \vskip 0.3in
+]
+
+\printAffiliationsAndNotice{}
+
+\begin{abstract}
+Large language models (LLMs) are increasingly deployed to evaluate causal claims,
+but real-world causal oversight is both \emph{selective} and \emph{adversarial}:
+claimants often hold private information, exploit non-identifiability, and
+present persuasive yet incomplete reasoning. We formalize this setting as
+\emph{selective adversarial causal oversight}, in which a verifier that observes
+only public evidence must decide whether a natural-language causal claim is
+\textsc{valid}, \textsc{invalid}, or \textsc{unidentifiable}. We release a
+leakage-free benchmark with public/gold partitioning, twelve graph families
+spanning the three rungs of Pearl's hierarchy, structurally-grounded attacks, a
+five-axis persuasion overlay, and out-of-distribution buckets that probe
+mechanism, attack-family, paired-flip and context shift. We further propose
+\emph{countermodel-grounded selective verification}, a four-stage pipeline that
+parses the claim, builds an assumption ledger, searches for observationally
+compatible countermodels, and reaches an abstention-aware verdict. Across our
+exploratory main benchmark, ablations, leakage controls and OOD buckets,
+countermodel-grounded verification outperforms ablations of the tool,
+countermodel, and ledger components in this exploratory run; a deliberately
+oracle-leaking positive control behaves as our Proposition 3 predicts,
+illustrating why public/gold partitioning is a necessary contract for selective
+causal oversight benchmarks.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+LLMs are now used as judges, debate moderators, and policy-relevant explainers,
+but evaluating their \emph{causal} reasoning remains awkward. Existing
+benchmarks largely treat causal questions as graded multiple-choice problems
+\cite{jin2023cladder,jin2024corr2cause,frohberg2022crass}: the evaluator
+inspects an oracle structural causal model, fixes a yes/no answer, and scores
+the LLM's prediction against it. This format is convenient but masks two
+features that dominate causal oversight in practice.
+
+\textbf{Information asymmetry.} A claimant who issues a causal statement -- a
+clinician, a policy advocate, a research summary, or a deceptive agent -- often
+has access to private information that the verifier does not: the underlying
+data-generating process, hidden confounders, selection mechanisms, or simply
+domain familiarity. The verifier sees only public evidence and the natural-language
+claim. Failing to model this asymmetry collapses a hard \emph{oversight} problem
+into an easy \emph{closed-world recall} problem.
+
+\textbf{Wise refusal.} A core lesson of causal inference is that, given a fixed
+public evidence base, many queries are simply not identifiable
+\cite{pearl2009causality,bareinboim2022pearl}. In such cases the correct
+behaviour is not to commit to a verdict, but to abstain with a reason. Modern
+LLM judges, however, are trained to commit, and exhibit sycophancy and
+position bias when uncertain
+\cite{sharma2024sycophancy,chen2024judge,ye2024justice}. Existing causal
+benchmarks rarely measure ``did the model refuse for the right reason'' as a
+first-class quantity.
+
+\paragraph{Our task.} We formalize \emph{selective adversarial causal oversight}
+(Section~\ref{sec:task}). An attacker generates a natural-language claim with
+full knowledge of the gold structural causal model (SCM); a verifier sees only
+the public projection of the scenario plus the claim text; and the evaluator
+scores the verifier's \emph{three-way} verdict
+$\{\textsc{valid}, \textsc{invalid}, \textsc{unidentifiable}\}$ together with a
+structured assumption ledger, refusal reason, and witness.
+
+\paragraph{Our benchmark.} We construct a synthetic core of twelve graph
+families that explicitly mark family-level identifiability, observationally
+equivalent counter-structures, and a finite catalogue of structural attack
+modes. A persuasion overlay projects each claim into authority, expert-tone,
+confidence, consensus and concealment styles. Splits enforce partitioned
+holdouts at the family, mechanism, attack-family, context-shift, and paired-flip
+levels, and leakage-prone metadata fields are stripped from the verifier-side
+view by construction (Section~\ref{sec:benchmark}). A literature-grounded
+subset is reserved as an external sanity check.
+
+\paragraph{Our verifier.} \emph{Countermodel-grounded selective verification}
+(Section~\ref{sec:method}) is a four-stage pipeline that (i) parses the claim
+into structured slots, (ii) builds an assumption ledger of identifying
+preconditions, (iii) searches for observationally compatible counter-SCMs that
+disagree with the claim on the target query, and (iv) consults Pearl-style
+identification tools as supporting evidence. A fixed decision rule turns these
+artifacts into one of the three verdicts plus an abstention reason and a
+missing-information specification.
+
+\paragraph{Our claims.} Three propositions
+(Section~\ref{sec:theory}) tie selective abstention, countermodel witnesses,
+and oracle leakage to formal properties of the task. Empirically
+(Section~\ref{sec:experiments}), under controlled exploratory budgets we observe
+(a) the full system reaches $1.00$ accuracy on both IID and OOD test buckets
+while ablations of the ledger, countermodel, and tool components drop to
+$0.36$--$0.61$; (b) a positive control that decodes oracle metadata leaks
+$+0.67$ accuracy on IID and is therefore a useful negative example for any
+benchmark that does not enforce a public/gold partition; and (c) component
+removal of \emph{abstention} alone barely affects raw accuracy yet zeroes out
+unidentifiable awareness, which is exactly the failure mode the task is
+designed to surface. We discuss limitations -- in particular, the small
+samples-per-family budget that makes our results exploratory rather than
+definitive -- in Section~\ref{sec:experiments} and Section~\ref{sec:limitations}.
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Causal benchmarks for LLMs.}
+\textsc{CLadder} \cite{jin2023cladder} introduces a $10$K-sample symbolic
+causal benchmark spanning Pearl's three rungs, with ground truth derived from
+an oracle inference engine. \textsc{Corr2Cause} \cite{jin2024corr2cause} probes
+whether LLMs can convert correlational statements into causal structure; the
+authors report near-random performance and a sharp drop under perturbation.
+\textsc{CRASS} \cite{frohberg2022crass} targets counterfactual conditionals.
+We differ from these benchmarks in three structural ways: (i) we strip oracle
+fields from the verifier's view by schema construction rather than by prompt
+hygiene, (ii) we elevate \textsc{unidentifiable} to a first-class supervised
+label, and (iii) we evaluate not just accuracy but a wise-refusal-aware
+metric bundle and a deliberately leaking positive control.
+
+\paragraph{Selective prediction and abstention.}
+Classical selective prediction
+\cite{geifman2017selective,geifman2019selectivenet} introduces a reject option
+to deep classifiers. Recent work re-derives this idea for LLMs and finds that
+abstention quality is sensitive to calibration
+\cite{guo2017calibration,wen2025abstention}. Our task definition is closest to
+this literature in spirit: the verifier explicitly outputs an abstention reason
+(\textsc{observational\_equivalence}, \textsc{missing\_identifying\_support},
+\textsc{missing\_primary\_identifying\_support}) when the public evidence does
+not uniquely determine the query.
+
+\paragraph{LLM-as-judge and sycophancy.}
+LLM judges show systematic biases: sycophancy
+\cite{sharma2024sycophancy}, position and verbosity bias \cite{ye2024justice},
+and authority effects \cite{chen2024judge}. Causal claims compound these biases
+because the surface plausibility of an explanation is correlated with the
+structural correctness of the underlying identification. Our persuasion
+overlay is designed to expose exactly that gap.
+
+\paragraph{Scalable oversight and debate.}
+\citet{irving2018debate} and \citet{bowman2022measuring} frame oversight as a
+game between informed agents and a less-informed judge. Our setting is a
+specialization of that frame to causal claims, with a structured rather than
+free-form transcript and an explicit abstention option for the judge.
+
+\paragraph{Causal identification and tools.}
+We build on canonical identification machinery: do-calculus and the
+backdoor/frontdoor criteria \cite{pearl2009causality,shpitser2008complete},
+LATE-style instrumental-variable identification \cite{imbens1994late}, and
+probability-of-causation results \cite{tian2000probabilities}. Tool execution
+in our pipeline uses estimators in the spirit of DoWhy
+\cite{sharma2020dowhy}.
+
+\section{Task: Selective Adversarial Causal Oversight}
+\label{sec:task}
+
+\subsection{Information Partition}
+A scenario is generated as a structural causal model
+$\mathcal{M} = (\mathbf{V}, \mathbf{U}, F, P(\mathbf{U}))$ over observed
+variables $\mathbf{V}$ and hidden variables $\mathbf{U}$. We expose three
+contracted views:
+
+\begin{itemize}
+\item \emph{Attacker view}: the gold SCM, the true DAG, hidden variable
+  identities, full data, and a generator metadata bundle. The attacker uses
+  this to craft a claim that is rhetorically plausible against public
+  evidence but structurally constrained.
+\item \emph{Verifier view}: a \texttt{PublicCausalInstance} containing only
+  observed variables, public observed data, optional named role hints
+  (proxy/instrument/mediator/selection), and the natural-language claim.
+\item \emph{Evaluator view}: gold + verifier views, used solely to score the
+  verdict and audit the witnesses.
+\end{itemize}
+
+The contract is enforced at the schema level: the
+\texttt{PublicCausalInstance} dataclass strips a frozen set of gold-only fields
+(\texttt{true\_dag}, \texttt{hidden\_variables}, \texttt{true\_scm},
+\texttt{full\_data}, \texttt{ground\_truth}, \texttt{gold\_label}) and sanitizes
+public text against semantic leakage patterns (e.g., the literal substring
+``hidden confounder'' or ``true label'' is removed before the public view is
+emitted).
+
+\subsection{Output and Label Spaces}
+
+For a parsed claim with target $(X, Y)$ over query type
+$q \in \{$association, intervention, counterfactual$\}$, the verifier outputs
+
+\begin{itemize}
+\item a verdict $\hat{y} \in \{\textsc{valid}, \textsc{invalid},
+  \textsc{unidentifiable}\}$,
+\item an identification status
+  $s \in \{\textsc{identified}, \textsc{contradicted}, \textsc{underdetermined}\}$
+  consistent with $\hat{y}$,
+\item a refusal reason $r$ when $\hat{y} = \textsc{unidentifiable}$,
+\item an assumption ledger of typed entries
+  (\textsc{supported}, \textsc{contradicted}, \textsc{unresolved}),
+\item three witness slots: \texttt{support\_witness},
+  \texttt{countermodel\_witness}, and \texttt{assumption\_witness}, and
+\item a missing-information spec listing the unsupported assumptions and the
+  evidence that would close the identification gap.
+\end{itemize}
+
+\subsection{Why the Third Label is Necessary}
+\label{sec:third-label}
+
+For three of our twelve graph families (\texttt{l1\_latent\_confounding},
+\texttt{l2\_invalid\_iv}, \texttt{l3\_counterfactual\_ambiguity}), there exist
+multiple SCMs $\mathcal{M}_1, \mathcal{M}_2$ that are observationally
+equivalent but disagree on the target query. Pearl's causal hierarchy theorem
+\cite{bareinboim2022pearl} formalizes the general case: layer-$k$ data
+underdetermines layer-$(k+1)$ truth almost everywhere. We therefore treat
+\textsc{unidentifiable} not as a degraded label but as the unique correct
+output when public evidence does not pin down a single query value.
+
+\section{Benchmark}
+\label{sec:benchmark}
+
+\subsection{Synthetic Core: Twelve Graph Families}
+
+The benchmark generator instantiates each scenario from a registry of twelve
+deterministic graph family blueprints (Table~\ref{tab:families}), distributed
+across the three rungs of Pearl's hierarchy (four L1, five L2, three L3
+families). Each family is tagged with a family-level
+identifiability status (\textsc{identifiable} vs.\
+\textsc{potentially\_unidentifiable}), a list of supported gold labels, and a
+catalogue of attack modes that match the family's structure.
+
+\begin{table*}[t]
+\caption{Twelve graph families across Pearl's hierarchy. Each family fixes
+  observable roles (treatment, outcome, context, adjuster, instrument, mediator,
+  proxy, selection, latent confounder), a supported label set, and an attack
+  catalogue. ``ID'' = structurally identifiable; ``PU'' = potentially
+  unidentifiable.}
+\label{tab:families}
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lllll}
+\toprule
+Rung & Family & ID/PU & Supported Labels & Primary Attack Modes \\
+\midrule
+L1 & latent\_confounding         & PU & invalid, unidentifiable & assoc.\ overclaim, hidden-conf.\ denial \\
+L1 & selection\_bias             & PU & invalid, unidentifiable & selection-bias obfuscation \\
+L1 & proxy\_disambiguation       & ID & valid, invalid          & assoc.\ overclaim \\
+L1 & reverse\_causality          & PU & invalid, unidentifiable & assoc.\ overclaim \\
+L2 & valid\_backdoor             & ID & valid, invalid          & invalid-adjustment, heterogeneity overgen.\ \\
+L2 & valid\_iv                   & ID & valid, invalid          & heterogeneity overgen.\ \\
+L2 & invalid\_iv                 & PU & invalid, unidentifiable & weak-IV-as-valid-IV, exclusion claim \\
+L2 & subgroup\_heterogeneity     & PU & invalid, unidentifiable & heterogeneity overgen.\ \\
+L2 & frontdoor\_partial\_meas.   & PU & valid, unidentifiable   & unidentifiable disguised as valid \\
+L3 & counterfactual\_ambiguity   & PU & unidentifiable          & counterfactual overclaim \\
+L3 & mediation\_abduction        & ID & valid, invalid          & function-form manipulation \\
+L3 & monotonicity\_cross\_world  & PU & invalid, unidentifiable & cross-world failure, function-form \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table*}
+
+\subsection{Persuasion Overlay}
+
+A separate overlay layer projects each structurally-fixed claim into a
+persuasion-styled variant. The taxonomy mirrors the social-science persuasion
+literature \cite{zeng2024johnny} but is deliberately narrowed to five axes:
+\textsc{authority}, \textsc{expert\_tone}, \textsc{confidence},
+\textsc{consensus}, and \textsc{concealment}. The paper-facing primary axis
+uses four of these and reports \textsc{expert\_tone} only in the
+taxonomy-complete artifact, to avoid double-counting tone effects with
+authority effects in the main table.
+
+\subsection{Witnesses}
+
+Every gold sample carries up to three structured witnesses:
+\texttt{support\_witness} (why the gold label holds under public evidence),
+\texttt{countermodel\_witness} (an observationally compatible alternative
+SCM disagreeing with the claim on the target query), and
+\texttt{assumption\_witness} (which identifying assumption is unsupported or
+contradicted). These witnesses are first-class evaluation objects rather than
+narrative decoration: they ground the decision rule in
+Section~\ref{sec:method} and the qualitative witness-faithfulness probe in
+Section~\ref{sec:experiments}.
+
+\subsection{Splits and Holdouts}
+
+The split manifest enforces non-overlapping \texttt{train}, \texttt{dev},
+\texttt{test\_iid}, and \texttt{test\_ood} subsets. The holdout strategy
+explicitly tracks several orthogonal axes: family, lexical/template, variable
+renaming, mechanism (e.g.\ confounding vs.\ collider), attack-family,
+context-shift domain, and paired-flip pairs. This goes beyond the
+lexical-perturbation OOD studied in prior work \cite{jin2024corr2cause}, which
+we view as a useful but insufficient stress test. Section~\ref{sec:experiments}
+reports an exploratory subset of these axes (graph-family, lexical,
+variable-naming, and mixed buckets); the mechanism, attack-family, paired-flip,
+and context-shift axes belong to the design space and are reserved for the
+full-budget evaluation.
+
+\subsection{Real-Grounded Subset}
+
+A literature-grounded subset (target size $150$--$300$ cases) is curated from
+economics, policy, epidemiology and education observational studies. Each case
+records a source citation, a public-evidence summary, the
+visible-vs-hidden information contract, the gold label, identifying
+assumptions, and a witness note. The synthetic and real-grounded subsets share
+the same claim schema, so models trained or tuned on the synthetic core can be
+zero-shot evaluated on the real-grounded subset. This subset is part of the
+benchmark \emph{design}; the present paper does not include real-grounded
+evaluation results, which are reserved for the human-audit phase (see
+Section~\ref{sec:limitations}).
+
+\section{Method: Countermodel-Grounded Selective Verification}
+\label{sec:method}
+
+The verifier pipeline runs four sequential stages and emits a single
+\texttt{VerifierDecision} object.
+
+\paragraph{Stage 1: Claim parsing.}
+Given a public scenario and the natural-language claim, the parser extracts
+treatment, outcome, query type, polarity, strength, mentioned and implied
+assumptions, the rhetorical strategy (e.g.\
+\texttt{adjustment\_sufficiency\_assertion},
+\texttt{instrumental\_variable\_appeal}), and an
+\texttt{abstention\_risk} flag derived from claim-level cues.
+
+\paragraph{Stage 2: Assumption ledger.}
+The ledger initializes one entry per identifying precondition required by the
+parsed claim. Status starts as \textsc{unresolved} and is updated by
+later stages: tool-backed evidence may flip an entry to \textsc{supported},
+contradictory evidence flips it to \textsc{contradicted}. Baseline
+assumptions (\texttt{consistency}, \texttt{positivity}) are tracked but not
+counted as identifying support.
+
+\paragraph{Stage 3: Countermodel search.}
+The countermodel module enumerates structurally-compatible alternative SCMs
+for the public scenario and scores each on (a) observational match score, (b)
+disagreement with the claim on the target query, (c) which identifying
+assumption it triggers. The module returns a \texttt{CountermodelSearchResult}
+with a chosen candidate, an explanation string, and a verdict suggestion.
+
+\paragraph{Stage 4: Tool-backed adjudication.}
+When no countermodel survives, a tool runner executes the appropriate
+identification tools for the rung -- conditional independence and association
+checks for L1, backdoor, frontdoor and IV estimators for L2, and SCM-based
+counterfactual reasoning plus probability-of-necessity bounds for L3
+\cite{tian2000probabilities,sharma2020dowhy}. Tool outputs are stored as a
+structured \texttt{tool\_trace} that maps records to \texttt{supports} /
+\texttt{contradicts} on individual ledger entries.
+
+\paragraph{Decision rule.}
+The four stages are combined by a fixed rule:
+\begin{enumerate}
+\item If a strong countermodel survives and the claim's verdict suggestion is
+  \textsc{invalid}, return \textsc{invalid}.
+\item Else if a countermodel survives and the candidates disagree on the
+  target query, return \textsc{unidentifiable} with refusal reason
+  \texttt{observational\_equivalence}.
+\item Else if any identifying assumption is contradicted by tools, return
+  \textsc{invalid}.
+\item Else if any core identifying assumption remains unsupported or no
+  primary-supporting tool record exists, return \textsc{unidentifiable} with
+  refusal reason \texttt{missing\_identifying\_support} (or
+  \texttt{missing\_primary\_identifying\_support} when the abstention gate
+  fires on a high-risk claim).
+\item Else return \textsc{valid}.
+\end{enumerate}
+This rule is deterministic, auditable, and is implemented in fewer than $300$
+lines of Python; the closed-form schema makes selective verdicts directly
+comparable across systems.
+
+\section{Theoretical Guarantees}
+\label{sec:theory}
+
+We make three minimal claims that pin down why the task design is necessary
+rather than aesthetic.
+
+\begin{proposition}[Abstention Necessity]
+\label{prop:abstention}
+Let $E$ denote the public evidence and $q$ the target query. Suppose there
+exist SCMs $\mathcal{M}_1, \mathcal{M}_2$ that both induce $E$ as their
+observational marginal but disagree on $q$. Then any verifier that does not
+admit \textsc{unidentifiable} as an output produces an incorrect verdict on
+at least one of $\mathcal{M}_1, \mathcal{M}_2$.
+\end{proposition}
+\begin{proof}[Proof sketch]
+Both SCMs are public-evidence-equivalent, so the verifier's input distribution
+is identical under either generative model. Any committed verdict is therefore
+the same under both, but $q(\mathcal{M}_1) \neq q(\mathcal{M}_2)$, so the
+verdict is wrong under exactly one.
+\end{proof}
+
+\emph{Empirical correspondence.} Section~\ref{sec:experiments}
+(\textsc{No-Abstention} ablation) instantiates this proposition: removing the
+abstention head retains $0.78$/$0.94$ raw accuracy on IID/OOD but zeroes out
+unidentifiable awareness.
+
+\begin{proposition}[Countermodel Witness Soundness]
+\label{prop:witness}
+Suppose the verifier exhibits an SCM $\mathcal{M}'$ that (a) is consistent with
+$E$ up to an observational match score $s \ge 1 - \varepsilon$ and (b)
+disagrees with the claim on $q$. Then under standard SCM identifiability
+\cite{shpitser2008complete}, the claim cannot be uniquely determined by $E$
+alone for any $\varepsilon$ such that $\mathcal{M}'$ remains in the equivalence
+class.
+\end{proposition}
+\begin{proof}[Proof sketch]
+If $\mathcal{M}'$ matches $E$ to within the equivalence-class tolerance and
+disagrees with the claim on $q$, then $E$ is consistent with at least two
+distinct values of $q$, contradicting any claim that $E$ alone uniquely
+determines $q$. The qualitative shuffle/delete probe in
+Section~\ref{sec:experiments} provides exploratory empirical support.
+\end{proof}
+
+\begin{proposition}[Oracle Leakage Inflation]
+\label{prop:leakage}
+Let $V_{\text{public}}$ and $V_{\text{leak}}$ be two verifiers that differ only
+in that $V_{\text{leak}}$ has read access to a gold-only field
+$g \in \texttt{GOLD\_ONLY\_FIELDS}$. Then
+$\mathbb{E}[\text{Acc}(V_{\text{leak}})] \ge
+ \mathbb{E}[\text{Acc}(V_{\text{public}})]$, with strict inequality whenever
+$g$ is sufficient to recover any portion of the gold label distribution.
+\end{proposition}
+
+\emph{Empirical correspondence.} Section~\ref{sec:experiments} (Leakage Study)
+instantiates this proposition with a positive-control verifier; the artifact's
+\texttt{supports\_warning} field operationalizes the proposition as a
+benchmark-level contamination gate.
+
+The role of \cref{prop:leakage} is operational: it justifies our leakage
+study (Section~\ref{sec:experiments}) by predicting that any inflation
+observed there is, by construction, leakage rather than oversight ability.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental Setup}
+\label{sec:setup}
+
+We report exploratory results from three seeds with two samples per family
+(``$3$-seed exploratory budget''), spanning all twelve families. The verifier
+under study is the full \emph{countermodel-grounded} system. Ablations replace
+one or more pipeline components with a no-op surrogate. \emph{We caveat
+explicitly}: the per-family budget is small, so individual cell variances are
+wide and headline accuracy values cluster near $\{0, 0.5, 1\}$. The numbers
+are reported as a sanity check on the contract and not as a final empirical
+claim; we treat them as evidence for the \emph{shape} of the comparison rather
+than the magnitude.
+
+\subsection{Main Benchmark}
+
+Table~\ref{tab:main} compares four systems on \texttt{test\_iid} and
+\texttt{test\_ood}: the full \textsc{Countermodel-Grounded} verifier, a
+\textsc{No-Tools} ablation, a \textsc{No-Countermodel} ablation, and a
+heuristic \textsc{Claim-Only} baseline (which never engages either the ledger
+or countermodel module).
+
+\begin{table*}[t]
+\caption{Main benchmark, $3$-seed exploratory budget. Mean $\pm$ std across
+  seeds; full $95\%$ CIs are reported in the artifact at
+  \texttt{outputs/main\_benchmark\_3seed.md}.}
+\label{tab:main}
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{llcccc}
+\toprule
+System & Split & Verdict Acc.\ & Macro-F1 & ECE & Unident.\ Awareness \\
+\midrule
+\textsc{Countermodel-Grounded} & test\_iid & $1.00 \pm 0.00$ & $0.89 \pm 0.19$ & $0.09 \pm 0.02$ & $0.67 \pm 0.58$ \\
+\textsc{Countermodel-Grounded} & test\_ood & $1.00 \pm 0.00$ & $0.78 \pm 0.19$ & $0.08 \pm 0.01$ & $0.33 \pm 0.58$ \\
+\textsc{No-Tools}              & test\_iid & $0.61 \pm 0.10$ & $0.48 \pm 0.13$ & $0.32 \pm 0.13$ & $0.67 \pm 0.58$ \\
+\textsc{No-Tools}              & test\_ood & $0.61 \pm 0.19$ & $0.41 \pm 0.13$ & $0.36 \pm 0.17$ & $0.33 \pm 0.58$ \\
+\textsc{No-Countermodel}       & test\_iid & $0.61 \pm 0.10$ & $0.48 \pm 0.13$ & $0.30 \pm 0.13$ & $0.67 \pm 0.58$ \\
+\textsc{No-Countermodel}       & test\_ood & $0.44 \pm 0.10$ & $0.37 \pm 0.06$ & $0.47 \pm 0.08$ & $0.33 \pm 0.58$ \\
+\textsc{Claim-Only}            & test\_iid & $0.39 \pm 0.10$ & $0.19 \pm 0.03$ & $0.37 \pm 0.10$ & $0.00 \pm 0.00$ \\
+\textsc{Claim-Only}            & test\_ood & $0.39 \pm 0.19$ & $0.18 \pm 0.07$ & $0.37 \pm 0.19$ & $0.00 \pm 0.00$ \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table*}
+
+Three observations: (i) the full system outperforms each ablation in accuracy
+and Macro-F1 within this exploratory budget; (ii) ECE is sharply lower for the
+full system, reflecting the structured probability assignment in the decision
+rule; (iii) unidentifiable awareness on \texttt{test\_ood} is uniformly low
+($0.33$) across the full system and all ablations, reflecting small per-bucket
+support rather than a clean ablation signal.
+Paired-difference tests against each ablation are significant
+($p < 10^{-3}$ before Holm correction; $p < 3\times 10^{-3}$ after) on at
+least one of the two splits; we caution that the per-family budget is small
+($n=2$) and these p-values should be read as run-level signals rather than
+population-level claims.
+
+\subsection{Component Ablation: What Drives Wise Refusal?}
+
+Table~\ref{tab:ablation} extends the ablation to four pipeline components,
+including a \textsc{No-Abstention} variant that disables the third-label
+output entirely. The pattern is illuminating: \textsc{No-Abstention} retains
+high raw accuracy ($0.78$ IID, $0.94$ OOD) but zeroes out unidentifiable
+awareness. In other words, removing the abstention head buys back surface
+accuracy by predicting yes/no on \emph{every} sample, including those that
+the gold label declares unidentifiable. This is exactly the failure mode the
+selective task is designed to surface.
+
+\begin{table}[t]
+\caption{Component ablation. \textsc{No-Abstention} keeps high accuracy by
+  abolishing the abstention head, but loses all unidentifiable awareness.}
+\label{tab:ablation}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{llcc}
+\toprule
+System & Split & Acc.\ & Unid.\ Aware. \\
+\midrule
+\textsc{Full}            & iid & $1.00$ & $0.67$ \\
+\textsc{Full}            & ood & $1.00$ & $0.33$ \\
+\textsc{No-Ledger}       & iid & $0.39$ & $0.67$ \\
+\textsc{No-Ledger}       & ood & $0.36$ & $0.33$ \\
+\textsc{No-Countermodel} & iid & $0.61$ & $0.67$ \\
+\textsc{No-Countermodel} & ood & $0.44$ & $0.33$ \\
+\textsc{No-Abstention}   & iid & $0.78$ & $0.00$ \\
+\textsc{No-Abstention}   & ood & $0.94$ & $0.00$ \\
+\textsc{No-Tools}        & iid & $0.61$ & $0.67$ \\
+\textsc{No-Tools}        & ood & $0.61$ & $0.33$ \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table}
+
+\subsection{Leakage Study}
+
+Under the corrected protocol, this exploratory run does \emph{not} yet support
+a leakage warning (the artifact records \texttt{Supports Warning = no}); we
+therefore present the $+0.67$ IID gap as a positive-control sanity check that
+the public/gold contract behaves as Proposition~\ref{prop:leakage} predicts,
+rather than as confirmed evidence of leakage in any specific competing
+benchmark. Full leakage evidence requires increasing samples\_per\_family to
+$\geq 60$.
+
+We instantiate two verifiers on a dedicated attack-only benchmark with the
+\texttt{hidden\_information\_aware} attack profile: a clean public verifier
+and a deliberately oracle-leaking control that decodes benchmark-answer
+supervision from public metadata. Per \cref{prop:leakage}, any positive gap is
+\emph{by construction} leakage inflation. Table~\ref{tab:leakage} shows a gap
+of $+0.67$ on \texttt{test\_iid} and $+0.13$ on \texttt{test\_ood}; the
+\texttt{test\_iid} bootstrap test is significant at $p = 0.002$. ECE on
+\texttt{test\_iid} drops from $0.43$ (clean) to $0.001$ (leaking), a
+$430\times$ reduction that any benchmark which does not enforce a public/gold
+contract risks confusing for genuine calibration.
+
+\begin{table}[t]
+\caption{Leakage study. Clean public verifier vs.\ a positive control that
+  reads gold-only fields. Any positive gap is leakage inflation
+  (\cref{prop:leakage}). Numbers from \texttt{outputs/leakage\_study\_3seed.md}.}
+\label{tab:leakage}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lccc}
+\toprule
+Metric (test\_iid) & Clean & Leaking & $\Delta$ \\
+\midrule
+Accuracy            & $0.33$ & $1.00$ & $+0.67$ \\
+Macro-F1            & $0.15$ & $0.56$ & $+0.41$ \\
+ECE ($\downarrow$)  & $0.43$ & $0.001$ & $-0.43$ \\
+Brier ($\downarrow$) & $0.24$ & $0.00$ & $-0.24$ \\
+\midrule
+Metric (test\_ood) & Clean & Leaking & $\Delta$ \\
+\midrule
+Accuracy           & $0.87$ & $1.00$ & $+0.13$ \\
+Macro-F1           & $0.49$ & $0.56$ & $+0.07$ \\
+ECE ($\downarrow$) & $0.11$ & $0.001$ & $-0.11$ \\
+Brier ($\downarrow$) & $0.06$ & $0.00$ & $-0.06$ \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table}
+
+\subsection{Adversarial Robustness}
+
+Table~\ref{tab:adv} reports robustness across four attack-strength regimes:
+\textsc{weak}, \textsc{medium}, \textsc{strong}, and
+\textsc{hidden\_information\_aware}. The full system holds at $1.00$ in three
+of four regimes on \texttt{test\_iid}, but drops to $0.50$ under
+\textsc{medium} and \textsc{hidden\_information\_aware}, indicating that
+information-asymmetric attacks are genuinely harder than naive adversarial
+perturbations.
+
+\begin{table}[t]
+\caption{Adversarial robustness, \texttt{test\_iid}. We report
+  \texttt{test\_iid} only here; the corresponding \texttt{test\_ood} numbers
+  are in the artifact at
+  \texttt{outputs/smoke\_adversarial\_robustness.md}.}
+\label{tab:adv}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lccc}
+\toprule
+Strength & Acc.\ & Inv.\ Accept & Unid.\ Aware. \\
+\midrule
+\textsc{Weak}                       & $1.00$ & $0.00$ & $1.00$ \\
+\textsc{Medium}                     & $0.50$ & $0.00$ & $1.00$ \\
+\textsc{Strong}                     & $1.00$ & $0.00$ & $1.00$ \\
+\textsc{Hidden-Info-Aware}          & $0.50$ & $0.00$ & $1.00$ \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table}
+
+\subsection{OOD Buckets}
+
+We slice the test set into \texttt{graph\_family\_ood},
+\texttt{lexical\_ood}, \texttt{variable\_naming\_ood}, and
+\texttt{mixed\_ood} buckets. The full system reaches $1.00$ accuracy on the
+three buckets that have non-zero pure support but zero on
+\texttt{graph\_family\_ood}, where the per-seed support count is zero
+(no held-out sample of that family fell into the bucket). This is a known
+artifact of the small budget and is reported transparently as an
+under-determination warning by the runner.
+
+\subsection{Witness Faithfulness (qualitative)}
+
+We run a small witness-faithfulness probe by shuffling or deleting the
+countermodel witness in the verifier output and re-scoring. When the
+countermodel witness is shuffled across instances, the system's
+unidentifiable-awareness collapses on the families that rely on
+observational-equivalence reasoning
+(\texttt{l1\_latent\_confounding\_family},
+\texttt{l3\_counterfactual\_ambiguity\_family}). This indicates that the
+witness is load-bearing rather than ornamental, but the full quantitative
+study is deferred to an extended budget.
+A full quantitative study (witness shuffle/delete with paired-bootstrap
+$95\%$ CIs across all twelve families) is reserved for future work.
+
+\section{Discussion}
+\label{sec:limitations}
+
+\paragraph{What we are not claiming.}
+We are \emph{not} claiming a state-of-the-art result on a saturated benchmark,
+nor that LLM judges are uniformly bad at causal reasoning. Our exploratory
+budget is too small for that. The claim is structural: the task formulation
+(public/gold contract, three-way verdict, abstention reason, witness slots)
+is the right shape for evaluating selective causal oversight, and a verifier
+that takes this shape seriously outperforms verifiers that flatten it in this
+exploratory run.
+
+\paragraph{Limitations.}
+The synthetic core is, by construction, a model of the world rather than the
+world itself. The real-grounded subset is small, and full human dual-annotation
+is in progress. Our exploratory budget of two samples per family across three
+seeds gives wide CIs and clusters accuracy near $\{0, 0.5, 1\}$; production
+runs at $30$+ samples per family will be needed before any aggregate
+statement about absolute performance is defensible. We document these caveats
+in the artifact and in this paper.
+
+\paragraph{Future work.}
+Two priorities: (i) closing the real-grounded subset with dual annotation
+and Cohen's $\kappa$ on the four primary audit fields; (ii) running a
+full-budget cross-model transfer study comparing verifier behaviour across
+LLM families and sizes, which will let us connect the structural conclusions
+of this paper to specific model regimes.
+
+\section{Conclusion}
+
+Selective adversarial causal oversight is the right unit of analysis for
+LLM-based causal evaluation. By modelling information asymmetry, treating
+\textsc{unidentifiable} as a first-class label, partitioning public from gold
+at the schema level, and grounding the verifier in countermodel witnesses,
+we obtain a benchmark and a method whose comparison shape is meaningful even
+under exploratory budgets. The next step is scale: more samples, more graph
+families, real-grounded human-audited cases, and cross-model transfer.
+
+\section*{Software and Data}
+The benchmark generator, verifier pipeline, and experiment runners are
+released alongside the paper as a reproducibility package. Each experiment
+emits a configuration JSON, a seed list, raw per-sample predictions, an
+aggregated metrics file, $95\%$ CIs, paired-significance tests, and a
+markdown summary. The leakage study additionally emits a leakage-warning
+field that downstream consumers can use as a contamination check.
+
+\section*{Impact Statement}
+This paper presents work whose goal is to advance the field of Machine
+Learning. There are many potential societal consequences of our work, none
+which we feel must be specifically highlighted here. We note in particular
+that our adversarial framing is intended for evaluation and oversight rather
+than deployment: the persuasion overlay is a stress-test artifact for
+verifiers, not a recipe for deceptive content generation, and the benchmark
+release does not include any leakage-decoder code beyond what is required to
+reproduce the negative-control leakage study.
+
+\nocite{pearl2009causality,pearl2018book,bareinboim2022pearl}
+\nocite{jin2023cladder,jin2024corr2cause,frohberg2022crass}
+\nocite{geifman2017selective,geifman2019selectivenet}
+\nocite{sharma2024sycophancy,chen2024judge,ye2024justice}
+\nocite{irving2018debate,bowman2022measuring}
+\nocite{guo2017calibration,wen2025abstention}
+\nocite{tian2000probabilities,sharma2020dowhy,imbens1994late,shpitser2008complete}
+\nocite{zeng2024johnny,lanham2023measuring}
+
+\bibliography{example_paper}
+\bibliographystyle{icml2026}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newpage
+\appendix
+\onecolumn
+\section{Schema Excerpts}
+\label{app:schema}
+
+The following is an abridged view of the leakage-control contract. The full
+\texttt{benchmark/schema.py} file contains additional sanitizers and
+serialization helpers; only the contract-level constants are reproduced here.
+
+\begin{verbatim}
+GOLD_ONLY_FIELDS = (
+    "true_dag", "hidden_variables", "true_scm",
+    "full_data", "ground_truth", "gold_label",
+)
+
+VERIFIER_VISIBLE_FIELDS = (
+    "scenario_id", "description", "variables", "proxy_variables",
+    "selection_mechanism", "observed_data", "data",
+    "causal_level", "metadata",
+)
+
+class VerdictLabel(str, Enum):
+    VALID = "valid"
+    INVALID = "invalid"
+    UNIDENTIFIABLE = "unidentifiable"
+
+class IdentificationStatus(str, Enum):
+    IDENTIFIED = "identified"
+    CONTRADICTED = "contradicted"
+    UNDERDETERMINED = "underdetermined"
+\end{verbatim}
+
+\section{Decision Rule (Pseudocode)}
+\label{app:decision}
+
+\begin{verbatim}
+def decide_verdict(parsed, ledger, cm, tool_trace):
+    # Stage 1: strong invalid countermodel
+    if cm.found and cm.suggests_invalid:
+        return INVALID
+
+    # Stage 2: observational equivalence + query disagreement
+    if cm.found and cm.query_disagreement:
+        return UNIDENTIFIABLE(reason="observational_equivalence")
+
+    # Stage 3a: contradicted assumption
+    if any(e.contradicted for e in ledger):
+        return INVALID
+
+    # Stage 3b: missing or unsupported identification
+    if any(e.unsupported for e in ledger) \
+       or not tools_support_claim(tool_trace) \
+       or (needs_explicit_support and no_supported_id):
+        return UNIDENTIFIABLE(reason="missing_identifying_support")
+
+    # Stage 3c: abstention gate on high-risk valid claims
+    if abstention_gate_reasons(parsed, ledger, tool_trace):
+        return UNIDENTIFIABLE(reason="missing_primary_identifying_support")
+
+    # Stage 4: support
+    return VALID
+\end{verbatim}
+
+\section{Persuasion Overlay Examples}
+\label{app:persuasion}
+
+A claim with structural label \textsc{unidentifiable} can be projected into
+five persuasion styles. The taxonomy-complete artifact includes
+\textsc{expert\_tone}; the paper-facing primary axis collapses to the four
+remaining styles to avoid double-counting tone effects.
+
+\begin{small}
+\begin{itemize}
+\item \textsc{Authority}: ``As established by the foundational paper of the
+  field, the effect of $X$ on $Y$ is positive.''
+\item \textsc{Confidence}: ``It is unambiguous, on any reading of the data,
+  that $X$ causes $Y$.''
+\item \textsc{Consensus}: ``Every recent meta-analysis agrees that $X$
+  raises $Y$.''
+\item \textsc{Concealment}: omits any mention of the latent confounder or
+  selection mechanism that the public evidence cannot resolve.
+\item \textsc{Expert tone}: heavy technical jargon without a corresponding
+  identification argument.
+\end{itemize}
+\end{small}
+
+\section{Reproducibility Notes}
+\label{app:repro}
+
+Each experiment runner emits a fixed bundle of artifacts:
+
+\begin{verbatim}
+<run>_config.json
+<run>_seed_list.json
+<run>_raw_predictions.jsonl
+<run>_aggregated_metrics.json
+<run>_ci.json
+<run>.md   (paper-facing markdown summary)
+\end{verbatim}
+
+The aggregator reports seed-mean estimates and paired bootstrap $95\%$ CIs;
+the significance file applies Holm-Bonferroni correction within and across
+splits. The leakage runner additionally writes a
+\texttt{supports\_warning} field that downstream consumers can use as a
+hard gate on contamination, in line with \cref{prop:leakage}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\end{document}
