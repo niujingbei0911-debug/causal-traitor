@@ -29,8 +29,15 @@ try:
 except ImportError:  # pragma: no cover - openai is declared in requirements.txt
     AsyncOpenAI = None  # type: ignore
 
+try:
+    from dotenv import find_dotenv, load_dotenv
+except ImportError:  # pragma: no cover - python-dotenv is declared in requirements.txt
+    find_dotenv = None  # type: ignore
+    load_dotenv = None  # type: ignore
+
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DOTENV_LOADED_PATHS: set[str] = set()
 
 
 def _looks_like_api_key(value: Any) -> bool:
@@ -277,11 +284,22 @@ class LLMService:
     # config key; otherwise the service falls back to mock mode.
     _DEFAULT_DASHSCOPE_API_KEY: str | None = None
 
+    @staticmethod
+    def _load_dotenv_if_available() -> None:
+        if find_dotenv is None or load_dotenv is None:
+            return
+        dotenv_path = find_dotenv(usecwd=True)
+        if not dotenv_path or dotenv_path in _DOTENV_LOADED_PATHS:
+            return
+        load_dotenv(dotenv_path, override=False)
+        _DOTENV_LOADED_PATHS.add(dotenv_path)
+
     def _resolve_api_key(self) -> str | None:
-        if self._explicit_api_key and _looks_like_api_key(self._explicit_api_key):
-            return str(self._explicit_api_key)
+        self._load_dotenv_if_available()
         for env_name in ("DASHSCOPE_API_KEY", "OPENAI_API_KEY"):
             value = os.environ.get(env_name)
             if value and _looks_like_api_key(value):
                 return value
+        if self._explicit_api_key and _looks_like_api_key(self._explicit_api_key):
+            return str(self._explicit_api_key)
         return self._DEFAULT_DASHSCOPE_API_KEY or None

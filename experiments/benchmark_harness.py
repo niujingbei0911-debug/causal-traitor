@@ -1031,8 +1031,14 @@ def apply_attacker_model_family_profile(
 
 
 def _sample_transcript(sample: BenchmarkSample) -> str | None:
-    transcript = sample.claim.attacker_rationale.strip()
-    return transcript or None
+    """Return verifier-visible dialogue only.
+
+    Benchmark claims carry ``attacker_rationale`` as private construction
+    metadata. Treating it as a public transcript leaks attack intent and hidden
+    evidence into verifier-side systems, so generated benchmark samples expose
+    no transcript unless a future public transcript field is added explicitly.
+    """
+    return None
 
 
 def _verifier_tool_context(sample: BenchmarkSample) -> dict[str, Any]:
@@ -1048,9 +1054,6 @@ def _verifier_tool_context(sample: BenchmarkSample) -> dict[str, Any]:
         "claim_stance": "pro_causal",
         "_parsed_claim": parsed_claim,
     }
-    if transcript is not None:
-        payload["transcript"] = transcript
-        payload["attacker_rationale"] = transcript
     return payload
 
 

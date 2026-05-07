@@ -44,7 +44,7 @@
 
 \twocolumn[
   \icmltitle{Selective Adversarial Causal Oversight:\texorpdfstring{\\}{}%
-    A Leakage-Free Benchmark and Countermodel-Grounded Verifier under Information Asymmetry}
+    An Information-Partitioned Benchmark Contract and Countermodel-Grounded Reference Verifier}
 
   \icmlsetsymbol{equal}{*}
 
@@ -73,19 +73,21 @@ information, exploit non-identifiability, and present persuasive but incomplete
 arguments. We formalize this setting as \emph{selective adversarial causal
 oversight}, where a verifier with only public evidence must decide whether a
 natural-language claim is \textsc{valid}, \textsc{invalid}, or
-\textsc{unidentifiable}. We release a leakage-free benchmark with schema-level
-public/gold partitioning, twelve graph families across Pearl's hierarchy,
-structurally grounded attacks, a persuasion overlay, and OOD buckets for
-mechanism, attack-family, context shift, and paired-flip shifts. We also
-propose \emph{countermodel-grounded selective verification}, a four-stage
-pipeline that parses the claim, builds an assumption ledger, searches for
-observationally compatible countermodels, and returns an abstention-aware
-verdict. On the current mainline snapshot, the full system improves the
-accuracy/unsafe-acceptance/wise-refusal tradeoff over judge-style baselines,
-while a deliberately leaking positive control behaves exactly as our
-oracle-leakage proposition predicts. These results illustrate why
-public/gold partitioning is a necessary contract for causal oversight
-benchmarks.
+\textsc{unidentifiable}. We present a benchmark contract and prototype
+synthetic core with schema-level public/gold partitioning, twelve graph
+families across Pearl's hierarchy, structurally grounded attacks, a persuasion
+overlay, and OOD buckets for graph, mechanism, attack-family, context-shift,
+and paired-flip shifts. We also propose \emph{countermodel-grounded selective
+verification}, a reference pipeline that parses the claim, builds an
+assumption ledger, searches for observationally compatible countermodels, and
+returns an abstention-aware verdict. On a fixed-code exploratory snapshot
+(three seeds, ten samples per family, difficulty $0.55$), the reference
+verifier improves the accuracy/unsafe-acceptance/wise-refusal tradeoff over
+judge-style baselines, while a deliberately leaking positive control shows how
+oracle information can inflate benchmark scores. These results support the
+need for public/gold partitioning in causal oversight benchmarks; larger
+synthetic runs, real-grounded cases, API-based model baselines, and human audit
+remain required before claiming a mature benchmark release.
 \end{abstract}
 
 \section{Introduction}
@@ -125,17 +127,19 @@ scores the verifier's \emph{three-way} verdict
 $\{\textsc{valid}, \textsc{invalid}, \textsc{unidentifiable}\}$ together with a
 structured assumption ledger, refusal reason, and witness.
 
-\paragraph{Our benchmark.} We construct a synthetic core of twelve graph
-families that explicitly mark family-level identifiability, observationally
-equivalent counter-structures, and a finite catalogue of structural attack
-modes. A persuasion overlay projects each claim into authority, expert-tone,
-confidence, consensus and concealment styles. Splits enforce partitioned
-holdouts at the family, mechanism, attack-family, context-shift, and paired-flip
-levels, and leakage-prone metadata fields are stripped from the verifier-side
-view by construction (Section~\ref{sec:benchmark}). A literature-grounded
-subset is reserved as an external sanity check.
+\paragraph{Our benchmark contract.} We construct a prototype synthetic core of
+twelve graph families that explicitly mark family-level identifiability,
+observationally equivalent counter-structures, and a finite catalogue of
+structural attack modes. A persuasion overlay projects each claim into
+authority, expert-tone, confidence, consensus and concealment styles. Splits
+enforce partitioned holdouts at the family, mechanism, attack-family,
+context-shift, and paired-flip levels, and leakage-prone metadata fields are
+stripped from the verifier-side view by construction
+(Section~\ref{sec:benchmark}). Following our current research plan, the
+literature-grounded subset and dual human audit are treated as required
+completion gates rather than finished evidence.
 
-\paragraph{Our verifier.} \emph{Countermodel-grounded selective verification}
+\paragraph{Our reference verifier.} \emph{Countermodel-grounded selective verification}
 (Section~\ref{sec:method}) is a four-stage pipeline that (i) parses the claim
 into structured slots, (ii) builds an assumption ledger of identifying
 preconditions, (iii) searches for observationally compatible counter-SCMs that
@@ -149,17 +153,18 @@ missing-information specification.
 and oracle leakage to formal properties of the task. Empirically
 (Section~\ref{sec:experiments}), on the current three-seed,
 ten-samples-per-family workspace snapshot we observe that (a) the full system
-improves verdict accuracy over \textsc{Direct Judge} from $0.50$ to $0.83$ on
-\texttt{test\_iid} and from $0.16$ to $0.85$ on \texttt{test\_ood}, while
+improves verdict accuracy over \textsc{Direct Judge} from $0.504$ to $1.000$ on
+\texttt{test\_iid} and from $0.161$ to $0.891$ on \texttt{test\_ood}, while
 driving unsafe acceptance from $0.89/0.97$ to $0.00/0.00$; (b) a deliberate
 oracle-leaking positive control reaches $1.00$ accuracy on both dedicated
-attack-only splits and therefore remains a useful negative example for any
+attack-only splits and therefore remains a useful positive control for any
 benchmark that does not enforce a public/gold partition; and (c) removing
-\emph{abstention} preserves much of IID raw accuracy ($0.79$) but collapses
-wise-refusal recall to $0.00$ on both splits, which is exactly the failure mode
-the task is designed to surface. We discuss limitations -- in particular, the
-still-modest benchmark scale and the exploratory status of the leakage study --
-in Section~\ref{sec:experiments} and Section~\ref{sec:limitations}.
+\emph{abstention} preserves high IID raw accuracy ($0.856$) but collapses
+unidentifiable-awareness to $0.00$ on both splits, which is exactly the failure
+mode the task is designed to surface. We discuss limitations -- in particular,
+the still-modest benchmark scale, missing real-grounded human audit, and API
+model-baseline status -- in Section~\ref{sec:experiments} and
+Section~\ref{sec:limitations}.
 
 \section{Related Work}
 \label{sec:related}
@@ -170,12 +175,33 @@ causal benchmark spanning Pearl's three rungs, with ground truth derived from
 an oracle inference engine. \textsc{Corr2Cause} \cite{jin2024corr2cause} probes
 whether LLMs can convert correlational statements into causal structure; the
 authors report near-random performance and a sharp drop under perturbation.
-\textsc{CRASS} \cite{frohberg2022crass} targets counterfactual conditionals.
-We differ from these benchmarks in three structural ways: (i) we strip oracle
-fields from the verifier's view by schema construction rather than by prompt
-hygiene, (ii) we elevate \textsc{unidentifiable} to a first-class supervised
-label, and (iii) we evaluate not just accuracy but a wise-refusal-aware
+\textsc{CRASS} \cite{frohberg2022crass} targets counterfactual conditionals,
+and \textsc{CausalReasoningBenchmark}
+\cite{sawarni2026causalreasoningbenchmark} separates causal identification
+from numerical estimation on real datasets. We differ from these benchmarks in
+three structural ways: (i) we strip oracle fields from the verifier's view by
+schema construction rather than by prompt hygiene, (ii) we elevate
+\textsc{unidentifiable} to a first-class supervised label tied to public
+evidence, and (iii) we evaluate not just accuracy but a wise-refusal-aware
 metric bundle and a deliberately leaking positive control.
+
+\paragraph{Fact verification and real-grounding sources.}
+\textsc{CHECKWHY} \cite{si2024checkwhy} studies causal fact verification with
+claim-evidence-argument triplets and support/refute/not-enough-info labels,
+while \textsc{SciFact} \cite{wadden2020scifact} and \textsc{HealthVer}
+\cite{sarrouti2021healthver} focus on scientific and health claim
+verification. Clinical evidence corpora such as Evidence Inference 2.0
+\cite{deyoung2020evidenceinference} and \textsc{EvidenceOutcomes}
+\cite{zhou2025evidenceoutcomes} provide treatment-comparator-outcome language,
+and causal/uplift datasets such as ACIC challenges \cite{acic2019},
+\textsc{RealCause} \cite{neal2021realcause}, Criteo Uplift \cite{criteo2014uplift},
+\textsc{KuaiRec}/\textsc{KuaiRand} \cite{gao2022kuairec,gao2022kuairand},
+and the Open Bandit Dataset \cite{saito2021openbandit} provide grounded
+settings with interventions, exposure policies, or logged decisions. We use
+these as target sources for the planned real-grounded subset, but their native
+labels do not directly equal our
+$\{\textsc{valid},\textsc{invalid},\textsc{unidentifiable}\}$ causal
+identifiability contract and therefore require re-annotation.
 
 \paragraph{Selective prediction and abstention.}
 Classical selective prediction
@@ -445,8 +471,8 @@ verdict is wrong under exactly one.
 
 \emph{Empirical correspondence.} Section~\ref{sec:experiments}
 (\textsc{No-Abstention} ablation) instantiates this proposition: removing the
-abstention head retains $0.79$/$0.44$ raw accuracy on IID/OOD but zeroes out
-wise-refusal recall.
+abstention head retains $0.856$/$0.462$ raw accuracy on IID/OOD but zeroes out
+unidentifiable-awareness.
 
 \begin{proposition}[Countermodel Witness Soundness]
 \label{prop:witness}
@@ -471,8 +497,10 @@ Let $V_{\text{public}}$ and $V_{\text{leak}}$ be two verifiers that differ only
 in that $V_{\text{leak}}$ has read access to a gold-only field
 $g \in \texttt{GOLD\_ONLY\_FIELDS}$. Then
 $\mathbb{E}[\text{Acc}(V_{\text{leak}})] \ge
- \mathbb{E}[\text{Acc}(V_{\text{public}})]$, with strict inequality whenever
-$g$ is sufficient to recover any portion of the gold label distribution.
+ \mathbb{E}[\text{Acc}(V_{\text{public}})]$ for an oracle-positive-control
+verifier that can decode label signal from $g$, with strict inequality
+whenever the decoded signal changes at least one expected error of
+$V_{\text{public}}$ into a correct prediction.
 \end{proposition}
 
 \emph{Empirical correspondence.} Section~\ref{sec:experiments} (Leakage Study)
@@ -492,16 +520,17 @@ observed there is, by construction, leakage rather than oversight ability.
 
 We report the current workspace snapshot: three seeds with ten samples per
 family across all twelve graph families. The main benchmark runs at difficulty
-$0.70$ and compares the full \emph{countermodel-grounded} verifier against
+$0.55$ and compares the full \emph{countermodel-grounded} verifier against
 judge-style, debate-style, tool-only and refusal-aware baselines. The component
 ablation suite replaces one or more pipeline stages with a no-op surrogate. We
-also include a dedicated attack-only leakage study at difficulty $0.55$ under
-the hidden-information-aware profile. These runs are reproducible and
-paper-facing, but they are not a saturation study: the synthetic core is still
-modest, the leakage study remains exploratory, and the real-grounded and
-human-audit phases are not yet complete. The current workspace also ships a
-$150$-case audit package and a pilot cross-model transfer matrix; we treat both
-as scope markers rather than headline claims.
+also include a dedicated attack-only leakage study under the
+hidden-information-aware profile. These runs are reproducible from the current
+repository state, but they are not a saturation study: the synthetic core is
+still modest, the leakage study is exploratory because it uses ten rather than
+the pre-registered sixty samples per family, and the real-grounded, human-audit
+and API-based model-baseline phases are not yet complete. We therefore present
+the empirical results as fixed-code evidence for the benchmark contract and
+reference verifier, not as a final benchmark release.
 
 \subsection{Main Benchmark}
 
@@ -515,9 +544,9 @@ table for readability; the full artifact retains it.
 
 \begin{table*}[t]
 \caption{Main benchmark, current mainline snapshot (three seeds, ten
-  samples per family, difficulty $0.70$). Mean $\pm$ std across seeds; full
+  samples per family, difficulty $0.55$). Mean $\pm$ std across seeds; full
   $95\%$ CIs, calibration metrics, and over-refusal rates are reported in
-  the accompanying \texttt{exp\_main\_benchmark.md} artifact.}
+  \texttt{outputs/review\_fixed\_exp\_main\_benchmark.md}.}
 \label{tab:main}
 \begin{center}
 \begin{small}
@@ -526,18 +555,18 @@ table for readability; the full artifact retains it.
 \toprule
 System & Split & Verdict Acc.\ & Unsafe Accept & Wise Refusal Recall \\
 \midrule
-\textsc{Direct Judge}          & test\_iid & $0.50 \pm 0.09$ & $0.89 \pm 0.19$ & $0.50 \pm 0.50$ \\
-\textsc{Direct Judge}          & test\_ood & $0.16 \pm 0.06$ & $0.97 \pm 0.03$ & $0.18 \pm 0.03$ \\
-\textsc{CoT Judge}             & test\_iid & $0.29 \pm 0.08$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
-\textsc{CoT Judge}             & test\_ood & $0.57 \pm 0.05$ & $0.00 \pm 0.00$ & $0.96 \pm 0.04$ \\
+\textsc{Direct Judge}          & test\_iid & $0.504 \pm 0.090$ & $0.889 \pm 0.192$ & $0.500 \pm 0.500$ \\
+\textsc{Direct Judge}          & test\_ood & $0.161 \pm 0.056$ & $0.970 \pm 0.029$ & $0.184 \pm 0.034$ \\
+\textsc{CoT Judge}             & test\_iid & $0.322 \pm 0.019$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
+\textsc{CoT Judge}             & test\_ood & $0.592 \pm 0.053$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
 \textsc{Tool Baseline}         & test\_iid & $0.54 \pm 0.12$ & $0.37 \pm 0.26$ & $0.67 \pm 0.58$ \\
-\textsc{Tool Baseline}         & test\_ood & $0.36 \pm 0.10$ & $0.42 \pm 0.06$ & $0.58 \pm 0.10$ \\
-\textsc{Debate Baseline}       & test\_iid & $0.29 \pm 0.08$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
-\textsc{Debate Baseline}       & test\_ood & $0.43 \pm 0.04$ & $0.00 \pm 0.00$ & $0.59 \pm 0.07$ \\
-\textsc{Refusal-Aware}         & test\_iid & $0.61 \pm 0.10$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
-\textsc{Refusal-Aware}         & test\_ood & $0.47 \pm 0.09$ & $0.00 \pm 0.00$ & $0.57 \pm 0.06$ \\
-\textsc{Countermodel-Grounded} & test\_iid & $0.83 \pm 0.11$ & $0.00 \pm 0.00$ & $1.00 \pm 0.00$ \\
-\textsc{Countermodel-Grounded} & test\_ood & $0.85 \pm 0.01$ & $0.00 \pm 0.00$ & $0.79 \pm 0.06$ \\
+\textsc{Tool Baseline}         & test\_ood & $0.346 \pm 0.092$ & $0.423 \pm 0.057$ & $0.560 \pm 0.067$ \\
+\textsc{Debate Baseline}       & test\_iid & $0.322 \pm 0.019$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
+\textsc{Debate Baseline}       & test\_ood & $0.456 \pm 0.040$ & $0.000 \pm 0.000$ & $0.610 \pm 0.026$ \\
+\textsc{Refusal-Aware}         & test\_iid & $0.752 \pm 0.045$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
+\textsc{Refusal-Aware}         & test\_ood & $0.504 \pm 0.090$ & $0.000 \pm 0.000$ & $0.591 \pm 0.020$ \\
+\textsc{Countermodel-Grounded} & test\_iid & $1.000 \pm 0.000$ & $0.000 \pm 0.000$ & $1.000 \pm 0.000$ \\
+\textsc{Countermodel-Grounded} & test\_ood & $0.891 \pm 0.005$ & $0.000 \pm 0.000$ & $0.825 \pm 0.018$ \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -551,29 +580,33 @@ failure mode that motivates the task: extremely high unsafe acceptance
 \textsc{CoT Judge}, \textsc{Debate Baseline}, and the explicit
 \textsc{Refusal-Aware} baseline drive unsafe acceptance to zero, but do so by
 over-refusing: on \texttt{test\_ood}, their over-refusal rates are
-$0.86$, $0.70$, and $0.59$, respectively, versus $0.07$ for the full system.
-Third, \textsc{Countermodel-Grounded} is the best-balanced selective verifier
-in this snapshot: it maintains zero unsafe acceptance, preserves strong
-wise-refusal recall, and substantially improves verdict accuracy over both
-direct and tool-style baselines.
+$0.850$, $0.677$, and $0.557$, respectively, versus $0.010$ for the full
+system. Third, the near-perfect IID score should be read as a reference-verifier
+sanity check on the synthetic contract, not as evidence that generic LLMs have
+solved causal oversight. The stronger claim is the tradeoff shape: the full
+pipeline maintains zero unsafe acceptance while preserving OOD wise-refusal
+recall and substantially improving raw verdict accuracy over public judge-style
+baselines.
 
 \subsection{Component Ablation: What Drives Wise Refusal?}
 
 Table~\ref{tab:ablation} extends the ablation to four pipeline components,
 including a \textsc{No-Abstention} variant that disables the third-label
 output entirely. Two patterns are especially important. First,
-\textsc{No-Abstention} preserves much of the IID raw accuracy of the full
-system ($0.79$ vs.\ $0.83$) but zeroes out wise-refusal recall on both splits,
-which is exactly the failure mode the selective task is designed to surface.
-Second, removing the countermodel stage hurts both OOD verdict accuracy and OOD
-wise-refusal recall ($0.49$ and $0.59$). The current snapshot is not a strict
-monotone ranking across every metric: \textsc{No-Tools} slightly exceeds the
-full system on OOD raw accuracy ($0.87$ vs.\ $0.85$), but does so with
-substantially higher over-refusal ($0.19$ vs.\ $0.07$) and lower
-wise-refusal precision ($0.84$ vs.\ $0.93$).
+\textsc{No-Abstention} preserves high IID raw accuracy ($0.856$) but zeroes
+out unidentifiable-awareness on both splits, which is exactly the failure mode
+the selective task is designed to surface. Second, removing the countermodel
+stage hurts both OOD verdict accuracy and OOD unidentifiable-awareness
+($0.504$ and $0.591$). The current snapshot is not a strict monotone ranking
+across every metric: \textsc{No-Tools} exceeds the full system on OOD raw
+accuracy ($0.911$ vs.\ $0.891$) and unidentifiable-awareness
+($0.964$ vs.\ $0.825$), but does so with substantially higher over-refusal
+($0.150$ vs.\ $0.010$) and lower wise-refusal precision
+($0.877$ vs.\ $0.989$). We therefore interpret the full system as the more
+balanced reference verifier, not as uniformly best on every scalar metric.
 
 \begin{table}[t]
-\caption{Component ablation. Wise-refusal recall is the task-critical
+\caption{Component ablation. Unidentifiable-awareness is the task-critical
   third-label measure; the full artifact includes precision, over-refusal,
   calibration, and countermodel coverage.}
 \label{tab:ablation}
@@ -584,18 +617,18 @@ wise-refusal precision ($0.84$ vs.\ $0.93$).
 \resizebox{\columnwidth}{!}{%
 \begin{tabular}{llcc}
 \toprule
-System & Split & Acc.\ & Wise Refusal Recall \\
+System & Split & Acc.\ & Unident.\ Awareness \\
 \midrule
-\textsc{Full}            & iid & $0.83$ & $1.00$ \\
-\textsc{Full}            & ood & $0.85$ & $0.79$ \\
-\textsc{No-Ledger}       & iid & $0.18$ & $1.00$ \\
-\textsc{No-Ledger}       & ood & $0.57$ & $1.00$ \\
-\textsc{No-Countermodel} & iid & $0.61$ & $1.00$ \\
-\textsc{No-Countermodel} & ood & $0.49$ & $0.59$ \\
-\textsc{No-Abstention}   & iid & $0.79$ & $0.00$ \\
-\textsc{No-Abstention}   & ood & $0.44$ & $0.00$ \\
-\textsc{No-Tools}        & iid & $0.50$ & $1.00$ \\
-\textsc{No-Tools}        & ood & $0.87$ & $0.93$ \\
+\textsc{Full}            & iid & $1.000$ & $1.000$ \\
+\textsc{Full}            & ood & $0.891$ & $0.825$ \\
+\textsc{No-Ledger}       & iid & $0.144$ & $1.000$ \\
+\textsc{No-Ledger}       & ood & $0.520$ & $1.000$ \\
+\textsc{No-Countermodel} & iid & $0.752$ & $1.000$ \\
+\textsc{No-Countermodel} & ood & $0.504$ & $0.591$ \\
+\textsc{No-Abstention}   & iid & $0.856$ & $0.000$ \\
+\textsc{No-Abstention}   & ood & $0.462$ & $0.000$ \\
+\textsc{No-Tools}        & iid & $0.570$ & $1.000$ \\
+\textsc{No-Tools}        & ood & $0.911$ & $0.964$ \\
 \bottomrule
 \end{tabular}
 }
@@ -616,20 +649,22 @@ $60$.
 We instantiate two verifiers on a dedicated attack-only benchmark with the
 hidden-information-aware attack profile: a clean public verifier and a
 deliberately oracle-leaking control that decodes benchmark-answer supervision
-from public metadata. Per \cref{prop:leakage}, any positive gap is
+from a protocol-violating public metadata partition. Per \cref{prop:leakage},
+any positive gap is
 \emph{by construction} leakage inflation. Table~\ref{tab:leakage} shows a gap
-of $+0.19$ on \texttt{test\_iid} and $+0.12$ on \texttt{test\_ood}. The
-artifact's warning logic is supported on \texttt{test\_ood} but not yet on
-\texttt{test\_iid}, so the run only partially supports a formal leakage
-warning. Even so, ECE drops from $0.168$ to $0.001$ on \texttt{test\_iid} and
-from $0.101$ to $0.001$ on \texttt{test\_ood}, illustrating how leaked
-supervision can masquerade as calibration.
+of $+0.421$ on \texttt{test\_iid} and $+0.155$ on \texttt{test\_ood}. Both
+paired tests support the warning in this small run (bootstrap
+$p=0.0395/0.0015$, McNemar $p=0.0156/0.0000$ before the table's rounding), but
+the protocol notice still prevents treating this as formal leakage evidence
+until the sample count is increased. ECE drops from $0.400$ to $0.000$ on
+\texttt{test\_iid} and from $0.077$ to $0.000$ on \texttt{test\_ood},
+illustrating how leaked supervision can masquerade as calibration.
 
 \begin{table}[t]
-\caption{Leakage study. Clean public verifier vs.\ a positive control that
-  reads gold-only fields. Any positive gap is leakage inflation
+\caption{Leakage study. Clean public verifier vs.\ an oracle-positive control
+  with protocol-violating public metadata. Any positive gap is leakage inflation
   (\cref{prop:leakage}). Numbers from the accompanying
-  \texttt{exp\_leakage\_study.md} artifact.}
+  \texttt{outputs/review\_fixed\_exp\_leakage\_study.md} artifact.}
 \label{tab:leakage}
 \vskip 0.05in
 \begin{center}
@@ -639,17 +674,17 @@ supervision can masquerade as calibration.
 \toprule
 Metric (test\_iid) & Clean & Leaking & $\Delta$ \\
 \midrule
-Accuracy             & $0.81$ & $1.00$ & $+0.19$ \\
-Macro-F1             & $0.53$ & $0.67$ & $+0.13$ \\
-ECE ($\downarrow$)   & $0.168$ & $0.001$ & $-0.167$ \\
-Brier ($\downarrow$) & $0.076$ & $0.00$ & $-0.076$ \\
+Accuracy             & $0.579$ & $1.000$ & $+0.421$ \\
+Macro-F1             & $0.373$ & $0.667$ & $+0.294$ \\
+ECE ($\downarrow$)   & $0.400$ & $0.000$ & $-0.400$ \\
+Brier ($\downarrow$) & $0.220$ & $0.000$ & $-0.220$ \\
 \midrule
 Metric (test\_ood) & Clean & Leaking & $\Delta$ \\
 \midrule
-Accuracy             & $0.88$ & $1.00$ & $+0.12$ \\
-Macro-F1             & $0.56$ & $0.67$ & $+0.10$ \\
-ECE ($\downarrow$)   & $0.101$ & $0.001$ & $-0.100$ \\
-Brier ($\downarrow$) & $0.049$ & $0.00$ & $-0.049$ \\
+Accuracy             & $0.845$ & $1.000$ & $+0.155$ \\
+Macro-F1             & $0.563$ & $0.667$ & $+0.104$ \\
+ECE ($\downarrow$)   & $0.077$ & $0.000$ & $-0.077$ \\
+Brier ($\downarrow$) & $0.086$ & $0.000$ & $-0.086$ \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -662,10 +697,12 @@ Brier ($\downarrow$) & $0.049$ & $0.00$ & $-0.049$ \\
 Table~\ref{tab:adv} reports robustness across four attack-strength regimes:
 \textsc{weak}, \textsc{medium}, \textsc{strong}, and a leak-aware
 hidden-information profile. On \texttt{test\_ood}, the verifier stays
-in a relatively narrow $0.81$--$0.83$ accuracy band across all four regimes
-while maintaining zero invalid acceptance. The \texttt{test\_iid} picture is
-less stable: the hidden-information-aware regime drops to $0.58 \pm 0.42$,
-making it the hardest current IID stress case.
+in a narrow $0.845$ band across all four regimes while maintaining zero invalid
+acceptance. The \texttt{test\_iid} picture is less stable: the
+hidden-information-aware regime drops to $0.579 \pm 0.417$, making it the
+hardest current IID stress case. Because the weak/medium/strong rows are nearly
+identical in this snapshot, we treat this section as exploratory stress
+testing rather than a headline robustness claim.
 
 \begin{table}[t]
 \caption{Adversarial robustness. Mean $\pm$ std across seeds; full results are
@@ -681,14 +718,14 @@ making it the hardest current IID stress case.
 \toprule
 Strength & Split & Acc.\ & Wise Refusal Recall \\
 \midrule
-\textsc{Weak}                       & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
-\textsc{Weak}                       & ood & $0.81 \pm 0.05$ & $0.65 \pm 0.07$ \\
-\textsc{Medium}                     & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
-\textsc{Medium}                     & ood & $0.83 \pm 0.04$ & $0.68 \pm 0.09$ \\
-\textsc{Strong}                     & iid & $0.89 \pm 0.19$ & $0.67 \pm 0.58$ \\
-\textsc{Strong}                     & ood & $0.82 \pm 0.03$ & $0.66 \pm 0.08$ \\
-\textsc{Leak-Aware}                 & iid & $0.58 \pm 0.42$ & $0.67 \pm 0.58$ \\
-\textsc{Leak-Aware}                 & ood & $0.81 \pm 0.06$ & $0.79 \pm 0.09$ \\
+\textsc{Weak}                       & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
+\textsc{Weak}                       & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
+\textsc{Medium}                     & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
+\textsc{Medium}                     & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
+\textsc{Strong}                     & iid & $0.889 \pm 0.192$ & $0.667 \pm 0.577$ \\
+\textsc{Strong}                     & ood & $0.845 \pm 0.039$ & $0.685 \pm 0.082$ \\
+\textsc{Leak-Aware}                 & iid & $0.579 \pm 0.417$ & $0.667 \pm 0.577$ \\
+\textsc{Leak-Aware}                 & ood & $0.845 \pm 0.067$ & $0.844 \pm 0.104$ \\
 \bottomrule
 \end{tabular}
 }
@@ -702,11 +739,13 @@ Strength & Split & Acc.\ & Wise Refusal Recall \\
 The current OOD artifact evaluates the five buckets defined by the benchmark
 contract: graph-family, mechanism, attack-family, context-shift, and
 paired-flip OOD. The full system remains perfect on graph-family and mechanism
-OOD, stays strong on attack-family ($0.77$ accuracy) and context-shift
-($0.80$), and drops sharply on paired-flip ($0.42$). All five buckets retain zero unsafe
-acceptance in the current snapshot, so paired-flip is best understood as a
-structured abstention-and-disambiguation failure mode rather than a simple
-unsafe-acceptance failure.
+OOD ($1.000$ accuracy), stays strong on attack-family ($0.820$) and
+context-shift ($0.883$), and drops sharply on paired-flip ($0.439$). The
+paired-flip bucket also has the largest macro-F1 gap ($0.423$), making it the
+clearest current stress case for structural disambiguation. The current
+significance artifact reports uninformative $p=1$ rows for these bucket gaps,
+so we avoid strong significance claims until the OOD estimand and sample count
+are upgraded.
 
 \subsection{Witness Faithfulness (qualitative)}
 
@@ -763,11 +802,13 @@ under current mainline budgets. The next step is scale: more samples, more graph
 families, real-grounded human-audited cases, and cross-model transfer.
 
 \section*{Software and Data}
-The benchmark generator, verifier pipeline, and experiment runners are
-released alongside the paper as a reproducibility package. Each experiment
-emits a configuration JSON, a seed list, raw per-sample predictions, an
-aggregated metrics file, $95\%$ CIs, paired-significance tests, and a
-markdown summary. The leakage study additionally emits a leakage-warning
+The repository contains the benchmark generator, verifier pipeline, experiment
+runners, fixed-code result artifacts, and regression tests used for the current
+snapshot. A paper-facing reproducibility package will be released after the
+real-grounded subset, human audit, and API-model baseline runs are completed.
+Each experiment emits a configuration JSON, a seed list, raw per-sample
+predictions, an aggregated metrics file, $95\%$ CIs, paired-significance tests,
+and a markdown summary. The leakage study additionally emits a leakage-warning
 field that downstream consumers can use as a contamination check.
 
 \section*{Impact Statement}
@@ -776,9 +817,9 @@ Learning. There are many potential societal consequences of our work, none
 which we feel must be specifically highlighted here. We note in particular
 that our adversarial framing is intended for evaluation and oversight rather
 than deployment: the persuasion overlay is a stress-test artifact for
-verifiers, not a recipe for deceptive content generation, and the benchmark
-release does not include any leakage-decoder code beyond what is required to
-reproduce the negative-control leakage study.
+verifiers, not a recipe for deceptive content generation. The leakage decoder
+is isolated as a positive-control diagnostic so that contamination risks are
+measurable rather than hidden.
 
 \nocite{pearl2009causality,pearl2018book,bareinboim2022pearl}
 \nocite{jin2023cladder,jin2024corr2cause,frohberg2022crass}
@@ -788,6 +829,9 @@ reproduce the negative-control leakage study.
 \nocite{guo2017calibration,wen2025abstention}
 \nocite{tian2000probabilities,sharma2020dowhy,imbens1994late,shpitser2008complete}
 \nocite{zeng2024johnny,lanham2023measuring}
+\nocite{si2024checkwhy,sawarni2026causalreasoningbenchmark,deyoung2020evidenceinference}
+\nocite{zhou2025evidenceoutcomes,acic2019,neal2021realcause,criteo2014uplift}
+\nocite{gao2022kuairec,gao2022kuairand,saito2021openbandit,wadden2020scifact,sarrouti2021healthver}
 
 \bibliography{example_paper}
 \bibliographystyle{icml2026}
@@ -814,7 +858,7 @@ GOLD_ONLY_FIELDS = (
 VERIFIER_VISIBLE_FIELDS = (
     "scenario_id", "description", "variables", "proxy_variables",
     "selection_mechanism", "observed_data", "data",
-    "causal_level", "metadata",
+    "causal_level", "sanitized_public_metadata",
 )
 
 class VerdictLabel(str, Enum):

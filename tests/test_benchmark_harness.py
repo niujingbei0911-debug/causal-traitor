@@ -263,13 +263,12 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertIn("persuasion_style_id", record)
         self.assertIn("pressure_type", record)
 
-    def test_run_main_verifier_passes_attacker_rationale_to_tools_and_pipeline(self) -> None:
+    def test_run_main_verifier_does_not_pass_attacker_rationale_to_verifier_side(self) -> None:
         sample = build_seed_benchmark_run(
             seed=0,
             difficulty=0.55,
             samples_per_family=1,
         ).samples[0]
-        transcript = sample.claim.attacker_rationale.strip()
         captured: dict[str, object] = {}
 
         def fake_execute_for_claim(self, scenario, claim, level, context=None):
@@ -297,11 +296,11 @@ class BenchmarkHarnessTests(unittest.TestCase):
                 payload = _run_main_verifier(sample)
 
         self.assertEqual(payload["predicted_label"], "valid")
-        self.assertEqual(captured["pipeline_transcript"], transcript)
-        self.assertEqual(captured["tool_context"]["transcript"], transcript)
-        self.assertEqual(captured["tool_context"]["attacker_rationale"], transcript)
-        self.assertEqual(captured["pipeline_tool_context"]["transcript"], transcript)
-        self.assertEqual(captured["pipeline_tool_context"]["attacker_rationale"], transcript)
+        self.assertIsNone(captured["pipeline_transcript"])
+        self.assertNotIn("transcript", captured["tool_context"])
+        self.assertNotIn("attacker_rationale", captured["tool_context"])
+        self.assertNotIn("transcript", captured["pipeline_tool_context"])
+        self.assertNotIn("attacker_rationale", captured["pipeline_tool_context"])
 
     def test_shared_harness_rejects_leakage_study_system_name_alias(self) -> None:
         with self.assertRaises(ValueError):
