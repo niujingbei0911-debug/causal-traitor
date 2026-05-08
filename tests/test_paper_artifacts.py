@@ -19,6 +19,7 @@ def test_build_paper_facing_package_freezes_traceable_tables(tmp_path: Path) -> 
     poster_metrics = json.loads((tmp_path / "poster_metrics.json").read_text(encoding="utf-8"))
     main_rows = (tmp_path / "main_table_rows.tex").read_text(encoding="utf-8")
     ood_rows = (tmp_path / "ood_table_rows.tex").read_text(encoding="utf-8")
+    llm_rows = (tmp_path / "llm_baseline_table_rows.tex").read_text(encoding="utf-8")
 
     assert package["manifest"] == tmp_path / "manifest.json"
     assert manifest["artifact_status"] == "fixed-code exploratory snapshot"
@@ -30,6 +31,10 @@ def test_build_paper_facing_package_freezes_traceable_tables(tmp_path: Path) -> 
     assert manifest["api_smoke_runs"]
     assert manifest["api_smoke_runs"][0]["summary"]["fallback_records"] == 0
     assert manifest["api_smoke_runs"][0]["files"]["json"]["sha256"]
+    assert manifest["api_model_baseline_status"] == "full_llm_baseline_matrix_completed"
+    assert manifest["llm_baseline_matrix"]["summary"]["total_predictions"] == 1245
+    assert manifest["llm_baseline_matrix"]["summary"]["failed"] == 0
+    assert manifest["llm_baseline_matrix"]["files"]["aggregated_metrics"]["sha256"]
 
     assert (
         r"\textsc{Direct Judge} & test\_iid & $0.504 \pm 0.090$ & "
@@ -40,11 +45,15 @@ def test_build_paper_facing_package_freezes_traceable_tables(tmp_path: Path) -> 
         r"$0.000 \pm 0.000$ & $0.825 \pm 0.018$ \tabularnewline"
     ) in main_rows
     assert r"\textsc{Paired-Flip} & $0.439$ & $0.485$ & $0.000$ & $0.714$ & $[0.409, 0.455]$ \tabularnewline" in ood_rows
+    assert r"\textsc{GPT-5.5 xhigh} & test\_ood & $221$ & $0.545$ & $0.499$ & $0.071$ & $0.608$ \tabularnewline" in llm_rows
+    assert r"\textsc{DeepSeek v4 max} & test\_ood & $221$ & $0.461$ & $0.394$ & $0.010$ & $0.218$ \tabularnewline" in llm_rows
 
     assert poster_metrics["setup"]["difficulty"] == 0.55
     assert poster_metrics["setup"]["seeds"] == [0, 1, 2]
     assert poster_metrics["main"]["countermodel_grounded"]["test_ood"]["verdict_accuracy"]["mean"] == pytest.approx(0.891)
     assert poster_metrics["ood"]["paired_flip_ood"]["verdict_accuracy"]["mean"] == pytest.approx(0.439)
+    assert poster_metrics["llm_baseline"]["summary"]["total_predictions"] == 1245
+    assert poster_metrics["llm_baseline"]["models"]["gpt55_xhigh"]["test_ood"]["accuracy"]["mean"] == pytest.approx(0.545)
 
     combined_generated_text = "\n".join(
         path.read_text(encoding="utf-8")
@@ -107,6 +116,7 @@ def test_paper_uses_tabular_safe_row_inputs() -> None:
     assert r"\input{../../outputs/paper_facing" not in paper
     assert r"\input ../../outputs/paper_facing/main_table_rows.tex" in paper
     assert r"\input ../../outputs/paper_facing/ood_table_rows.tex" in paper
+    assert r"\input ../../outputs/paper_facing/llm_baseline_table_rows.tex" in paper
 
 
 def test_poster_builder_exports_pdf_artifact() -> None:
@@ -118,15 +128,15 @@ def test_poster_builder_exports_pdf_artifact() -> None:
     assert "export_poster_pdf(" in source
 
 
-def test_poster_builder_formats_api_smoke_status_from_json() -> None:
-    text = build_poster._api_smoke_text(
+def test_poster_builder_formats_full_llm_matrix_status_from_json() -> None:
+    text = build_poster._llm_baseline_text(
         {
-            "model": {"name": "qwen2.5-7b-instruct"},
-            "summary": {"total": 9, "fallback_records": 0},
-        },
-        {
-            "summary": {"total": 12, "fallback_records": 0},
+            "summary": {"total_predictions": 1245, "failed": 0, "fallback_records": 0, "parse_errors": 0},
+            "models": {
+                "gpt55_xhigh": {"test_ood": {"accuracy": {"mean": 0.545}, "unsafe_acceptance_rate": {"mean": 0.0706}}},
+                "deepseek_v4": {"test_ood": {"accuracy": {"mean": 0.4608}, "unsafe_acceptance_rate": {"mean": 0.0104}}},
+            },
         },
     )
 
-    assert text == "API smoke: qwen2.5-7b, IID n=9/OOD n=12, raw response, fallback=0; full matrix pending."
+    assert text == "LLM matrix: 5 models, n=1245, failed=0, parse=0, fallback=0; best OOD GPT-5.5 acc=0.545, unsafe=0.071."

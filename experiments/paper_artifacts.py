@@ -68,6 +68,13 @@ ADVERSARIAL_ORDER: tuple[tuple[str, str], ...] = (
 
 SPLITS: tuple[str, ...] = ("test_iid", "test_ood")
 ROW_END = r" \tabularnewline"
+LLM_BASELINE_ORDER: tuple[tuple[str, str], ...] = (
+    ("qwen25_7b", "Qwen2.5 7B"),
+    ("qwen25_14b", "Qwen2.5 14B"),
+    ("qwen25_72b", "Qwen2.5 72B"),
+    ("gpt55_xhigh", "GPT-5.5 xhigh"),
+    ("deepseek_v4", "DeepSeek v4 max"),
+)
 
 
 def _read_json(path: Path) -> Any:
@@ -242,13 +249,54 @@ def _render_adversarial_rows(metrics: dict[str, Any]) -> str:
     return "\n".join(rows) + "\n"
 
 
-def _poster_metrics(source_runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _load_llm_baseline_aggregate(source_dir: Path) -> dict[str, Any] | None:
+    path = source_dir / "llm_baseline_matrix" / "llm_baseline_aggregated_metrics.json"
+    return _read_json(path) if path.exists() else None
+
+
+def _llm_metric(split_metrics: dict[str, Any], metric_name: str) -> float:
+    value = split_metrics[metric_name]
+    if isinstance(value, dict):
+        return float(value["mean"])
+    return float(value)
+
+
+def _render_llm_baseline_rows(aggregate: dict[str, Any] | None) -> str:
+    if not aggregate:
+        return ""
+    rows: list[str] = []
+    models = aggregate.get("models", {})
+    for model_id, label in LLM_BASELINE_ORDER:
+        if model_id not in models:
+            continue
+        for split_name in SPLITS:
+            split_metrics = models[model_id].get(split_name)
+            if not split_metrics:
+                continue
+            rows.append(
+                " & ".join(
+                    (
+                        _sc(label),
+                        _split_label(split_name),
+                        f"${int(split_metrics['total'])}$",
+                        f"${_llm_metric(split_metrics, 'accuracy'):.3f}$",
+                        f"${_llm_metric(split_metrics, 'macro_f1'):.3f}$",
+                        f"${_llm_metric(split_metrics, 'unsafe_acceptance_rate'):.3f}$",
+                        f"${_llm_metric(split_metrics, 'wise_refusal_recall'):.3f}$",
+                    )
+                )
+                + ROW_END
+            )
+    return "\n".join(rows) + "\n"
+
+
+def _poster_metrics(source_runs: dict[str, dict[str, Any]], llm_baseline: dict[str, Any] | None = None) -> dict[str, Any]:
     main = source_runs["main_benchmark"]["aggregated_metrics"]
     ood = source_runs["ood_generalization"]["aggregated_metrics"]
     leakage = source_runs["leakage_study"]["aggregated_metrics"]
     main_config = source_runs["main_benchmark"]["config"]["effective"]
     seeds = source_runs["main_benchmark"]["seeds"]
-    return {
+    payload = {
         "status": "fixed-code exploratory snapshot",
         "setup": {
             "seeds": seeds,
@@ -285,6 +333,13 @@ def _poster_metrics(source_runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
             for split_name in SPLITS
         },
     }
+    if llm_baseline:
+        payload["llm_baseline"] = {
+            "status": llm_baseline.get("status"),
+            "summary": llm_baseline.get("summary", {}),
+            "models": llm_baseline.get("models", {}),
+        }
+    return payload
 
 
 def _discover_api_smoke_runs(source_dir: Path) -> list[dict[str, Any]]:
@@ -392,6 +447,7 @@ def build_paper_facing_package(
         }
 
     generated = generated_at_utc or datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    llm_baseline_aggregate = _load_llm_baseline_aggregate(source_path)
     written: dict[str, Path] = {}
     table_payloads = {
         "main_table_rows.tex": _render_main_rows(source_runs["main_benchmark"]["aggregated_metrics"]),
@@ -399,13 +455,14 @@ def build_paper_facing_package(
         "leakage_table_rows.tex": _render_leakage_rows(source_runs["leakage_study"]["aggregated_metrics"]),
         "ood_table_rows.tex": _render_ood_rows(source_runs["ood_generalization"]["aggregated_metrics"]),
         "adversarial_table_rows.tex": _render_adversarial_rows(source_runs["adversarial_robustness"]["aggregated_metrics"]),
+        "llm_baseline_table_rows.tex": _render_llm_baseline_rows(llm_baseline_aggregate),
     }
     for filename, content in table_payloads.items():
         target = output_path / filename
         target.write_text(content, encoding="utf-8")
         written[filename.removesuffix(".tex")] = target
 
-    poster_metrics = _poster_metrics(source_runs)
+    poster_metrics = _poster_metrics(source_runs, llm_baseline_aggregate)
     poster_metrics_path = output_path / "poster_metrics.json"
     poster_metrics_path.write_text(json.dumps(poster_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     written["poster_metrics"] = poster_metrics_path

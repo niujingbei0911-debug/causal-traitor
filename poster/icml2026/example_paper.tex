@@ -84,10 +84,12 @@ returns an abstention-aware verdict. On a fixed-code exploratory snapshot
 (three seeds, ten samples per family, difficulty $0.55$), the reference
 verifier improves the accuracy/unsafe-acceptance/wise-refusal tradeoff over
 public-view heuristic baselines, while a deliberately leaking positive control
-shows how oracle information can inflate benchmark scores. These results
-support the need for public/gold partitioning in causal oversight benchmarks;
-larger synthetic runs, real-grounded cases, full API-based model baselines, and
-human audit remain required before claiming a mature benchmark release.
+shows how oracle information can inflate benchmark scores. We additionally run
+a five-model live API baseline matrix (Qwen2.5 7B/14B/72B, GPT-5.5 xhigh, and
+DeepSeek v4 max-thinking) with raw-response logging and fallback rejection.
+These results support the need for public/gold partitioning in causal
+oversight benchmarks; larger synthetic runs, real-grounded cases, and human
+audit remain required before claiming a mature benchmark release.
 \end{abstract}
 
 \section{Introduction}
@@ -550,12 +552,16 @@ in \texttt{outputs/paper\_facing/manifest.json}. They are not a saturation
 study: the synthetic core is still modest, the leakage study is exploratory
 because it uses ten rather than the pre-registered sixty samples per family,
 and the real-grounded and human-audit phases are not yet complete. We also
-include two live DashScope \texttt{qwen2.5-7b-instruct} API plumbing smoke runs
-covering the available IID smoke slice ($n=9$) and an OOD smoke slice ($n=12$);
-they record prompts, raw responses, model settings, and fallback status, and
-are not treated as a full API baseline matrix. We therefore present the
-empirical results as fixed-code evidence for the benchmark contract and
-reference verifier, not as a final benchmark release.
+run a live API LLM baseline matrix over five configured models
+(\texttt{qwen2.5-7b-instruct}, \texttt{qwen2.5-14b-instruct},
+\texttt{qwen2.5-72b-instruct}, \texttt{gpt-5.5} with xhigh reasoning, and
+\texttt{deepseek-v4-pro} with max thinking). This matrix covers the same
+three seeds and \texttt{test\_iid}/\texttt{test\_ood} splits, records prompts
+and raw responses, rejects mock fallback, and produced $1245$ predictions with
+zero parse errors and zero fallback records. We therefore present the empirical
+results as fixed-code evidence for the benchmark contract, the reference
+verifier, and the current strong-LLM baseline behaviour, not as a final
+benchmark release.
 
 \subsection{Main Benchmark}
 
@@ -603,6 +609,54 @@ solved causal oversight. The stronger claim is the tradeoff shape: the full
 pipeline maintains zero unsafe acceptance while preserving OOD wise-refusal
 recall and substantially improving raw verdict accuracy over public-view
 heuristic baselines.
+
+\subsection{Strong API LLM Baselines}
+\label{sec:llm-baselines}
+
+Table~\ref{tab:llm-baselines} reports the completed live API baseline matrix.
+Each model receives the same public-view prompt used by the API runner: a
+compact public scenario, the natural-language claim, and an instruction to
+return only a JSON verdict in
+$\{\textsc{valid}, \textsc{invalid}, \textsc{unidentifiable}\}$. All gold-only
+fields, countermodel witnesses, hidden variables, and attacker rationales are
+excluded from the prompt by the same leakage guard used in the smoke tests.
+The matrix is small but fully auditable: 30 model/seed/split jobs, $1245$
+predictions, raw-response logs, model settings, prompt hashes, and zero
+fallback or parse-error records.
+
+\begin{table*}[t]
+\caption{Live API LLM baseline matrix. Qwen rows use DashScope
+  chat-completions; GPT-5.5 uses the Responses API with xhigh reasoning;
+  DeepSeek uses chat-completions with max thinking. Results are generated from
+  \texttt{outputs/llm\_baseline\_matrix/llm\_baseline\_aggregated\_metrics.json}.}
+\label{tab:llm-baselines}
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{llccccc}
+\toprule
+Model & Split & $n$ & Acc.\ & Macro-F1 & Unsafe Accept & Wise Refusal Recall \\
+\midrule
+\input ../../outputs/paper_facing/llm_baseline_table_rows.tex
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table*}
+
+The strongest raw OOD accuracy among these live LLM baselines is GPT-5.5
+xhigh at $0.545$, with unsafe acceptance $0.071$ and wise-refusal recall
+$0.608$. DeepSeek v4 with max thinking reaches similar IID accuracy
+($0.715$) but weaker OOD selective behaviour ($0.461$ accuracy and $0.218$
+wise-refusal recall). The Qwen family shows the expected size-sensitive but
+non-monotone tradeoff: Qwen2.5-14B has the best OOD accuracy among the Qwen
+models ($0.523$) and zero unsafe acceptance, while Qwen2.5-72B has higher
+wise-refusal recall ($0.876$) but still over-refuses substantially. The gap
+between these public-view LLM baselines and the countermodel-grounded
+reference verifier is not evidence that generic LLMs cannot reason causally;
+it is evidence that the public/gold partition and three-way selective verdict
+surface failure modes that are hidden by closed-world causal QA scoring.
 
 \subsection{Component Ablation: What Drives Wise Refusal?}
 
@@ -793,10 +847,12 @@ is in progress. The current mainline snapshot uses ten samples per family, so
 bucket-level estimates can still have wide CIs; the dedicated leakage study is
 explicitly exploratory; and the hidden-information-aware IID robustness slice is
 not yet stable enough to support strong quantitative claims. The API-backed
-model evidence is currently a one-sample smoke test for the runner and audit
-schema, not a competitive baseline. Larger runs, completed human audit, and a
-pre-registered API model matrix will be needed before any broad statement about
-absolute performance is defensible. The existing transfer matrix is likewise a
+model evidence now includes a completed five-model baseline matrix with raw
+responses and fallback rejection, but it is still only one prompt protocol over
+the current synthetic snapshot; larger budgets, more model families, completed
+human audit, and pre-registered model/version freezes will be needed before any
+broad statement about absolute performance is defensible. The existing transfer
+matrix is likewise a
 pilot: it shows that family-swapped attacker/verifier profiles are testable
 inside the benchmark contract, but it is still too small to support
 model-family conclusions. We document these caveats in the artifact and in
@@ -806,9 +862,8 @@ this paper.
 Three priorities: (i) closing the real-grounded subset with dual annotation
 and Cohen's $\kappa$ on the four primary audit fields; (ii) scaling the
 current transfer pilot into a full-budget cross-model study across verifier
-families and sizes; and (iii) replacing the API smoke with a pre-registered
-closed/open model baseline matrix using fixed prompts, raw-response logging,
-and fallback rejection.
+families and sizes; and (iii) extending the completed API baseline matrix to a
+pre-registered model/version freeze with more closed and open model families.
 
 \section{Conclusion}
 
@@ -826,12 +881,15 @@ runners, fixed-code result artifacts, and regression tests used for the current
 snapshot. The current paper-facing reproducibility package is
 \texttt{outputs/paper\_facing/}: its manifest records source artifact hashes,
 configuration, seeds, generated table rows, poster metrics, and the available
-API smoke artifact. Each experiment emits a configuration JSON, a seed list,
+API smoke artifact. The completed LLM baseline matrix is stored in
+\texttt{outputs/llm\_baseline\_matrix/} with a manifest, aggregate JSON,
+summary CSV, raw JSONL predictions, prompt hashes, model settings, and raw
+responses. Each synthetic experiment emits a configuration JSON, a seed list,
 raw per-sample predictions, an aggregated metrics file, $95\%$ CIs,
 paired-significance tests, and a markdown summary. The leakage study
 additionally emits a leakage-warning field that downstream consumers can use
-as a contamination check. The human-audit and full API-model baseline gates are
-explicitly pending rather than backfilled.
+as a contamination check. The human-audit gate remains explicitly pending
+rather than backfilled.
 
 \section*{Impact Statement}
 This paper presents work whose goal is to advance the field of Machine
@@ -970,7 +1028,10 @@ hard gate on contamination, in line with \cref{prop:leakage}. The command
 \texttt{python -m experiments.paper\_artifacts} freezes the paper-facing
 manifest and LaTeX rows in \texttt{outputs/paper\_facing/}. The command
 \texttt{python -m experiments.exp\_api\_baseline\_smoke.run} performs the
-API-smoke path and rejects mock fallback by default.
+API-smoke path and rejects mock fallback by default; the command
+\texttt{python -m experiments.exp\_llm\_baseline\_matrix.run --reuse-existing}
+rebuilds the full LLM baseline manifest and aggregate tables from completed
+per-job JSON outputs.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \end{document}
