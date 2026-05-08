@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +25,11 @@ FONT = "Aptos"
 INK = RGBColor(31, 35, 40)
 MUTED = RGBColor(91, 99, 110)
 LINE = RGBColor(210, 216, 224)
+BG = RGBColor(247, 249, 252)
+NAVY = RGBColor(22, 59, 108)
+LIGHT_BLUE = RGBColor(234, 242, 255)
+LIGHT_GREEN = RGBColor(234, 247, 238)
+LIGHT_YELLOW = RGBColor(255, 248, 230)
 BLUE = "#2F6FED"
 TEAL = "#12805C"
 RED = "#C7362F"
@@ -33,6 +39,32 @@ GRAY = "#697386"
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _reference_template_path() -> Path | None:
+    for path in POSTER_DIR.glob("*.pptx"):
+        if path.name != "poster_template.pptx":
+            return path
+    return None
+
+
+def _extract_template_logo() -> Path | None:
+    template = _reference_template_path()
+    if template is None:
+        return None
+    output = POSTER_DIR / "zju_template_logo.png"
+    if output.exists() and output.stat().st_mtime >= template.stat().st_mtime:
+        return output
+    try:
+        with ZipFile(template) as package:
+            media = [name for name in package.namelist() if name.startswith("ppt/media/")]
+            if not media:
+                return None
+            image_name = media[0]
+            output.write_bytes(package.read(image_name))
+    except Exception:
+        return None
+    return output
 
 
 def _metric(metrics: dict[str, Any], name: str) -> dict[str, float]:
@@ -48,9 +80,9 @@ def _metric(metrics: dict[str, Any], name: str) -> dict[str, float]:
 def _setup_text(poster_metrics: dict[str, Any]) -> str:
     setup = poster_metrics["setup"]
     return (
-        f"Exploratory snapshot | seeds={setup['seeds']} | "
+        f"Exploratory snapshot | 3 seeds | "
         f"10/family | diff={setup['difficulty']:.2f} | "
-        "95% CI where shown"
+        "95% CI"
     )
 
 
@@ -68,10 +100,8 @@ def _llm_baseline_text(llm_payload: dict[str, Any]) -> str:
             best_acc = accuracy
             best_unsafe = float((ood.get("unsafe_acceptance_rate") or {}).get("mean", 0.0))
     return (
-        f"LLM matrix: 5 models, n={int(summary.get('total_predictions', 0))}, "
-        f"failed={int(summary.get('failed', 0))}, parse={int(summary.get('parse_errors', 0))}, "
-        f"fallback={int(summary.get('fallback_records', 0))}; "
-        f"best OOD {best_model} acc={best_acc:.3f}, unsafe={best_unsafe:.3f}."
+        f"API baselines: 5 models, {int(summary.get('total_predictions', 0))} predictions; "
+        f"best OOD {best_model} acc {best_acc:.3f}, unsafe {best_unsafe:.3f}."
     )
 
 
@@ -98,6 +128,7 @@ def _add_textbox(
     shape = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
     frame = shape.text_frame
     frame.clear()
+    frame.word_wrap = True
     frame.margin_left = Inches(0.04)
     frame.margin_right = Inches(0.04)
     frame.margin_top = Inches(0.02)
@@ -115,6 +146,60 @@ def _add_textbox(
     return shape
 
 
+def _add_box(
+    slide: Any,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    *,
+    fill: RGBColor = RGBColor(255, 255, 255),
+    line: RGBColor = LINE,
+    line_width: float = 0.8,
+) -> Any:
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
+    try:
+        shape.adjustments[0] = 0.04
+    except Exception:
+        pass
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill
+    shape.line.color.rgb = line
+    shape.line.width = Pt(line_width)
+    return shape
+
+
+def _add_template_section(slide: Any, number: str, title: str, left: float, top: float, width: float, height: float) -> None:
+    _add_box(slide, left, top, width, height, fill=RGBColor(255, 255, 255), line=LINE, line_width=0.8)
+    bar = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left + 0.19), Inches(top + 0.22), Inches(width - 0.38), Inches(0.61))
+    try:
+        bar.adjustments[0] = 0.08
+    except Exception:
+        pass
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = LIGHT_BLUE
+    bar.line.color.rgb = LIGHT_BLUE
+    heading = f"{number}. {title}" if number else title
+    _add_textbox(slide, heading, left + 0.36, top + 0.27, width - 0.72, 0.44, font_size=25, bold=True, color=NAVY)
+
+
+def _add_callout(
+    slide: Any,
+    title: str,
+    lines: list[str],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    *,
+    fill: RGBColor,
+    font_size: int = 16,
+) -> None:
+    _add_box(slide, left, top, width, height, fill=fill, line=LINE, line_width=0.65)
+    _add_textbox(slide, title, left + 0.18, top + 0.14, width - 0.36, 0.35, font_size=18, bold=True, color=MUTED)
+    _add_bullets(slide, lines, left + 0.18, top + 0.55, width - 0.36, height - 0.65, font_size=font_size)
+
+
 def _add_section_title(slide: Any, title: str, left: float, top: float, width: float) -> None:
     _add_textbox(slide, title, left, top, width, 0.25, font_size=16, bold=True, color=RGBColor(20, 83, 136))
     line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top + 0.28), Inches(width), Inches(0.015))
@@ -124,15 +209,26 @@ def _add_section_title(slide: Any, title: str, left: float, top: float, width: f
 
 
 def _add_panel(slide: Any, left: float, top: float, width: float, height: float) -> None:
-    panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
+    panel = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
     panel.fill.solid()
     panel.fill.fore_color.rgb = RGBColor(250, 252, 255)
     panel.line.color.rgb = LINE
     panel.line.width = Pt(0.75)
 
 
+def _add_chart_frame(slide: Any, image_path: Path, left: float, top: float, width: float, height: float, *, image_width: float | None = None) -> None:
+    frame = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
+    frame.fill.solid()
+    frame.fill.fore_color.rgb = RGBColor(255, 255, 255)
+    frame.line.color.rgb = RGBColor(91, 141, 239)
+    frame.line.width = Pt(0.8)
+    pic_width = image_width if image_width is not None else width - 0.7
+    slide.shapes.add_picture(str(image_path), Inches(left + (width - pic_width) / 2), Inches(top + 0.2), width=Inches(pic_width))
+
+
 def _format_bullets(frame: Any, lines: list[str], *, font_size: int = 13, color: RGBColor = INK) -> None:
     frame.clear()
+    frame.word_wrap = True
     for idx, line in enumerate(lines):
         paragraph = frame.paragraphs[0] if idx == 0 else frame.add_paragraph()
         paragraph.text = line
@@ -145,10 +241,39 @@ def _format_bullets(frame: Any, lines: list[str], *, font_size: int = 13, color:
 
 def _add_bullets(slide: Any, lines: list[str], left: float, top: float, width: float, height: float, *, font_size: int = 13) -> None:
     shape = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+    shape.text_frame.word_wrap = True
     shape.text_frame.margin_left = Inches(0.05)
     shape.text_frame.margin_right = Inches(0.05)
     shape.text_frame.margin_top = Inches(0.02)
     _format_bullets(shape.text_frame, lines, font_size=font_size)
+
+
+def _add_flow_step(slide: Any, label: str, left: float, top: float, width: float, height: float, color: RGBColor, *, font_size: int = 10) -> None:
+    box = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
+    box.fill.solid()
+    box.fill.fore_color.rgb = RGBColor(250, 252, 255)
+    box.line.color.rgb = color
+    box.line.width = Pt(1.1)
+    frame = box.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    frame.margin_left = Inches(0.06)
+    frame.margin_right = Inches(0.06)
+    frame.margin_top = Inches(0.03)
+    frame.margin_bottom = Inches(0.03)
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
+    run = paragraph.add_run()
+    run.text = label
+    run.font.name = FONT
+    run.font.size = Pt(font_size)
+    run.font.bold = True
+    run.font.color.rgb = INK
+
+
+def _add_flow_arrow(slide: Any, left: float, top: float) -> None:
+    _add_textbox(slide, "->", left, top, 0.28, 0.2, font_size=12, bold=True, color=RGBColor(20, 83, 136), align=PP_ALIGN.CENTER)
 
 
 def build_charts() -> None:
@@ -176,12 +301,12 @@ def build_charts() -> None:
         ("gpt55_xhigh", "GPT-5.5"),
         ("countermodel_grounded", "Ours"),
     ]
-    x = np.arange(len(systems))
     acc = []
     acc_low = []
     acc_high = []
     unsafe = []
-    for name, _ in systems:
+    labels = []
+    for name, label in systems:
         if name == "gpt55_xhigh":
             accuracy = _llm_metric(llm_baseline, name, "test_ood", "accuracy")
             acc.append(accuracy)
@@ -194,16 +319,29 @@ def build_charts() -> None:
             acc_low.append(accuracy - main[name]["test_ood"]["verdict_accuracy"]["ci_lower"])
             acc_high.append(main[name]["test_ood"]["verdict_accuracy"]["ci_upper"] - accuracy)
             unsafe.append(main[name]["test_ood"]["unsafe_acceptance_rate"]["mean"])
-    fig, ax = plt.subplots(figsize=(7.0, 3.6), dpi=220)
-    ax.bar(x - 0.18, acc, width=0.36, color=BLUE, label="OOD accuracy", yerr=[acc_low, acc_high], capsize=3)
-    ax.bar(x + 0.18, unsafe, width=0.36, color=RED, label="Unsafe accept")
-    ax.set_xticks(x, [label for _, label in systems], rotation=12, ha="right")
+        labels.append(label)
+    fig, ax = plt.subplots(figsize=(7.0, 3.8), dpi=220)
+    point_colors = [RED, GOLD, GRAY, "#6B5B95", BLUE]
+    sizes = [110, 125, 125, 125, 165]
+    ax.errorbar(unsafe, acc, yerr=[acc_low, acc_high], fmt="none", ecolor="#30363D", elinewidth=1.1, capsize=3, zorder=1)
+    ax.scatter(unsafe, acc, s=sizes, color=point_colors, alpha=0.95, edgecolor="white", linewidth=1.2, zorder=2)
+    offsets = {
+        "Direct": (-34, 0),
+        "Tool": (8, -12),
+        "Refusal-aware": (8, -2),
+        "GPT-5.5": (12, 10),
+        "Ours": (-40, -2),
+    }
+    for x_value, y_value, label in zip(unsafe, acc, labels):
+        ax.annotate(label, (x_value, y_value), xytext=offsets.get(label, (6, 6)), textcoords="offset points", fontsize=9)
+    ax.set_xlim(-0.04, 1.04)
     ax.set_ylim(0, 1.05)
-    ax.set_ylabel("Rate")
-    ax.set_title("Main OOD Tradeoff")
-    ax.legend(loc="upper left", frameon=False, ncol=2)
-    fig.text(0.01, 0.01, _setup_text(poster_metrics), fontsize=8, color="#5B6370")
-    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    ax.set_xlabel("Unsafe acceptance rate (lower is better)")
+    ax.set_ylabel("OOD accuracy (higher is better)")
+    ax.set_title("OOD Accuracy / Safety Tradeoff")
+    ax.grid(axis="both", alpha=0.18)
+    ax.text(0.04, 0.94, "desired corner", transform=ax.transAxes, ha="left", va="top", fontsize=8.5, color="#145388")
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
     fig.savefig(POSTER_DIR / "main_chart.png", transparent=False, facecolor="white")
     plt.close(fig)
 
@@ -220,14 +358,13 @@ def build_charts() -> None:
     lows = [value - ood[name]["verdict_accuracy"]["ci_lower"] for value, (name, _) in zip(values, buckets)]
     highs = [ood[name]["verdict_accuracy"]["ci_upper"] - value for value, (name, _) in zip(values, buckets)]
     colors = [TEAL, TEAL, GOLD, BLUE, RED]
-    fig, ax = plt.subplots(figsize=(7.0, 3.6), dpi=220)
+    fig, ax = plt.subplots(figsize=(7.0, 3.5), dpi=220)
     ax.bar(x, values, color=colors, yerr=[lows, highs], capsize=3)
     ax.set_xticks(x, [label for _, label in buckets], rotation=12, ha="right")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Verdict accuracy")
     ax.set_title("OOD Buckets")
-    fig.text(0.01, 0.01, _setup_text(poster_metrics), fontsize=8, color="#5B6370")
-    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
     fig.savefig(POSTER_DIR / "ood_chart.png", transparent=False, facecolor="white")
     plt.close(fig)
 
@@ -241,7 +378,7 @@ def build_charts() -> None:
     recall = [_metric(ablation[name]["test_ood"], "wise_refusal_recall")["mean"] for name, _ in variants]
     over_refusal = [_metric(ablation[name]["test_ood"], "over_refusal_rate")["mean"] for name, _ in variants]
     accuracy = [_metric(ablation[name]["test_ood"], "verdict_accuracy")["mean"] for name, _ in variants]
-    fig, ax = plt.subplots(figsize=(7.0, 3.6), dpi=220)
+    fig, ax = plt.subplots(figsize=(7.0, 3.45), dpi=220)
     sizes = [150 + value * 450 for value in accuracy]
     colors = [BLUE, GOLD, RED, GRAY]
     ax.scatter(over_refusal, recall, s=sizes, color=colors, alpha=0.9, edgecolor="white", linewidth=1.2)
@@ -251,10 +388,10 @@ def build_charts() -> None:
     ax.set_ylim(0, 1.05)
     ax.set_xlabel("Over-refusal rate")
     ax.set_ylabel("Wise-refusal recall")
-    ax.set_title("Ablation Tradeoff")
+    ax.set_title("Component Ablation (4 Variants)")
     ax.grid(axis="both", alpha=0.18)
-    fig.text(0.01, 0.01, _setup_text(poster_metrics), fontsize=8, color="#5B6370")
-    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    ax.text(0.98, 0.06, "bubble size = OOD accuracy", transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5, color="#5B6370")
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
     fig.savefig(POSTER_DIR / "ablation_chart.png", transparent=False, facecolor="white")
     plt.close(fig)
 
@@ -287,147 +424,309 @@ def build_poster() -> None:
     poster_metrics = _read_json(PAPER_FACING_DIR / "poster_metrics.json")
     manifest = _read_json(PAPER_FACING_DIR / "manifest.json")
     llm_baseline = poster_metrics.get("llm_baseline", {})
+    logo_path = _extract_template_logo()
 
     prs = Presentation()
-    prs.slide_width = Inches(16)
-    prs.slide_height = Inches(9)
+    prs.slide_width = Inches(37.8)
+    prs.slide_height = Inches(28.35)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     bg = slide.background.fill
     bg.solid()
-    bg.fore_color.rgb = RGBColor(255, 255, 255)
+    bg.fore_color.rgb = BG
 
-    # Header
-    header = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(16), Inches(0.82))
-    header.fill.solid()
-    header.fill.fore_color.rgb = RGBColor(245, 248, 252)
-    header.line.fill.background()
+    # Template-style frame and title card.
+    top_bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(37.8), Inches(0.91))
+    top_bar.fill.solid()
+    top_bar.fill.fore_color.rgb = NAVY
+    top_bar.line.fill.background()
+    bottom_bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(27.83), Inches(37.8), Inches(0.51))
+    bottom_bar.fill.solid()
+    bottom_bar.fill.fore_color.rgb = NAVY
+    bottom_bar.line.fill.background()
+    _add_box(slide, 0.87, 0.91, 36.06, 3.07, fill=RGBColor(255, 255, 255), line=LINE)
     _add_textbox(
         slide,
         "Selective Adversarial Causal Oversight",
-        0.45,
-        0.12,
-        8.7,
-        0.38,
-        font_size=27,
+        1.3,
+        1.18,
+        28.0,
+        0.9,
+        font_size=44,
+        bold=True,
+        color=NAVY,
+    )
+    _add_textbox(
+        slide,
+        "Benchmark prototype + countermodel-grounded reference verifier for selective causal refusal",
+        1.35,
+        2.14,
+        27.0,
+        0.35,
+        font_size=22,
         bold=True,
         color=INK,
     )
-    _add_textbox(
-        slide,
-        "Benchmark prototype + countermodel-grounded reference verifier",
-        0.48,
-        0.52,
-        8.7,
-        0.24,
-        font_size=13,
-        color=MUTED,
-    )
-    _add_textbox(slide, "Jingbei Niu   Zeyuan Tong   Yuhang Li | Zhejiang University", 10.5, 0.18, 4.9, 0.24, font_size=12, color=INK, align=PP_ALIGN.RIGHT)
-    _add_textbox(slide, _setup_text(poster_metrics), 8.8, 0.52, 6.6, 0.22, font_size=9, color=MUTED, align=PP_ALIGN.RIGHT)
+    _add_textbox(slide, "Jingbei Niu  •  Zeyuan Tong  •  Yuhang Li", 1.35, 2.6, 19.5, 0.35, font_size=18, bold=True, color=INK)
+    _add_textbox(slide, "Zhejiang University, College of Computer Science and Technology", 1.35, 3.0, 20.5, 0.31, font_size=15, color=MUTED)
+    _add_textbox(slide, _setup_text(poster_metrics), 1.35, 3.33, 16.0, 0.26, font_size=13, color=RGBColor(32, 96, 180))
+    if logo_path is not None:
+        slide.shapes.add_picture(str(logo_path), Inches(30.55), Inches(1.34), width=Inches(6.18))
 
-    # Left column.
-    _add_section_title(slide, "Task & Contract", 0.45, 1.05, 4.65)
-    _add_bullets(
-        slide,
-        [
-            "Verifier sees public scenario + claim only.",
-            "Gold SCM, labels, hidden variables stay evaluator-only.",
-            "Verdict space: VALID / INVALID / UNIDENTIFIABLE.",
-            "Score includes unsafe acceptance and wise refusal.",
-        ],
-        0.45,
-        1.45,
-        4.45,
-        1.0,
-        font_size=13,
-    )
-    _add_panel(slide, 0.45, 2.55, 4.65, 1.35)
-    _add_textbox(slide, "Generated Case", 0.65, 2.72, 1.7, 0.22, font_size=13, bold=True, color=RGBColor(20, 83, 136))
+    # 1. Motivation and abstract.
+    _add_template_section(slide, "1", "Motivation & Abstract", 0.87, 4.37, 11.65, 8.03)
     _add_textbox(
         slide,
-        "Claim: observed association between therapy_flag and yield_score is enough for a causal conclusion.\nCorrect label: UNIDENTIFIABLE, because public evidence leaves reverse causality/confounding open.",
-        0.65,
-        3.0,
-        4.25,
-        0.72,
-        font_size=11,
+        "Causal oversight systems must decide when a public causal claim is valid and when the available evidence is insufficient. "
+        "Current prompt-only and heuristic judges often trade unsafe acceptance against over-refusal. "
+        "We study this tension as a benchmark-first problem: the verifier receives only public scenario evidence, while gold SCMs and labels remain evaluator-only. "
+        "The current artifact is an exploratory prototype, not a mature benchmark release.",
+        1.18,
+        5.24,
+        11.02,
+        1.85,
+        font_size=17,
         color=INK,
     )
-    _add_section_title(slide, "Reference Verifier", 0.45, 4.2, 4.65)
-    _add_bullets(
+    _add_callout(
         slide,
+        "Key contributions",
         [
-            "Parse claim -> build identifying-assumption ledger.",
-            "Search public-compatible counter-SCMs.",
-            "Run Pearl-style tools as supporting evidence.",
-            "Return verdict + refusal reason + witness.",
+            "Selective verdict contract: VALID / INVALID / UNIDENTIFIABLE.",
+            "Countermodel-grounded verifier with evaluator-only gold labels.",
+            "Frozen evidence package: main tradeoff, API baselines, OOD buckets, and ablations.",
         ],
-        0.45,
-        4.6,
-        4.55,
-        1.05,
-        font_size=13,
+        1.17,
+        7.45,
+        11.06,
+        1.8,
+        fill=LIGHT_GREEN,
+        font_size=14,
     )
-    slide.shapes.add_picture(str(POSTER_DIR / "method_pipeline.png"), Inches(0.45), Inches(5.85), width=Inches(4.65))
-
-    # Middle column.
-    _add_section_title(slide, "Main Result", 5.45, 1.05, 5.0)
-    slide.shapes.add_picture(str(POSTER_DIR / "main_chart.png"), Inches(5.35), Inches(1.42), width=Inches(5.25))
-    _add_bullets(
+    _add_callout(
         slide,
+        "Task contract",
+        [
+            "Input: public scenario + causal claim only.",
+            "Hidden: SCM, labels, and hidden variables.",
+            "Risk metric: unsafe acceptance plus wise refusal.",
+        ],
+        1.17,
+        9.55,
+        11.06,
+        2.35,
+        fill=LIGHT_BLUE,
+        font_size=14,
+    )
+
+    # 2. Method overview.
+    _add_template_section(slide, "2", "Method Overview", 0.87, 12.76, 11.65, 6.93)
+    _add_textbox(
+        slide,
+        "The verifier turns a claim into an assumption ledger, searches for public-compatible counter-SCM witnesses, and uses Pearl-style tools as supporting evidence before issuing a selective verdict.",
+        1.18,
+        13.62,
+        11.02,
+        1.0,
+        font_size=16,
+        color=INK,
+    )
+    flow_left = 1.2
+    step_w = 3.0
+    col_gap = 0.55
+    row_gap = 0.5
+    rows = [
+        [
+            ("Claim\n+ scenario", RGBColor(183, 121, 31)),
+            ("Parser", NAVY),
+            ("Assumption\nledger", NAVY),
+        ],
+        [
+            ("Countermodel\nsearch", NAVY),
+            ("Tool-backed\nadjudication", NAVY),
+            ("Verdict\n+ witness", RGBColor(18, 128, 92)),
+        ],
+    ]
+    for row_idx, row in enumerate(rows):
+        top = 15.0 + row_idx * (1.05 + row_gap)
+        for col_idx, (label, color) in enumerate(row):
+            left = flow_left + col_idx * (step_w + col_gap)
+            _add_flow_step(slide, label, left, top, step_w, 1.05, color, font_size=15)
+            if col_idx < len(row) - 1:
+                _add_flow_arrow(slide, left + step_w + 0.12, top + 0.4)
+    _add_textbox(slide, "Counter-SCM witnesses are diagnostic certificates, not leaked gold evidence.", 1.18, 18.35, 11.02, 0.35, font_size=13, color=MUTED)
+
+    # 3. Setup / data / tasks.
+    _add_template_section(slide, "3", "Setup / Data / Tasks", 0.87, 20.04, 11.65, 7.24)
+    _add_callout(
+        slide,
+        "Frozen experiment snapshot",
+        [
+            "Synthetic benchmark families with train/dev/test_iid/test_ood splits.",
+            "Three seeds; 10 cases per family; difficulty 0.55.",
+            "API baseline matrix: 5 models, 1245 predictions.",
+            "All poster numbers are generated from frozen JSON artifacts.",
+        ],
+        1.17,
+        21.04,
+        11.06,
+        3.05,
+        fill=LIGHT_YELLOW,
+        font_size=15,
+    )
+    _add_callout(
+        slide,
+        "Validity boundary",
+        [
+            "Prompt-protocol-specific API baselines, not universal LLM claims.",
+            "Graph/mechanism OOD buckets are saturated smoke tests.",
+            "Release requires larger synthetic runs and real-grounded dual audit.",
+        ],
+        1.17,
+        24.4,
+        11.06,
+        2.35,
+        fill=LIGHT_BLUE,
+        font_size=15,
+    )
+
+    # 4. Main technical details.
+    _add_template_section(slide, "4", "Main Technical Details", 13.07, 4.37, 11.65, 23.41)
+    _add_textbox(
+        slide,
+        "The technical object is selective causal verification: accept identifiable valid/invalid claims, but refuse when public evidence admits multiple compatible causal worlds.",
+        13.39,
+        5.24,
+        11.02,
+        1.1,
+        font_size=16,
+        color=INK,
+    )
+    _add_box(slide, 13.37, 6.52, 11.06, 1.95, fill=LIGHT_BLUE, line=RGBColor(91, 141, 239), line_width=0.8)
+    _add_textbox(
+        slide,
+        "Selective target: maximize OOD accuracy while minimizing unsafe acceptance and over-refusal.",
+        13.62,
+        6.83,
+        10.55,
+        0.55,
+        font_size=18,
+        bold=True,
+        color=RGBColor(32, 96, 180),
+        align=PP_ALIGN.CENTER,
+    )
+    _add_textbox(slide, "Key mechanism: public-compatible countermodels witness missing identification assumptions.", 13.65, 7.45, 10.5, 0.35, font_size=13, color=MUTED, align=PP_ALIGN.CENTER)
+    _add_callout(
+        slide,
+        "Interpretation",
+        [
+            "A countermodel witness supports UNIDENTIFIABLE rather than forcing binary validity.",
+            "Pearl-style tools constrain the verifier but do not expose evaluator-only labels.",
+            "The design targets unsafe acceptance without collapsing into blanket refusal.",
+        ],
+        13.37,
+        8.75,
+        11.06,
+        3.0,
+        fill=LIGHT_GREEN,
+        font_size=14,
+    )
+    _add_chart_frame(slide, POSTER_DIR / "ood_chart.png", 13.37, 12.05, 11.06, 5.15, image_width=9.95)
+    _add_callout(
+        slide,
+        "OOD stress reading",
+        [
+            "Paired-flip is the clearest current failure slice: acc 0.439.",
+            "Graph/mechanism buckets are saturated smoke tests.",
+            "Use these buckets as diagnostics, not final robustness proof.",
+        ],
+        13.37,
+        17.65,
+        11.06,
+        2.4,
+        fill=LIGHT_YELLOW,
+        font_size=15,
+    )
+    _add_chart_frame(slide, POSTER_DIR / "ablation_chart.png", 13.37, 20.55, 11.06, 5.65, image_width=10.05)
+    _add_textbox(slide, "Ablation uses four frozen component variants; bubble size encodes OOD accuracy.", 13.7, 26.35, 10.4, 0.35, font_size=12, color=MUTED, align=PP_ALIGN.CENTER)
+
+    # 5. Main results and examples.
+    _add_template_section(slide, "5", "Main Results / Examples", 25.28, 4.37, 11.65, 9.72)
+    _add_textbox(
+        slide,
+        "The strongest quantitative evidence is the selective OOD tradeoff, followed by bucket-level stress tests and component ablations.",
+        25.59,
+        5.24,
+        11.02,
+        0.95,
+        font_size=16,
+        color=INK,
+    )
+    _add_chart_frame(slide, POSTER_DIR / "main_chart.png", 25.57, 6.15, 11.06, 5.1, image_width=9.75)
+    _add_callout(
+        slide,
+        "Result caption",
         [
             "Ours: OOD acc 0.891, unsafe accept 0.000.",
             "GPT-5.5 prompt baseline: OOD acc 0.545, unsafe accept 0.071.",
-            "Interpretation: current prompt baselines expose the selective-refusal gap.",
+            "The evidence supports a prototype diagnostic claim, not a final benchmark release.",
         ],
-        5.5,
-        4.48,
-        4.85,
-        0.85,
-        font_size=12,
+        25.57,
+        11.55,
+        11.06,
+        2.15,
+        fill=LIGHT_YELLOW,
+        font_size=14,
     )
-    _add_section_title(slide, "Ablation", 5.45, 5.65, 5.0)
-    slide.shapes.add_picture(str(POSTER_DIR / "ablation_chart.png"), Inches(5.35), Inches(6.0), width=Inches(5.25))
 
-    # Right column.
-    _add_section_title(slide, "OOD Stress", 10.85, 1.05, 4.7)
-    slide.shapes.add_picture(str(POSTER_DIR / "ood_chart.png"), Inches(10.75), Inches(1.42), width=Inches(5.0))
-    _add_bullets(
+    # Examples and gates.
+    _add_template_section(slide, "", "Examples", 25.28, 14.57, 11.65, 13.13)
+    _add_box(slide, 25.59, 15.72, 5.43, 6.35, fill=LIGHT_BLUE, line=LINE)
+    _add_textbox(slide, "Example A: unidentifiable claim", 25.75, 15.88, 5.09, 0.35, font_size=15, bold=True, color=MUTED)
+    _add_textbox(
         slide,
-        [
-            "Paired-flip is the clearest current failure slice: acc 0.439.",
-            "Graph/mechanism buckets are saturated smoke tests, not headline robustness evidence.",
-        ],
-        10.95,
-        4.48,
-        4.35,
-        0.7,
-        font_size=12,
+        "Claim: association between therapy_flag and yield_score is treated as causal.\n\nGold label: UNIDENTIFIABLE.\n\nReason: public evidence leaves confounding or reverse causality open.",
+        25.75,
+        16.45,
+        5.05,
+        4.9,
+        font_size=13,
+        color=INK,
     )
-    _add_section_title(slide, "Validity Gates", 10.85, 5.55, 4.7)
-    _add_panel(slide, 10.85, 5.95, 4.7, 2.38)
-    _add_bullets(
+    _add_box(slide, 31.2, 15.72, 5.43, 6.35, fill=LIGHT_GREEN, line=LINE)
+    _add_textbox(slide, "Example B: verifier response", 31.37, 15.88, 5.09, 0.35, font_size=15, bold=True, color=MUTED)
+    _add_textbox(
         slide,
+        "Output: refuse the causal conclusion.\n\nWitness: construct a public-compatible counter-SCM.\n\nTakeaway: refusal is evidence-sensitive, not blanket abstention.",
+        31.37,
+        16.45,
+        5.05,
+        4.9,
+        font_size=13,
+        color=INK,
+    )
+    _add_callout(
+        slide,
+        "Validity gates before release",
         [
-            "Leakage control: oracle-positive reaches 1.000/1.000; score gain is contamination.",
+            "Leakage check: oracle-positive 1.000/1.000; gain is contamination.",
             _llm_baseline_text(llm_baseline),
-            "Release gates: larger synthetic runs, real-grounded dual audit, frozen model versions.",
-            "Current status: prototype evidence, not a mature benchmark release.",
+            "Next gates: larger synthetic runs, real-grounded dual audit, frozen model versions.",
         ],
-        11.05,
-        6.12,
-        4.4,
-        2.0,
-        font_size=8,
+        25.57,
+        22.55,
+        11.06,
+        3.15,
+        fill=LIGHT_YELLOW,
+        font_size=14,
     )
     _add_textbox(
         slide,
-        f"Manifest: outputs/paper_facing/manifest.json | LLM matrix: {manifest['api_model_baseline_status']} | Poster generated from frozen JSON artifacts",
-        0.45,
-        8.55,
-        15.1,
-        0.24,
-        font_size=9,
+        f"Frozen artifact manifest: outputs/paper_facing/manifest.json | {manifest['api_model_baseline_status']}",
+        25.6,
+        26.45,
+        10.9,
+        0.32,
+        font_size=11,
         color=MUTED,
         align=PP_ALIGN.CENTER,
     )
