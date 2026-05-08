@@ -278,7 +278,7 @@ def _render_llm_baseline_rows(aggregate: dict[str, Any] | None) -> str:
                     (
                         _sc(label),
                         _split_label(split_name),
-                        f"${int(split_metrics['total'])}$",
+                        f"${int(split_metrics.get('total', 0) or 0)}$",
                         f"${_llm_metric(split_metrics, 'accuracy'):.3f}$",
                         f"${_llm_metric(split_metrics, 'macro_f1'):.3f}$",
                         f"${_llm_metric(split_metrics, 'unsafe_acceptance_rate'):.3f}$",

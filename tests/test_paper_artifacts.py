@@ -135,6 +135,9 @@ def test_poster_builder_formats_full_llm_matrix_status_from_json() -> None:
             "models": {
                 "gpt55_xhigh": {"test_ood": {"accuracy": {"mean": 0.545}, "unsafe_acceptance_rate": {"mean": 0.0706}}},
                 "deepseek_v4": {"test_ood": {"accuracy": {"mean": 0.4608}, "unsafe_acceptance_rate": {"mean": 0.0104}}},
+                "mini_reasoner": {"test_ood": {"accuracy": {"mean": 0.1000}, "unsafe_acceptance_rate": {"mean": 0.0100}}},
+                "nano_insight": {"test_ood": {"accuracy": {"mean": 0.2000}, "unsafe_acceptance_rate": {"mean": 0.0200}}},
+                "luminous_m3": {"test_ood": {"accuracy": {"mean": 0.3000}, "unsafe_acceptance_rate": {"mean": 0.0300}}},
             },
         },
     )
