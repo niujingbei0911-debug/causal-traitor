@@ -44,7 +44,7 @@
 
 \twocolumn[
   \icmltitle{Selective Adversarial Causal Oversight:\texorpdfstring{\\}{}%
-    An Information-Partitioned Benchmark Contract and Countermodel-Grounded Reference Verifier}
+    An Information-Partitioned Benchmark Prototype and Reference Verifier}
 
   \icmlsetsymbol{equal}{*}
 
@@ -81,14 +81,14 @@ and paired-flip shifts. We also propose \emph{countermodel-grounded selective
 verification}, a reference pipeline that parses the claim, builds an
 assumption ledger, searches for observationally compatible countermodels, and
 returns an abstention-aware verdict. On a fixed-code exploratory snapshot
-(three seeds, ten samples per family, difficulty $0.55$), the reference
-verifier improves the accuracy/unsafe-acceptance/wise-refusal tradeoff over
-public-view heuristic baselines, while a deliberately leaking positive control
-shows how oracle information can inflate benchmark scores. We additionally run
-a five-model live API baseline matrix (Qwen2.5 7B/14B/72B, GPT-5.5 xhigh, and
-DeepSeek v4 max-thinking) with raw-response logging and fallback rejection.
-These results support the need for public/gold partitioning in causal
-oversight benchmarks; larger synthetic runs, real-grounded cases, and human
+(three seeds, ten samples per family, difficulty $0.55$), this reference
+verifier exhibits a more favorable accuracy/unsafe-acceptance/wise-refusal
+tradeoff than public-view heuristic baselines, while a deliberately leaking
+positive control shows how oracle information can inflate benchmark scores. We
+also run a five-model API-backed baseline matrix (Qwen2.5 7B/14B/72B, GPT-5.5
+xhigh, and DeepSeek v4 max-thinking) with raw-response logging and fallback
+rejection. These results are diagnostic evidence for the public/gold
+partitioning contract; larger synthetic runs, real-grounded cases, and human
 audit remain required before claiming a mature benchmark release.
 \end{abstract}
 
@@ -150,23 +150,21 @@ identification tools as supporting evidence. A fixed decision rule turns these
 artifacts into one of the three verdicts plus an abstention reason and a
 missing-information specification.
 
-\paragraph{Our claims.} Three propositions
+\paragraph{Current evidence.} Three propositions
 (Section~\ref{sec:theory}) tie selective abstention, countermodel witnesses,
 and oracle leakage to formal properties of the task. Empirically
-(Section~\ref{sec:experiments}), on the current three-seed,
-ten-samples-per-family workspace snapshot we observe that (a) the full system
-improves verdict accuracy over \textsc{Direct Judge} from $0.504$ to $1.000$ on
-\texttt{test\_iid} and from $0.161$ to $0.891$ on \texttt{test\_ood}, while
-driving unsafe acceptance from $0.89/0.97$ to $0.00/0.00$; (b) a deliberate
-oracle-leaking positive control reaches $1.00$ accuracy on both dedicated
-attack-only splits and therefore remains a useful positive control for any
-benchmark that does not enforce a public/gold partition; and (c) removing
-\emph{abstention} preserves high IID raw accuracy ($0.856$) but collapses
-unidentifiable-awareness to $0.00$ on both splits, which is exactly the failure
-mode the task is designed to surface. We discuss limitations -- in particular,
-the still-modest benchmark scale, missing real-grounded human audit, and API
-model-baseline status -- in Section~\ref{sec:experiments} and
-Section~\ref{sec:limitations}.
+(Section~\ref{sec:experiments}), the current three-seed,
+ten-samples-per-family workspace snapshot supports three diagnostic findings:
+(a) the reference verifier has a better OOD tradeoff than public-view heuristic
+baselines ($0.891$ accuracy and $0.000$ unsafe acceptance), but this should be
+read as a fixed-code sanity check rather than a saturation result; (b) a
+deliberate oracle-leaking positive control reaches $1.00$ accuracy on both
+dedicated attack-only splits, illustrating why public/gold partitioning must be
+audited; and (c) removing \emph{abstention} preserves high IID raw accuracy
+($0.856$) but collapses unidentifiable-awareness to $0.00$ on both splits. We
+discuss limitations -- in particular, the still-modest benchmark scale, missing
+real-grounded human audit, and prompt-protocol-specific API model baselines --
+in Section~\ref{sec:experiments} and Section~\ref{sec:limitations}.
 
 \section{Related Work}
 \label{sec:related}
@@ -540,11 +538,16 @@ observed there is, by construction, leakage rather than oversight ability.
 \label{sec:setup}
 
 We report the current workspace snapshot: three seeds with ten samples per
-family across all twelve graph families. The main benchmark runs at difficulty
-$0.55$ and compares the full \emph{countermodel-grounded} verifier against
-public-view heuristic judge/debate, tool-only and refusal-aware baselines. The
-component ablation suite replaces one or more pipeline stages with a no-op surrogate. We
-also include a dedicated attack-only leakage study under the
+family across all twelve graph families before split filtering. The split
+builder then assigns instances to \texttt{train}, \texttt{dev},
+\texttt{test\_iid}, and \texttt{test\_ood}; consequently, the API baseline table
+reports the evaluated post-split counts ($n=28$ IID and $n=221$ OOD per model
+after seed aggregation) rather than the pre-split generator budget. The main
+benchmark runs at difficulty $0.55$ and compares the full
+\emph{countermodel-grounded} verifier against public-view heuristic
+judge/debate, tool-only and refusal-aware baselines. The component ablation
+suite replaces one or more pipeline stages with a no-op surrogate. We also
+include a dedicated attack-only leakage study under the
 hidden-information-aware profile. These runs are reproducible from the current
 repository state. All paper-facing tables in this draft are generated by
 \texttt{python -m experiments.paper\_artifacts} from the hashed bundle recorded
@@ -560,8 +563,8 @@ three seeds and \texttt{test\_iid}/\texttt{test\_ood} splits, records prompts
 and raw responses, rejects mock fallback, and produced $1245$ predictions with
 zero parse errors and zero fallback records. We therefore present the empirical
 results as fixed-code evidence for the benchmark contract, the reference
-verifier, and the current strong-LLM baseline behaviour, not as a final
-benchmark release.
+verifier, and the current API-backed prompt protocol, not as a final benchmark
+release or a broad model-ranking claim.
 
 \subsection{Main Benchmark}
 
@@ -619,16 +622,18 @@ compact public scenario, the natural-language claim, and an instruction to
 return only a JSON verdict in
 $\{\textsc{valid}, \textsc{invalid}, \textsc{unidentifiable}\}$. All gold-only
 fields, countermodel witnesses, hidden variables, and attacker rationales are
-excluded from the prompt by the same leakage guard used in the smoke tests.
-The matrix is small but fully auditable: 30 model/seed/split jobs, $1245$
-predictions, raw-response logs, model settings, prompt hashes, and zero
-fallback or parse-error records.
+excluded from the prompt by the same leakage guard used in the smoke tests. The
+matrix is small and prompt-protocol-specific, but fully auditable: 30
+model/seed/split jobs, $1245$ predictions, raw-response logs, model settings,
+prompt hashes, and zero fallback or parse-error records. The $n$ column reports
+post-split evaluated instances aggregated over the three seeds.
 
 \begin{table*}[t]
 \caption{Live API LLM baseline matrix. Qwen rows use DashScope
   chat-completions; GPT-5.5 uses the Responses API with xhigh reasoning;
   DeepSeek uses chat-completions with max thinking. Results are generated from
-  \texttt{outputs/llm\_baseline\_matrix/llm\_baseline\_aggregated\_metrics.json}.}
+  \texttt{outputs/llm\_baseline\_matrix/llm\_baseline\_aggregated\_metrics.json};
+  $n$ is the post-split evaluated count aggregated over three seeds.}
 \label{tab:llm-baselines}
 \begin{center}
 \begin{small}
@@ -645,7 +650,7 @@ Model & Split & $n$ & Acc.\ & Macro-F1 & Unsafe Accept & Wise Refusal Recall \\
 \end{center}
 \end{table*}
 
-The strongest raw OOD accuracy among these live LLM baselines is GPT-5.5
+The strongest raw OOD accuracy among these API-backed baselines is GPT-5.5
 xhigh at $0.545$, with unsafe acceptance $0.071$ and wise-refusal recall
 $0.608$. DeepSeek v4 with max thinking reaches similar IID accuracy
 ($0.715$) but weaker OOD selective behaviour ($0.461$ accuracy and $0.218$
@@ -654,9 +659,10 @@ non-monotone tradeoff: Qwen2.5-14B has the best OOD accuracy among the Qwen
 models ($0.523$) and zero unsafe acceptance, while Qwen2.5-72B has higher
 wise-refusal recall ($0.876$) but still over-refuses substantially. The gap
 between these public-view LLM baselines and the countermodel-grounded
-reference verifier is not evidence that generic LLMs cannot reason causally;
-it is evidence that the public/gold partition and three-way selective verdict
-surface failure modes that are hidden by closed-world causal QA scoring.
+reference verifier is not evidence that generic LLMs cannot reason causally, nor
+a definitive leaderboard result; it is evidence that this public/gold partition
+and three-way selective prompt protocol surfaces failure modes that are hidden
+by closed-world causal QA scoring.
 
 \subsection{Component Ablation: What Drives Wise Refusal?}
 
@@ -672,8 +678,11 @@ across every metric: \textsc{No-Tools} exceeds the full system on OOD raw
 accuracy ($0.911$ vs.\ $0.891$) and unidentifiable-awareness
 ($0.964$ vs.\ $0.825$), but does so with substantially higher over-refusal
 ($0.150$ vs.\ $0.010$) and lower wise-refusal precision
-($0.877$ vs.\ $0.989$). We therefore interpret the full system as the more
-balanced reference verifier, not as uniformly best on every scalar metric.
+($0.877$ vs.\ $0.989$). This result weakens any claim that tool-backed
+adjudication is uniformly beneficial in the current synthetic snapshot. We
+therefore interpret the full system as a conservative reference verifier with a
+better precision/over-refusal balance, not as uniformly best on every scalar
+metric.
 
 \begin{table}[t]
 \caption{Component ablation. Unidentifiable-awareness is the task-critical
@@ -784,14 +793,14 @@ Strength & Split & Acc.\ & Wise Refusal Recall \\
 
 The current OOD artifact evaluates the five buckets defined by the benchmark
 contract: graph-family, mechanism, attack-family, context-shift, and
-paired-flip OOD. The full system remains perfect on graph-family and mechanism
-OOD ($1.000$ accuracy), stays strong on attack-family ($0.820$) and
-context-shift ($0.883$), and drops sharply on paired-flip ($0.439$). The
-paired-flip bucket also has the largest macro-F1 gap ($0.423$), making it the
-clearest current stress case for structural disambiguation. The current
-significance artifact reports uninformative $p=1$ rows for these bucket gaps,
-so we avoid strong significance claims until the OOD estimand and sample count
-are upgraded.
+paired-flip OOD. The graph-family and mechanism buckets are saturated in this
+small snapshot ($1.000$ accuracy), so they are best read as contract smoke tests
+rather than convincing robustness evidence. Attack-family ($0.820$) and
+context-shift ($0.883$) are more informative, while paired-flip drops sharply
+($0.439$) and has the largest macro-F1 gap ($0.423$), making it the clearest
+current stress case for structural disambiguation. The current significance
+artifact reports uninformative $p=1$ rows for these bucket gaps, so we avoid
+strong significance claims until the OOD estimand and sample count are upgraded.
 
 \begin{table}[t]
 \caption{OOD bucket breakdown for the full verifier. The rows are generated
@@ -835,45 +844,48 @@ $95\%$ CIs across all twelve families) is reserved for future work.
 \paragraph{What we are not claiming.}
 We are \emph{not} claiming a state-of-the-art result on a saturated benchmark,
 nor that LLM judges are uniformly bad at causal reasoning. The claim is
-structural: once the task enforces a public/gold contract and rewards correct
-abstention, the ranking of systems changes, and a verifier that takes this
-shape seriously offers a better accuracy/refusal tradeoff than verifiers that
-flatten the problem into a closed-world judgment task.
+structural and diagnostic: once the task enforces a public/gold contract and
+rewards correct abstention, the measured failure modes differ from closed-world
+causal QA. The current reference verifier is an auditable yardstick for that
+contract, not a validated general-purpose causal auditor.
 
 \paragraph{Limitations.}
 The synthetic core is, by construction, a model of the world rather than the
 world itself. The real-grounded subset is small, and full human dual-annotation
 is in progress. The current mainline snapshot uses ten samples per family, so
 bucket-level estimates can still have wide CIs; the dedicated leakage study is
-explicitly exploratory; and the hidden-information-aware IID robustness slice is
-not yet stable enough to support strong quantitative claims. The API-backed
-model evidence now includes a completed five-model baseline matrix with raw
-responses and fallback rejection, but it is still only one prompt protocol over
-the current synthetic snapshot; larger budgets, more model families, completed
-human audit, and pre-registered model/version freezes will be needed before any
-broad statement about absolute performance is defensible. The existing transfer
-matrix is likewise a
+explicitly exploratory; saturated graph/mechanism OOD buckets should not be
+treated as robust generalization evidence; and the hidden-information-aware IID
+robustness slice is not yet stable enough to support strong quantitative
+claims. The API-backed model evidence now includes a completed five-model
+baseline matrix with raw responses and fallback rejection, but it is still only
+one prompt protocol over the current synthetic snapshot; larger budgets, more
+model families, completed human audit, and pre-registered model/version freezes
+will be needed before any broad statement about absolute performance is
+defensible. The existing transfer matrix is likewise a
 pilot: it shows that family-swapped attacker/verifier profiles are testable
 inside the benchmark contract, but it is still too small to support
 model-family conclusions. We document these caveats in the artifact and in
 this paper.
 
-\paragraph{Future work.}
-Three priorities: (i) closing the real-grounded subset with dual annotation
-and Cohen's $\kappa$ on the four primary audit fields; (ii) scaling the
-current transfer pilot into a full-budget cross-model study across verifier
-families and sizes; and (iii) extending the completed API baseline matrix to a
-pre-registered model/version freeze with more closed and open model families.
+\paragraph{Completion gates.}
+Before release, three gates are required: (i) closing the real-grounded subset
+with dual annotation and Cohen's $\kappa$ on the four primary audit fields;
+(ii) scaling the current synthetic snapshot and transfer pilot into a
+full-budget cross-model study across verifier families and sizes; and (iii)
+extending the completed API baseline matrix to a pre-registered model/version
+freeze with more closed and open model families.
 
 \section{Conclusion}
 
-Selective adversarial causal oversight is the right unit of analysis for
+Selective adversarial causal oversight is a useful unit of analysis for
 LLM-based causal evaluation. By modelling information asymmetry, treating
 \textsc{unidentifiable} as a first-class label, partitioning public from gold
-at the schema level, and grounding the verifier in countermodel witnesses,
-we obtain a benchmark and a method whose comparison shape is meaningful even
-under current mainline budgets. The next step is scale: more samples, more graph
-families, real-grounded human-audited cases, and cross-model transfer.
+at the schema level, and grounding the reference verifier in countermodel
+witnesses, the current prototype exposes a measurable tradeoff between unsafe
+acceptance and wise refusal. The next step is validity, not presentation: more
+samples, real-grounded human-audited cases, stronger surface-bias checks, and
+cross-model transfer.
 
 \section*{Software and Data}
 The repository contains the benchmark generator, verifier pipeline, experiment
