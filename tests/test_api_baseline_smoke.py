@@ -51,6 +51,18 @@ class FakeMockService(FakeAPIService):
         )
 
 
+class FlakyAPIService(FakeAPIService):
+    def __init__(self, *, fail_on_call: int | None = None) -> None:
+        super().__init__()
+        self.fail_on_call = fail_on_call
+
+    async def generate_json(self, prompt: str, **_: Any) -> tuple[LLMResponse, dict[str, Any]]:
+        if self.fail_on_call is not None and len(self.prompts) + 1 == self.fail_on_call:
+            self.prompts.append(prompt)
+            raise RuntimeError("transient API failure")
+        return await super().generate_json(prompt, **_)
+
+
 def test_api_baseline_smoke_records_public_prompt_and_raw_response(tmp_path: Path) -> None:
     service = FakeAPIService()
     output_path = tmp_path / "api_smoke.json"
@@ -85,6 +97,43 @@ def test_api_baseline_smoke_records_public_prompt_and_raw_response(tmp_path: Pat
     assert "attacker_rationale" not in prompt
     assert "countermodel_witness" not in prompt
     assert "true_scm" not in prompt
+
+
+def test_api_baseline_smoke_checkpoints_and_resumes_partial_records(tmp_path: Path) -> None:
+    output_path = tmp_path / "api_smoke.json"
+    failing_service = FlakyAPIService(fail_on_call=2)
+
+    with pytest.raises(RuntimeError, match="transient API failure"):
+        run_api_baseline_smoke(
+            output_path=output_path,
+            service=failing_service,
+            seed=0,
+            split_name="test_ood",
+            max_samples=2,
+            checkpoint_records=True,
+            resume_existing_records=True,
+        )
+
+    partial = json.loads(output_path.read_text(encoding="utf-8"))
+    assert partial["complete"] is False
+    assert partial["summary"]["total"] == 1
+    assert len(partial["records"]) == 1
+
+    resumed_service = FlakyAPIService()
+    payload = run_api_baseline_smoke(
+        output_path=output_path,
+        service=resumed_service,
+        seed=0,
+        split_name="test_ood",
+        max_samples=2,
+        checkpoint_records=True,
+        resume_existing_records=True,
+    )
+
+    assert payload["complete"] is True
+    assert payload["summary"]["total"] == 2
+    assert len(payload["records"]) == 2
+    assert len(resumed_service.prompts) == 1
 
 
 def test_api_baseline_smoke_rejects_mock_fallback(tmp_path: Path) -> None:

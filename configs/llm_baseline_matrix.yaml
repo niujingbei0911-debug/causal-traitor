@@ -12,6 +12,8 @@ run:
   max_tokens: 512
   timeout: 180
   reject_mock_fallback: true
+  checkpoint_records: true
+  resume_existing_records: true
 
 models:
   - id: qwen25_7b
@@ -54,4 +56,6 @@ models:
     api_key_env: CUSTOM_API_KEY
     reasoning_effort: max
     thinking: enabled
-    max_tokens: 32768
+    max_tokens: 65536
+    timeout: 3600
+    max_retries: 1

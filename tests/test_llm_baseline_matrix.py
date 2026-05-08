@@ -266,3 +266,143 @@ models:
     assert "live_model,test_iid,ALL,4,3,0.7500" in csv_path.read_text(encoding="utf-8")
     assert len(raw_path.read_text(encoding="utf-8").strip().splitlines()) == 4
     assert "Strong LLM Baseline Matrix" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_llm_baseline_matrix_can_reuse_existing_successful_jobs(tmp_path: Path) -> None:
+    config_path = tmp_path / "matrix.yaml"
+    output_dir = tmp_path / "out"
+    config_path.write_text(
+        f"""
+run:
+  output_dir: {output_dir.as_posix()}
+  samples_per_family: 10
+  difficulty: 0.55
+  seeds: [0]
+  splits: [test_iid]
+  max_public_rows: 5
+models:
+  - id: existing_model
+    enabled: true
+    backend: openai
+    model: gpt-5.5
+    api_mode: responses
+    api_key_env: OPENAI_API_KEY
+  - id: missing_model
+    enabled: true
+    backend: openai
+    model: deepseek-v4-pro
+    api_mode: chat_completions
+    api_key_env: CUSTOM_API_KEY
+""",
+        encoding="utf-8",
+    )
+    existing_path = output_dir / "existing_model_seed0_test_iid.json"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_text(
+        json.dumps(
+            {
+                "status": "llm_baseline_matrix_job",
+                "summary": {"total": 1, "correct": 1, "parse_errors": 0, "fallback_records": 0},
+                "records": [
+                    {
+                        "instance_id": "existing-1",
+                        "split": "test_iid",
+                        "seed": 0,
+                        "gold_label": "valid",
+                        "predicted_label": "valid",
+                        "correct": True,
+                        "parse_error": False,
+                        "fallback_detected": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_run_one(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["model"])
+        output_path = Path(kwargs["output_path"])
+        payload = {
+            "status": "llm_baseline_matrix_job",
+            "summary": {"total": 1, "correct": 0, "parse_errors": 0, "fallback_records": 0},
+            "records": [
+                {
+                    "instance_id": "missing-1",
+                    "split": "test_iid",
+                    "seed": 0,
+                    "gold_label": "invalid",
+                    "predicted_label": "valid",
+                    "correct": False,
+                    "parse_error": False,
+                    "fallback_detected": False,
+                }
+            ],
+        }
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    manifest = run_llm_baseline_matrix(config_path=config_path, reuse_existing=True, run_one=fake_run_one)
+
+    assert calls == ["deepseek-v4-pro"]
+    assert manifest["summary"]["jobs_total"] == 2
+    assert manifest["summary"]["succeeded"] == 2
+    assert manifest["summary"]["total_predictions"] == 2
+    assert manifest["jobs"][0]["reused_existing"] is True
+    assert manifest["jobs"][1].get("reused_existing") is not True
+
+
+def test_llm_baseline_matrix_accepts_job_level_parallelism(tmp_path: Path) -> None:
+    config_path = tmp_path / "matrix.yaml"
+    output_dir = (tmp_path / "out").as_posix()
+    config_path.write_text(
+        f"""
+run:
+  output_dir: {output_dir}
+  seeds: [0, 1]
+  splits: [test_iid]
+models:
+  - id: model_a
+    enabled: true
+    backend: openai
+    model: gpt-5.5
+    api_mode: responses
+    api_key_env: OPENAI_API_KEY
+  - id: model_b
+    enabled: true
+    backend: openai
+    model: deepseek-v4-pro
+    api_mode: chat_completions
+    api_key_env: CUSTOM_API_KEY
+""",
+        encoding="utf-8",
+    )
+
+    def fake_run_one(**kwargs: Any) -> dict[str, Any]:
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "summary": {"total": 1, "correct": 1, "parse_errors": 0, "fallback_records": 0},
+            "records": [
+                {
+                    "instance_id": f"{kwargs['model']}-{kwargs['seed']}",
+                    "split": kwargs["split_name"],
+                    "seed": kwargs["seed"],
+                    "gold_label": "valid",
+                    "predicted_label": "valid",
+                    "correct": True,
+                    "parse_error": False,
+                    "fallback_detected": False,
+                }
+            ],
+        }
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    manifest = run_llm_baseline_matrix(config_path=config_path, parallel_jobs=2, run_one=fake_run_one)
+
+    assert manifest["summary"]["jobs_total"] == 4
+    assert manifest["summary"]["succeeded"] == 4
+    assert manifest["summary"]["parallel_jobs"] == 2
+    assert [job["model_id"] for job in manifest["jobs"]] == ["model_a", "model_a", "model_b", "model_b"]

@@ -49,6 +49,76 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _write_payload(output_path: Path, payload: dict[str, Any]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_payload(
+    *,
+    records: list[dict[str, Any]],
+    generated_at_utc: str,
+    service: Any,
+    seed: int,
+    split_name: str,
+    max_samples: int,
+    samples_per_family: int,
+    difficulty: float,
+    max_public_rows: int,
+    reject_mock_fallback: bool,
+    run_status: str,
+    run_note: str | None,
+    complete: bool,
+) -> dict[str, Any]:
+    total = len(records)
+    correct = sum(1 for record in records if record["correct"])
+    parse_errors = sum(1 for record in records if record["parse_error"])
+    return {
+        "status": run_status,
+        "generated_at_utc": generated_at_utc,
+        "complete": bool(complete),
+        "note": run_note
+        or (
+            "Tiny API-backed plumbing smoke. Do not cite as a strong LLM baseline "
+            "or as the paper's full model matrix."
+        ),
+        "model": {
+            "backend": getattr(service, "backend", None),
+            "name": getattr(service, "model_name", None),
+            "temperature": getattr(service, "temperature", None),
+            "max_tokens": getattr(service, "max_tokens", None),
+        },
+        "config": {
+            "seed": int(seed),
+            "split_name": split_name,
+            "max_samples": int(max_samples),
+            "samples_per_family": int(samples_per_family),
+            "difficulty": float(difficulty),
+            "max_public_rows": int(max_public_rows),
+            "reject_mock_fallback": bool(reject_mock_fallback),
+        },
+        "summary": {
+            "total": total,
+            "correct": correct,
+            "accuracy": correct / total if total else 0.0,
+            "parse_errors": parse_errors,
+            "fallback_records": sum(1 for record in records if record["fallback_detected"]),
+        },
+        "records": records,
+    }
+
+
+def _load_existing_records(output_path: Path) -> list[dict[str, Any]]:
+    if not output_path.exists():
+        return []
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    records = payload.get("records")
+    return [dict(record) for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+
+
 def _compact_public_instance(public: Any, *, max_rows: int = 5) -> dict[str, Any]:
     payload = public.to_dict()
     observed_rows = list(payload.get("observed_data") or [])
@@ -141,6 +211,9 @@ async def _run_api_baseline_smoke_async(
     reject_mock_fallback: bool,
     run_status: str,
     run_note: str | None,
+    checkpoint_records: bool,
+    resume_existing_records: bool,
+    max_retries: int,
 ) -> dict[str, Any]:
     try:
         run = build_seed_benchmark_run(
@@ -154,15 +227,28 @@ async def _run_api_baseline_smoke_async(
         if not samples:
             raise ValueError(f"No samples selected for split {split_name!r}.")
 
-        records: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = _load_existing_records(output_path) if resume_existing_records else []
+        completed_ids = {str(record.get("instance_id")) for record in records}
         for sample in samples:
+            if str(sample.claim.instance_id) in completed_ids:
+                continue
             prompt = build_api_prompt(sample, max_rows=max_public_rows)
-            response, parsed_payload = await service.generate_json(
-                prompt,
-                system_prompt="You are a careful causal verifier. Use only the public scenario.",
-                temperature=getattr(service, "temperature", DEFAULT_TEMPERATURE),
-                max_tokens=getattr(service, "max_tokens", DEFAULT_MAX_TOKENS),
-            )
+            last_exc: Exception | None = None
+            for attempt in range(max(1, int(max_retries) + 1)):
+                try:
+                    response, parsed_payload = await service.generate_json(
+                        prompt,
+                        system_prompt="You are a careful causal verifier. Use only the public scenario.",
+                        temperature=getattr(service, "temperature", DEFAULT_TEMPERATURE),
+                        max_tokens=getattr(service, "max_tokens", DEFAULT_MAX_TOKENS),
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= int(max_retries):
+                        raise
+            else:  # pragma: no cover - defensive, loop always breaks or raises
+                raise RuntimeError("API baseline generation failed without raising a concrete exception.") from last_exc
             fallback = _fallback_detected(response)
             if fallback and reject_mock_fallback:
                 raise RuntimeError(
@@ -192,44 +278,40 @@ async def _run_api_baseline_smoke_async(
                     "model_name": response.model_name,
                 }
             )
+            if checkpoint_records:
+                partial_payload = _build_payload(
+                    records=records,
+                    generated_at_utc=generated_at_utc,
+                    service=service,
+                    seed=seed,
+                    split_name=split_name,
+                    max_samples=max_samples,
+                    samples_per_family=samples_per_family,
+                    difficulty=difficulty,
+                    max_public_rows=max_public_rows,
+                    reject_mock_fallback=reject_mock_fallback,
+                    run_status=run_status,
+                    run_note=run_note,
+                    complete=False,
+                )
+                _write_payload(output_path, partial_payload)
 
-        total = len(records)
-        correct = sum(1 for record in records if record["correct"])
-        parse_errors = sum(1 for record in records if record["parse_error"])
-        payload = {
-            "status": run_status,
-            "generated_at_utc": generated_at_utc,
-            "note": run_note
-            or (
-                "Tiny API-backed plumbing smoke. Do not cite as a strong LLM baseline "
-                "or as the paper's full model matrix."
-            ),
-            "model": {
-                "backend": getattr(service, "backend", None),
-                "name": getattr(service, "model_name", None),
-                "temperature": getattr(service, "temperature", None),
-                "max_tokens": getattr(service, "max_tokens", None),
-            },
-            "config": {
-                "seed": int(seed),
-                "split_name": split_name,
-                "max_samples": int(max_samples),
-                "samples_per_family": int(samples_per_family),
-                "difficulty": float(difficulty),
-                "max_public_rows": int(max_public_rows),
-                "reject_mock_fallback": bool(reject_mock_fallback),
-            },
-            "summary": {
-                "total": total,
-                "correct": correct,
-                "accuracy": correct / total if total else 0.0,
-                "parse_errors": parse_errors,
-                "fallback_records": sum(1 for record in records if record["fallback_detected"]),
-            },
-            "records": records,
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = _build_payload(
+            records=records,
+            generated_at_utc=generated_at_utc,
+            service=service,
+            seed=seed,
+            split_name=split_name,
+            max_samples=max_samples,
+            samples_per_family=samples_per_family,
+            difficulty=difficulty,
+            max_public_rows=max_public_rows,
+            reject_mock_fallback=reject_mock_fallback,
+            run_status=run_status,
+            run_note=run_note,
+            complete=True,
+        )
+        _write_payload(output_path, payload)
         return payload
     finally:
         close = getattr(service, "close", None)
@@ -298,6 +380,9 @@ def run_api_baseline_smoke(
     reject_mock_fallback: bool = True,
     run_status: str = "api_smoke",
     run_note: str | None = None,
+    checkpoint_records: bool = False,
+    resume_existing_records: bool = False,
+    max_retries: int = 0,
 ) -> dict[str, Any]:
     resolved_service = service or _build_service(
         model=model,
@@ -325,6 +410,9 @@ def run_api_baseline_smoke(
             reject_mock_fallback=reject_mock_fallback,
             run_status=run_status,
             run_note=run_note,
+            checkpoint_records=checkpoint_records,
+            resume_existing_records=resume_existing_records,
+            max_retries=max_retries,
         )
     )
 
@@ -349,6 +437,9 @@ def main() -> None:
     parser.add_argument("--difficulty", type=float, default=0.55)
     parser.add_argument("--max-public-rows", type=int, default=5)
     parser.add_argument("--allow-mock-fallback", action="store_true")
+    parser.add_argument("--checkpoint-records", action="store_true")
+    parser.add_argument("--resume-existing-records", action="store_true")
+    parser.add_argument("--max-retries", type=int, default=0)
     args = parser.parse_args()
     payload = run_api_baseline_smoke(
         output_path=args.output,
@@ -369,6 +460,9 @@ def main() -> None:
         difficulty=args.difficulty,
         max_public_rows=args.max_public_rows,
         reject_mock_fallback=not args.allow_mock_fallback,
+        checkpoint_records=args.checkpoint_records,
+        resume_existing_records=args.resume_existing_records,
+        max_retries=args.max_retries,
     )
     print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
 

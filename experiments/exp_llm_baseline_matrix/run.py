@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, pstdev
@@ -73,6 +74,8 @@ def run_llm_baseline_matrix(
     config_path: Path | str = DEFAULT_CONFIG,
     probe: bool = False,
     continue_on_error: bool = False,
+    reuse_existing: bool = False,
+    parallel_jobs: int | None = None,
     run_one: RunOne = run_api_baseline_smoke,
 ) -> dict[str, Any]:
     """Execute enabled model/seed/split jobs and write a manifest."""
@@ -92,10 +95,147 @@ def run_llm_baseline_matrix(
 
     samples_per_family = 1 if probe else int(run_cfg.get("samples_per_family", 10))
     max_samples = 1 if probe else int(run_cfg.get("max_samples", DEFAULT_MAX_SAMPLES))
+    effective_parallel_jobs = max(1, int(parallel_jobs or run_cfg.get("parallel_jobs", 1)))
     jobs: list[dict[str, Any]] = []
     raw_records: list[dict[str, Any]] = []
     generated_at_utc = _now_utc()
+    planned_jobs = _plan_jobs(
+        models=models,
+        seeds=seeds,
+        splits=splits,
+        run_cfg=run_cfg,
+        output_dir=output_dir,
+    )
 
+    def execute_job(job: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        output_path = Path(str(job["output_path"]))
+        if reuse_existing and output_path.exists():
+            existing_payload = _load_existing_job_payload(output_path)
+            if existing_payload is not None:
+                job["ok"] = True
+                job["reused_existing"] = True
+                job["summary"] = existing_payload.get("summary", {})
+                return job, _enrich_records(existing_payload.get("records", []), job)
+        model = dict(job.pop("_model_config"))
+        payload = run_one(
+            output_path=output_path,
+            model=model.get("model"),
+            backend=model.get("backend"),
+            base_url=model.get("base_url"),
+            api_key_env=model.get("api_key_env"),
+            api_mode=model.get("api_mode") or "chat_completions",
+            reasoning_effort=model.get("reasoning_effort"),
+            thinking=model.get("thinking"),
+            temperature=float(job["temperature"]),
+            max_tokens=int(job["max_tokens"]),
+            timeout=float(job["timeout"]),
+            seed=int(job["seed"]),
+            split_name=str(job["split"]),
+            max_samples=max_samples,
+            samples_per_family=samples_per_family,
+            difficulty=float(run_cfg.get("difficulty", 0.55)),
+            max_public_rows=int(run_cfg.get("max_public_rows", 5)),
+            reject_mock_fallback=bool(run_cfg.get("reject_mock_fallback", True)),
+            checkpoint_records=bool(run_cfg.get("checkpoint_records", False)),
+            resume_existing_records=bool(run_cfg.get("resume_existing_records", False)),
+            max_retries=int(model.get("max_retries", run_cfg.get("max_retries", 0))),
+            run_status="llm_baseline_matrix_probe_job" if probe else "llm_baseline_matrix_job",
+            run_note=(
+                "Probe-only API-backed public-view LLM baseline matrix component. "
+                "Do not cite as the full baseline matrix."
+                if probe
+                else (
+                    "API-backed public-view LLM baseline matrix component. "
+                    "Cite via the matrix manifest and aggregate artifacts."
+                )
+            ),
+        )
+        job["ok"] = True
+        job["summary"] = payload.get("summary", {})
+        return job, _enrich_records(payload.get("records", []), job)
+
+    if effective_parallel_jobs > 1:
+        results: list[tuple[int, dict[str, Any], list[dict[str, Any]]]] = []
+        with ThreadPoolExecutor(max_workers=effective_parallel_jobs) as executor:
+            future_to_index = {
+                executor.submit(execute_job, dict(job)): index
+                for index, job in enumerate(planned_jobs)
+            }
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    job, records = future.result()
+                except Exception as exc:
+                    job = dict(planned_jobs[index])
+                    job.pop("_model_config", None)
+                    job["ok"] = False
+                    job["error_type"] = type(exc).__name__
+                    job["error"] = str(exc)
+                    records = []
+                    if not continue_on_error:
+                        for pending in future_to_index:
+                            pending.cancel()
+                results.append((index, job, records))
+                if not continue_on_error and not job.get("ok"):
+                    break
+        for _, job, records in sorted(results, key=lambda item: item[0]):
+            jobs.append(job)
+            raw_records.extend(records)
+        if not continue_on_error:
+            for index in range(len(jobs), len(planned_jobs)):
+                if not jobs or jobs[-1].get("ok"):
+                    break
+    else:
+        for planned in planned_jobs:
+            try:
+                job, records = execute_job(dict(planned))
+            except Exception as exc:
+                job = dict(planned)
+                job.pop("_model_config", None)
+                job["ok"] = False
+                job["error_type"] = type(exc).__name__
+                job["error"] = str(exc)
+                jobs.append(job)
+                if not continue_on_error:
+                    break
+            else:
+                jobs.append(job)
+                raw_records.extend(records)
+
+    artifacts = _write_matrix_artifacts(
+        output_dir=output_dir,
+        config=config,
+        probe=probe,
+        jobs=jobs,
+        records=raw_records,
+        generated_at_utc=generated_at_utc,
+    )
+    manifest = _build_manifest(
+        resolved_config_path,
+        output_dir,
+        config,
+        probe,
+        jobs,
+        generated_at_utc=generated_at_utc,
+        artifacts=artifacts,
+        parallel_jobs=effective_parallel_jobs,
+    )
+    if not continue_on_error and any(not job.get("ok") for job in jobs):
+        _write_manifest(output_dir, manifest)
+        failed = next(job for job in jobs if not job.get("ok"))
+        raise RuntimeError(f"LLM baseline matrix job failed: {failed.get('model_id')} {failed.get('error_type')}")
+    return _write_manifest(output_dir, manifest)
+
+
+def _plan_jobs(
+    *,
+    models: list[dict[str, Any]],
+    seeds: list[int],
+    splits: list[str],
+    run_cfg: dict[str, Any],
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    planned: list[dict[str, Any]] = []
     for model in models:
         model_id = str(model["id"])
         temperature = float(model.get("temperature", run_cfg.get("temperature", 0.0)))
@@ -117,87 +257,10 @@ def run_llm_baseline_matrix(
                     "seed": seed,
                     "split": split_name,
                     "output_path": str(output_path),
+                    "_model_config": dict(model),
                 }
-                try:
-                    payload = run_one(
-                        output_path=output_path,
-                        model=model.get("model"),
-                        backend=model.get("backend"),
-                        base_url=model.get("base_url"),
-                        api_key_env=model.get("api_key_env"),
-                        api_mode=model.get("api_mode") or "chat_completions",
-                        reasoning_effort=model.get("reasoning_effort"),
-                        thinking=model.get("thinking"),
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        timeout=timeout,
-                        seed=seed,
-                        split_name=split_name,
-                        max_samples=max_samples,
-                        samples_per_family=samples_per_family,
-                        difficulty=float(run_cfg.get("difficulty", 0.55)),
-                        max_public_rows=int(run_cfg.get("max_public_rows", 5)),
-                        reject_mock_fallback=bool(run_cfg.get("reject_mock_fallback", True)),
-                        run_status="llm_baseline_matrix_probe_job" if probe else "llm_baseline_matrix_job",
-                        run_note=(
-                            "Probe-only API-backed public-view LLM baseline matrix component. "
-                            "Do not cite as the full baseline matrix."
-                            if probe
-                            else (
-                                "API-backed public-view LLM baseline matrix component. "
-                                "Cite via the matrix manifest and aggregate artifacts."
-                            )
-                        ),
-                    )
-                    job["ok"] = True
-                    job["summary"] = payload.get("summary", {})
-                    raw_records.extend(_enrich_records(payload.get("records", []), job))
-                except Exception as exc:
-                    job["ok"] = False
-                    job["error_type"] = type(exc).__name__
-                    job["error"] = str(exc)
-                    jobs.append(job)
-                    if not continue_on_error:
-                        artifacts = _write_matrix_artifacts(
-                            output_dir=output_dir,
-                            config=config,
-                            probe=probe,
-                            jobs=jobs,
-                            records=raw_records,
-                            generated_at_utc=generated_at_utc,
-                        )
-                        manifest = _build_manifest(
-                            resolved_config_path,
-                            output_dir,
-                            config,
-                            probe,
-                            jobs,
-                            generated_at_utc=generated_at_utc,
-                            artifacts=artifacts,
-                        )
-                        _write_manifest(output_dir, manifest)
-                        raise
-                else:
-                    jobs.append(job)
-
-    artifacts = _write_matrix_artifacts(
-        output_dir=output_dir,
-        config=config,
-        probe=probe,
-        jobs=jobs,
-        records=raw_records,
-        generated_at_utc=generated_at_utc,
-    )
-    manifest = _build_manifest(
-        resolved_config_path,
-        output_dir,
-        config,
-        probe,
-        jobs,
-        generated_at_utc=generated_at_utc,
-        artifacts=artifacts,
-    )
-    return _write_manifest(output_dir, manifest)
+                planned.append(job)
+    return planned
 
 
 def _build_manifest(
@@ -209,6 +272,7 @@ def _build_manifest(
     *,
     generated_at_utc: str | None = None,
     artifacts: dict[str, str] | None = None,
+    parallel_jobs: int = 1,
 ) -> dict[str, Any]:
     succeeded = sum(1 for job in jobs if job.get("ok"))
     failed = len(jobs) - succeeded
@@ -230,6 +294,7 @@ def _build_manifest(
             "total_predictions": total_predictions,
             "fallback_records": fallback_records,
             "parse_errors": parse_errors,
+            "parallel_jobs": int(parallel_jobs),
         },
         "config_snapshot": config,
         "jobs": jobs,
@@ -259,6 +324,26 @@ def _enrich_records(records: Any, job: dict[str, Any]) -> list[dict[str, Any]]:
         payload["matrix_record_index"] = index
         enriched.append(payload)
     return enriched
+
+
+def _load_existing_job_payload(output_path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    summary = payload.get("summary")
+    records = payload.get("records")
+    if not isinstance(summary, dict) or not isinstance(records, list):
+        return None
+    if int(summary.get("fallback_records", 0)) != 0:
+        return None
+    if int(summary.get("parse_errors", 0)) != 0:
+        return None
+    if int(summary.get("total", 0)) <= 0:
+        return None
+    return payload
 
 
 def _write_matrix_artifacts(
@@ -496,11 +581,15 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--probe", action="store_true", help="Run one seed, one split, one sample per enabled model.")
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--reuse-existing", action="store_true", help="Reuse existing successful per-job JSON outputs.")
+    parser.add_argument("--parallel-jobs", type=int, default=None, help="Run independent model/seed/split jobs in parallel.")
     args = parser.parse_args()
     manifest = run_llm_baseline_matrix(
         config_path=args.config,
         probe=args.probe,
         continue_on_error=args.continue_on_error,
+        reuse_existing=args.reuse_existing,
+        parallel_jobs=args.parallel_jobs,
     )
     print(json.dumps(manifest["summary"], ensure_ascii=False, indent=2))
     print(f"manifest: {manifest['manifest_path']}")
