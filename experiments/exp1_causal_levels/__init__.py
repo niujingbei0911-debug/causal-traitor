@@ -1,1 +1,0 @@
-"""Pearl ladder benchmark experiment."""

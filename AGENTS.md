@@ -1,12 +1,13 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+⚠️ **This file describes the outdated multi-agent debate system. The project has transitioned to a benchmark-first research direction (V3).**
 
-## Project Overview
+📖 **Read instead:**
+- [MIGRATION_NOTES_V3.md](MIGRATION_NOTES_V3.md) — What was deleted and why
+- [docs/FINAL_RESEARCH_POSITIONING_BENCHMARK_ROUTE_V3.md](docs/FINAL_RESEARCH_POSITIONING_BENCHMARK_ROUTE_V3.md) — New research direction
+- [README.md](README.md) — Current repository structure
 
-**The Causal Traitor (因果叛徒)** — A multi-agent adversarial debate system for causal reasoning research. Three LLM agents (Traitor, Scientist, Auditor) + a Jury debate causal claims across Pearl's 3-layer causal hierarchy (Association → Intervention → Counterfactual). The Traitor constructs plausible but flawed causal arguments; the Scientist detects fallacies; the Auditor renders verdicts.
-
-## Commands
+## Legacy: Multi-Agent Debate System (Archived)
 
 ```bash
 # Setup

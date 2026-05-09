@@ -69,35 +69,21 @@ Historical materials:
 - `evaluation/`
   Verdict-centric metrics, scoring, reporting, and statistical significance
   helpers.
-- `experiments/exp_main_benchmark/`
-  Main benchmark experiment.
-- `experiments/exp_adversarial_robustness/`
-  Attack-strength robustness evaluation.
-- `experiments/exp_identifiability_ablation/`
-  Component ablations for ledger, countermodel, abstention, and tools.
-- `experiments/exp_leakage_study/`
-  Clean vs oracle-leaking partition comparison.
-- `experiments/exp_ood_generalization/`
-  OOD evaluation across family, lexical, and variable-renaming shifts.
-- `experiments/exp_cross_model_transfer/`
-  Current surrogate transfer study.
-- `experiments/exp_human_audit/`
-  Human-audit package generation and agreement interface.
-- `experiments/README.md`
-  Experiment-layer guide that separates paper-facing runs from appendix/demo runs.
+- `experiments/exp_api_baseline_smoke/`
+  Baseline API smoke test for quick validation.
+- `experiments/exp_llm_baseline_matrix/`
+  Core LLM baseline matrix experiments across model families and configurations.
+- `experiments/paper_artifacts.py`
+  Unified paper artifact generation for all experiments.
 
-### Supplemental / Appendix / Demo Assets
+### Infrastructure Assets
 
-- `agents/`
-  Retained runtime shell around attacker / baseline / verifier roles.
-- `game/`
-  Debate engine and demo orchestration. Some modules are mainline-reused
-  infrastructure, while `difficulty.py` and `evolution.py` are appendix/demo
-  oriented.
-- `visualization/`
-  Frontend and API for live demo visualization.
-- `run_live_game.py`
-  Supplemental live-demo entrypoint.
+- `agents/tool_executor.py`
+  Tool execution runtime for claim auditing.
+- `game/config.py`, `game/llm_service.py`, `game/data_generator.py`, `game/types.py`
+  Configuration, LLM service adapter, synthetic scenario generation, and shared types.
+- `causal_tools/`
+  Pearl's causal ladder implementation (L1 association, L2 intervention, L3 counterfactual).
 - `experiments/exp1_causal_levels/`
   Legacy benchmark-style causal-level experiment.
 - `experiments/exp2_jury_ablation/`
